@@ -2,7 +2,7 @@
 
 This guide takes a new developer from a fresh clone to a running local copy of Wizard: the Express + Socket.io server and the React client.
 
-**Current state:** the repository is a scaffold. Expect a health endpoint, a Socket.io connection, three placeholder pages, and a database connection with no tables. There is no game logic, auth, or database schema yet.
+**Current state:** the repository is a scaffold. Expect a health endpoint, a Socket.io connection, three placeholder pages, and a database schema created by Knex migrations. There is no game logic or auth yet, and no application code reads or writes the tables.
 
 ---
 
@@ -15,7 +15,7 @@ This guide takes a new developer from a fresh clone to a running local copy of W
 | PostgreSQL | 16 is the production target; 14 or newer works locally | `psql --version` |
 | Git | any recent version | `git --version` |
 
-You only need Postgres when you work on database code. The server starts without it and logs a warning (see [step 5](#5-check-that-it-works)).
+You only need Postgres when you work on database code. The server starts without it and logs a warning (see [step 6](#6-check-that-it-works)).
 
 ### Installing Postgres on macOS
 
@@ -77,7 +77,40 @@ Error: Missing required environment variable(s): SESSION_SECRET. Copy .env.examp
 
 ---
 
-## 4. Start the app
+## 4. Create the database tables
+
+With Postgres running and `DATABASE_URL` set, apply the migrations from the repository root:
+
+```bash
+npm run migrate:latest -w server
+```
+
+On success, the output lists every migration it applied:
+
+```
+INFO: migrations applied
+    batch: 1
+    files: [
+      "001_create_users_sessions_invites.ts",
+      ...
+    ]
+```
+
+This creates all the tables in the [ERD & Data Dictionary](../architecture/data-model.md). Running it again is safe: Knex records applied migrations in the `knex_migrations` table and skips them. If `files` is empty, the database is already up to date. Re-run this step whenever you pull changes that add files to `server/migrations/`.
+
+**If the `wizard` database already has tables from an older setup,** the first migration fails with `relation "users" already exists`. Keep the old data by renaming that database and creating a fresh one, then re-run the command:
+
+```bash
+# Connect to the built-in "postgres" database, not "wizard": your DATABASE_URL with /wizard changed to /postgres
+psql "postgres://postgres:postgres@localhost:5432/postgres" \
+  -c 'ALTER DATABASE wizard RENAME TO wizard_legacy' -c 'CREATE DATABASE wizard'
+```
+
+The rename fails if anything is connected to `wizard`, so stop the dev server and close any database clients first.
+
+---
+
+## 5. Start the app
 
 ```bash
 npm run dev
@@ -103,7 +136,7 @@ npm run dev -w client   # frontend only
 
 ---
 
-## 5. Check that it works
+## 6. Check that it works
 
 1. **Health check:**
    ```bash
@@ -123,7 +156,7 @@ npm run dev -w client   # frontend only
 
 ---
 
-## 6. Common commands
+## 7. Common commands
 
 Run these from the repository root:
 
@@ -148,7 +181,7 @@ In production, one Express process serves the React build, the REST API, and Web
 
 ---
 
-## 7. Project layout
+## 8. Project layout
 
 ```
 package.json            Root workspace; dev/build/start scripts
@@ -183,7 +216,7 @@ The architecture has four layers, and each layer may only call the layers below 
 
 ---
 
-## 8. Adding a migration
+## 9. Adding a migration
 
 Create a file in `server/migrations/` named with the next three-digit number, e.g. `006_add_user_last_seen.ts`. Knex runs migrations in filename order, so don't use `knex migrate:make` — it generates timestamp prefixes that would sort after every numbered file. Never rename a migration once it has been applied; Knex tracks applied migrations by filename.
 
@@ -203,7 +236,7 @@ Then run `npm run migrate:latest -w server`. Table definitions are in the [ERD &
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -212,6 +245,8 @@ Then run `npm run migrate:latest -w server`. Table definitions are in the [ERD &
 | `EADDRINUSE :::3000` | Something else is using port 3000. Stop it, or set `PORT=3001` in `.env` and start the client with `VITE_API_TARGET=http://127.0.0.1:3001 npm run dev -w client`. |
 | `database not reachable at startup` | Postgres isn't running, the `wizard` database doesn't exist (`createdb wizard`), or the user or password in `DATABASE_URL` is wrong. |
 | `role "postgres" does not exist` | You're using Homebrew Postgres. Use your macOS username in `DATABASE_URL` (see step 1). |
+| `relation "users" already exists` during `migrate:latest` | The `wizard` database has tables from an older setup. See step 4. |
+| `relation "..." does not exist` at runtime | Migrations haven't been applied. Run step 4. |
 | Browser console shows `socket connect_error` | The server isn't running, or it crashed. Check the `[server]` lines in the terminal. |
 
 ---
