@@ -201,6 +201,7 @@ Local dev: `.env` file (not committed). See `.env.example` for required keys.
 
 | Document | URL |
 |---|---|
+| Getting Started (local dev / onboarding) | /Users/tamarajennings/wizard2/docs/development/getting-started.md |
 | PRD | /Users/tamarajennings/wizard2/docs/product/prd.md |
 | System Architecture | /Users/tamarajennings/wizard2/docs/architecture/system-architecture.md |
 | Entity Relationship Diagram & Data Dictionary | /Users/tamarajennings/wizard2/docs/architecture/data-model.md |

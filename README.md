@@ -2,7 +2,19 @@
 
 A web-based, real-time multiplayer version of the **Wizard** trick-taking card game, built for a private, invite-only group of players and playable in desktop and mobile browsers.
 
-> **Status:** Design / specification phase. This repository currently contains the product and technical specs only. No application code has been written yet.
+> **Status:** Scaffold. The repo has the product and technical specs plus a runnable skeleton: an Express + Socket.io server, a React client, and a Knex database connection. There is no game logic, auth, or schema yet.
+
+## Quick start
+
+```bash
+npm install
+cp .env.example .env     # then fill in the values
+npm run dev              # server on :3000, client on :5173
+```
+
+Open http://localhost:5173. `curl localhost:3000/health` should return `{"status":"ok"}`.
+
+For prerequisites, Postgres setup, commands, and troubleshooting, see **[Getting Started](docs/development/getting-started.md)**.
 
 ## Highlights
 
@@ -48,10 +60,8 @@ All game rules live in the engine, so it can be unit-tested without a network or
 
 ## Documentation map
 
-Start with the PRD, then read the documents for the area you're working on.
+New to the project? Begin with [Getting Started](docs/development/getting-started.md) to run the app locally. Then read the PRD, followed by the documents for the area you're working on.
 
-| Document | What it covers |
-| --- | --- |
 **Product** ([docs/product/](docs/product/))
 
 | Document | What it covers |
@@ -60,6 +70,12 @@ Start with the PRD, then read the documents for the area you're working on.
 | [Game Rules Reference](docs/product/game-rules.md) | Deck, setup, trump, bidding, trick-taking, scoring, edge cases |
 | [Use Case Document](docs/product/use-cases.md) | UC-01 – UC-25: registration, lobby, gameplay, spectating, admin |
 | [UI/UX Flow Diagrams](docs/product/ui-ux-flows.md) | Screen flows from auth through game end, drop handling, admin panel |
+
+**Development** ([docs/development/](docs/development/))
+
+| Document | What it covers |
+| --- | --- |
+| [Getting Started](docs/development/getting-started.md) | Prerequisites, env setup, running locally, commands, project layout, migrations, troubleshooting |
 
 **Architecture** ([docs/architecture/](docs/architecture/))
 
@@ -99,7 +115,7 @@ Start with the PRD, then read the documents for the area you're working on.
 | [Observability & Alerting Guide](docs/operations/observability-alerting.md) | Logging, Prometheus metrics, Grafana dashboards, alert rules and thresholds, k6 metrics, log retention |
 | [Backup & Recovery Runbook](docs/operations/backup-recovery.md) | Backup schedule, `pg_dump` exports, restore procedure, recovery scenarios, server-restart handling |
 
-## Configuration (planned)
+## Configuration
 
 See the [Deployment & Infrastructure Plan](docs/operations/deployment-infrastructure.md) for the full environment and secrets setup. Configuration comes from environment variables: a local `.env` file in development, and the Railway dashboard in production. A `config.ts` module checks them at startup and refuses to boot if any required variable is missing. The required categories are:
 
@@ -109,7 +125,7 @@ See the [Deployment & Infrastructure Plan](docs/operations/deployment-infrastruc
 - Environment name
 - Socket.io settings
 
-A `.env.example` file listing the required keys (with no values) will be committed. Real secrets must never be committed.
+Currently required: `DATABASE_URL`, `SESSION_SECRET`, `PROMETHEUS_TOKEN`, `NODE_ENV`. Copy `.env.example` to `.env` for local development. Real secrets must never be committed.
 
 ## Spec inconsistencies to resolve
 
