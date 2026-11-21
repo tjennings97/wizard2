@@ -14,21 +14,9 @@ The standard Wizard deck contains 60 cards: a standard 52-card deck (2 through A
 
 **Suited cards:** The four standard suits — Hearts, Diamonds, Spades, and Clubs — each containing cards ranked 2 through Ace (13 cards per suit, 52 total). Ace is the highest ranked suited card. These follow normal suit and rank rules during trick-taking play.
 
-**Wizards:** 4 cards (one per suit color, though suit is irrelevant during play). A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
+**Wizards:** 4 cards with no suit or rank. A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
 
-**Jesters:** 4 cards (one per suit color, suit irrelevant). A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. A Jester played as the lead card means players may play any card they choose with no suit obligation.
-
-**Total:** 52 suited cards + 4 Wizards + 4 Jesters = 60 cards.
-
-This implementation is designed to support the 68-card extended edition as a future variant. The extended edition adds an additional suit of 15 cards plus 2 extra special cards. The game engine's Deck and Card classes are structured to accommodate this without modification to core game logic.
-
-The standard Wizard deck contains 60 cards divided into four suits and two special card types.
-
-**Suited cards:** Four suits — typically Blue, Red, Yellow, and Green — each containing cards numbered 1 through 13. These are the standard trick-taking cards and follow normal suit and rank rules during play.
-
-**Wizards:** 4 cards (one per suit color, though suit is irrelevant). A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
-
-**Jesters:** 4 cards (one per suit color, suit irrelevant). A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. A Jester played as the lead card means players may play any card they choose with no suit obligation.
+**Jesters:** 4 cards with no suit or rank. A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. A Jester played as the lead card means players may play any card they choose with no suit obligation.
 
 **Total:** 52 suited cards + 4 Wizards + 4 Jesters = 60 cards.
 

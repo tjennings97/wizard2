@@ -129,10 +129,12 @@ Currently required: `DATABASE_URL`, `SESSION_SECRET`, `PROMETHEUS_TOKEN`, `NODE_
 
 ## Spec inconsistencies to resolve
 
-These conflicts between the documents should be settled before implementation starts:
+These conflicts between the documents should be settled before the affected parts are built:
 
-1. **Deck definition:** the Game Rules Reference contains two "The Deck" passages. One describes Hearts/Diamonds/Spades/Clubs ranked 2–Ace; the other describes Blue/Red/Yellow/Green numbered 1–13.
-2. **Environments:** the Architecture doc says there is no staging tier initially. The Deployment & Infrastructure Plan supersedes this with a three-tier dev/staging/prod model, so the Architecture doc should be updated to match.
-3. **API test client:** the Architecture doc lists `pytest + requests`, while the Test Plan and Deployment Plan list `pytest + httpx`.
-4. **JWT signing key:** the Deployment Plan lists a JWT signing key as an environment variable, but the Security doc notes that no JWT auth is used and the key should be removed.
-5. **Smoke test account:** the Test Plan refers to an email address for the smoke test account, but accounts have no email. The Deployment Plan uses the username `smoke_test`.
+1. **Environments:** the Architecture doc says there is no staging tier initially. The Deployment & Infrastructure Plan supersedes this with a three-tier dev/staging/prod model, so the Architecture doc should be updated to match.
+2. **API test client:** the Architecture doc lists `pytest + requests`, while the Test Plan and Deployment Plan list `pytest + httpx`.
+3. **JWT signing key:** the Deployment Plan lists a JWT signing key as an environment variable, but the Security doc notes that no JWT auth is used and the key should be removed.
+4. **Smoke test account:** the Test Plan refers to an email address for the smoke test account, but accounts have no email. The Deployment Plan uses the username `smoke_test`.
+5. **Avatar config:** CLAUDE.md describes three avatar layers (face, expression, hair). The Avatar System Specification defines four required keys: `head`, `skin`, `face`, `hair`. The game engine follows the Avatar System Specification.
+6. **Following suit with Wizards and Jesters:** the Game Rules Reference says players must follow the led suit if able, but doesn't say whether a Wizard or Jester may be played instead when the player holds a card of that suit. The engine allows it, as the standard Wizard rules do.
+7. **Jester lead:** the Game Rules Reference says a Jester lead removes the suit obligation. In the standard Wizard rules, the first suited card played after the Jester sets the suit that later players must follow. The engine follows the rules doc: no one has to follow suit in that trick. In both versions, the first suited card decides the winner when no Wizard or trump is played.
