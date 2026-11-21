@@ -167,7 +167,7 @@ server/
     db/
       knex.ts           Knex instance and connection check
       migrate.ts        Migration runner used by the migrate:* scripts
-  migrations/           Knex migration files (none yet)
+  migrations/           Knex migration files (001_…, 002_…, run in filename order)
 
 client/
   index.html
@@ -185,7 +185,7 @@ The architecture has four layers, and each layer may only call the layers below 
 
 ## 8. Adding a migration
 
-Create a file in `server/migrations/` with a timestamp prefix, e.g. `20261120120000_create_users.ts`:
+Create a file in `server/migrations/` named with the next three-digit number, e.g. `006_add_user_last_seen.ts`. Knex runs migrations in filename order, so don't use `knex migrate:make` — it generates timestamp prefixes that would sort after every numbered file. Never rename a migration once it has been applied; Knex tracks applied migrations by filename.
 
 ```ts
 import type { Knex } from 'knex';
