@@ -1,4 +1,5 @@
-import { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import { Router } from 'express';
+import { asyncHandler } from '../http/asyncHandler';
 import { db } from '../db/knex';
 import { logger } from '../logger';
 import { ApiError } from '../http/errors';
@@ -8,6 +9,7 @@ import { authenticate } from '../auth/middleware';
 import { loginLimiter, registerLimiter, resetPasswordLimiter } from '../auth/rateLimits';
 import {
   clearSessionCookie,
+  invalidateSession,
   invalidateUserSessions,
   rotateSession,
   setSessionCookie,
@@ -16,13 +18,6 @@ import { toPublicUser, type UserRow } from '../auth/users';
 import { BodyValidator } from '../auth/validation';
 
 export const authRouter = Router();
-
-/** Express 4 does not forward rejected promises; route them to the error handler. */
-function asyncHandler(fn: (req: Request, res: Response) => Promise<void>): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
-    fn(req, res).catch(next);
-  };
-}
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -163,10 +158,7 @@ authRouter.post(
   // Logout must always work while the session is valid, including in the re-auth window.
   authenticate({ allowInReauthWindow: true, allowDuringCredentialChange: true }),
   asyncHandler(async (req, res) => {
-    await db('sessions')
-      .where({ id: req.authSession!.id })
-      .whereNull('invalidated_at')
-      .update({ invalidated_at: db.fn.now() });
+    await invalidateSession(db, req.authSession!.id);
 
     logger.info({ userId: req.user!.id, traceId: req.authSession!.traceId }, 'user logged out');
     clearSessionCookie(res);

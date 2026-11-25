@@ -977,6 +977,8 @@ paths:
       description: >
         Transitions the room from open to in_progress and starts the game.
         Requires at least 3 players. Once started, no new players can join.
+        Not yet wired to the game engine: the server applies every check below,
+        then returns 501 NOT_IMPLEMENTED and changes nothing.
       tags: [Rooms]
       security:
         - sessionCookie: []
@@ -1015,11 +1017,28 @@ paths:
                 code: NOT_ENOUGH_PLAYERS
                 message: At least 3 players are required to start.
         '403':
-          description: Not the host.
+          description: Not the host (NOT_HOST), or the game already started (GAME_ALREADY_STARTED).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '404':
+          description: Room not found or closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: >
+            Temporary: every check passed, but starting a game is not wired to the
+            game engine yet. Nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_IMPLEMENTED
+                message: Starting a game is not available yet.
 ```
 
 ## Game Endpoints
@@ -1638,7 +1657,7 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 401 | `UNAUTHORIZED` | No valid session cookie present. |
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
 | 401 | `INVALID_RECOVERY` | Username not found or recovery passphrase does not match on password reset (one response for both). |
-| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device. |
+| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device or a password reset. |
 | 401 | `REAUTH_REQUIRED` | Session is within 24 hours of its 30-day cap. The user must log in again before doing anything except finishing a game in progress. The session is still valid and the cookie is not cleared. |
 | 403 | `FORBIDDEN` | Authenticated but not permitted (e.g. non-admin on admin route). |
 | 403 | `CREDENTIAL_CHANGE_REQUIRED` | An admin reset this user's credentials. Only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` are allowed until both the password and recovery passphrase are changed. |
@@ -1655,6 +1674,7 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 422 | `INVITE_INVALID` | Invite code not found, expired, or already redeemed. |
 | 429 | `RATE_LIMITED` | Too many requests. Applies to auth and bug report endpoints. |
 | 500 | `INTERNAL_ERROR` | Unexpected server error. Includes a `traceId` field in `details` for correlation with logs. |
+| 501 | `NOT_IMPLEMENTED` | Temporary: `POST /rooms/{roomId}/start` until the game engine is wired. |
 
 ### 500 Internal Error Shape
 

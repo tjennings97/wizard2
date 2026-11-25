@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import { config } from '../config';
 import { db } from '../db/knex';
 import { generateSessionToken, sha256 } from './credentials';
+import { emitSessionsInvalidated } from './sessionEvents';
 import {
   ENDED_SESSION_RETENTION_MS,
   isInReauthWindow,
@@ -75,11 +76,27 @@ export async function rotateSession(trx: Knex.Transaction, userId: string): Prom
   return { token, traceId: inserted.trace_id, cookieExpiresAt: new Date(now + SESSION_MAX_LIFETIME_MS) };
 }
 
+/**
+ * Ends every still-active session for the user. Sockets on those sessions are told
+ * (SESSION_INVALIDATED) once `trx` commits; see sessionEvents.ts.
+ */
 export async function invalidateUserSessions(trx: Knex | Knex.Transaction, userId: string): Promise<void> {
-  await trx('sessions')
+  const rows: { id: string }[] = await trx('sessions')
     .where({ user_id: userId })
     .whereNull('invalidated_at')
-    .update({ invalidated_at: trx.fn.now() });
+    .update({ invalidated_at: trx.fn.now() })
+    .returning('id');
+  emitSessionsInvalidated(trx, rows.map((r) => r.id));
+}
+
+/** Ends one session (logout). Its sockets are told as for invalidateUserSessions. */
+export async function invalidateSession(conn: Knex | Knex.Transaction, sessionId: string): Promise<void> {
+  const rows: { id: string }[] = await conn('sessions')
+    .where({ id: sessionId })
+    .whereNull('invalidated_at')
+    .update({ invalidated_at: conn.fn.now() })
+    .returning('id');
+  emitSessionsInvalidated(conn, rows.map((r) => r.id));
 }
 
 /** Deletes the user's sessions that were invalidated or expired over ENDED_SESSION_RETENTION_MS ago. */
@@ -147,6 +164,11 @@ export async function slideSession(session: AuthSession, now: number = Date.now(
     .whereNull('invalidated_at')
     .update({ expires_at: slidTo });
   return { ...session, expiresAt: slidTo };
+}
+
+/** True if the session has been invalidated (displaced, reset or logged out). */
+export async function isSessionInvalidated(sessionId: string): Promise<boolean> {
+  return !!(await db('sessions').where({ id: sessionId }).whereNotNull('invalidated_at').first('id'));
 }
 
 /** True if the user is an active (not departed) player in a game that is still in progress. */

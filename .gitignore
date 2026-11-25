@@ -6,6 +6,9 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# Python (API tests)
 .venv/
 __pycache__/
 .pytest_cache/
+*.pyc

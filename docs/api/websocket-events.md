@@ -161,7 +161,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `pong` | **U** | `server_time: ISO-8601` |
 | `invalid_play_error` | **U** | `player_id`, `reason: string`, `legal_cards: Card[]` |
 | `invalid_bid_error` | **U** | `player_id`, `reason: string`, `min_bid: integer`, `max_bid: integer` |
-| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` — `code: "SESSION_INVALIDATED"` (fatal) is sent to a socket displaced by a newer login; `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress |
+| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset or a logout has ended, and the socket is then disconnected; `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress |
 
 ## Event Sequencing & State Transitions
 
@@ -198,7 +198,8 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 | Phase | Who | Event | Notes |
 | --- | --- | --- | --- |
-| Connect | Client | *(WebSocket upgrade, no event)* | The browser sends the signed HTTP-only session cookie with the handshake (`withCredentials: true`). The server verifies the cookie and calls `authenticateToken` (the same check as REST `requireAuth`). On failure it emits `session_error` (`code` = the failure code, e.g. `UNAUTHORIZED` or `SESSION_INVALIDATED`, `fatal: true`) and disconnects. If the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress, it emits `session_error` (`code: "REAUTH_REQUIRED"`, `fatal: true`) and disconnects |
+| Connect | Client | *(WebSocket upgrade, no event)* | The browser sends the signed HTTP-only session cookie with the handshake (`withCredentials: true`). The server verifies the cookie and calls `authenticateToken` (the same check as REST `requireAuth`). On failure it emits `session_error` (`code` = the failure code, e.g. `UNAUTHORIZED` or `SESSION_INVALIDATED`, `fatal: true`) and disconnects. If the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress, it emits `session_error` (`code: "REAUTH_REQUIRED"`, `fatal: true`) and disconnects. A user flagged for a forced credential change gets `code: "CREDENTIAL_CHANGE_REQUIRED"` (fatal) |
+| Session ended elsewhere | Server → Client | `session_error` | When a newer login, a password reset or a logout ends a session, every socket using it receives `code: "SESSION_INVALIDATED"` (`fatal: true`) and is disconnected. The auth routes publish the ended session ids in-process once their transaction commits; the socket layer subscribes. Single-instance only |
 | Join | Client → Server | `join_game` | Server uses the session bound at connect (`socket.data.userId`); assigns seat |
 | Seat confirmed | Server → Client | `user_joined` (broadcast) | All room members receive the newcomer's info and role |
 | Leave (intentional) | Client → Server | `leave_game` | The player has quit. Server broadcasts `user_left` with `reason: "voluntary"`; in a game, player-drop rules apply |
