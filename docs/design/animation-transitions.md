@@ -166,16 +166,16 @@ On click (first click = select, second click = play):
 }
 ```
 
-### Disconnect countdown (on `player_left` with `reason: "timeout"` pending)
+### Disconnect countdown (on `user_left` with `reason: "timeout"` pending)
 
-Triggered when another player's ping times out (30s window before `player_left` is broadcast). Show a countdown badge on their seat:
+Triggered when another player's ping times out (30s window before `user_left` is broadcast). Show a countdown badge on their seat:
 
 1. Seat dims to `opacity: 0.5` over `--duration-normal`.
 2. Disconnect icon fades in over avatar.
 3. Countdown badge (e.g. "28s") renders and decrements every second.
-4. At 0: `player_left` arrives — seat either clears (lobby) or stays dimmed with "Disconnected" label (mid-game).
+4. At 0: `user_left` arrives — seat either clears (lobby) or stays dimmed with "Disconnected" label (mid-game).
 
-If the player reconnects (`player_joined`): reverse — seat brightens, badge clears, all over `--duration-normal`.
+If the player reconnects (`player_reconnected`): reverse — seat brightens, badge clears, all over `--duration-normal`.
 
 ### Bid locked-in confirmation
 

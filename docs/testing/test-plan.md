@@ -63,7 +63,7 @@ Each cell names the tool and a brief description of what is verified. A dash mea
 | **Invite system** | Invite code generation; expiry (7-day); single-use enforcement | POST /admin/invites, GET /admin/invites, DELETE /admin/invites/{id}; 403 for non-admin | — | Admin creates invite; user redeems via UC-26 registration flow | — |
 | **User profile & avatar** | Avatar config serialisation; SVG layer ordering | GET /users/me, PATCH /users/me; avatar field round-trip | — | User sets avatar parts; avatar renders correctly in lobby and in-game | — |
 | **Lobby** | Room filtering logic | GET /lobby/rooms; filter by state; pagination | `room_created`, `room_updated`, `room_removed` broadcast timing and payload schema | Browse lobby; see room appear when another player creates one | GET /lobby/rooms at concurrent load; p95 < 500 ms |
-| **Room management** | — | POST /rooms, GET /rooms/{id}, DELETE /rooms/{id}; host-only guards | `room_config_updated`, `host_changed`, `player_joined`, `player_left` | Create room → configure → invite players → start game | — |
+| **Room management** | — | POST /rooms, GET /rooms/{id}, DELETE /rooms/{id}; host-only guards | `room_config_updated`, `host_changed`, `user_joined`, `user_left` | Create room → configure → invite players → start game | — |
 | **Game engine — dealing** | Card distribution (correct count per round); deck composition | — | `round_started` payload: hand contents, trump card, trump suit | — | — |
 | **Game engine — trump selection** | Trump determination logic for all four Wizard-flip cases from state machine | POST /games/{id}/trump | `trump_selected` event | — | — |
 | **Game engine — bidding** | Bid validation; bid-total rule (host-configurable); per-player ordering | POST /games/{id}/bids; 400 on invalid bid; 409 on out-of-turn | `bid_placed`, `bidding_complete` ordering and seq values | Full bidding round in browser | `bid_placed` fan-out to all players; delivery < 100 ms at target concurrent rooms |
@@ -71,8 +71,8 @@ Each cell names the tool and a brief description of what is verified. A dash mea
 | **Scoring** | Per-round score calc (exact bid +20 +2/trick; miss −10/trick off); running totals; end-game ranking | GET /games/{id}/scores | `scores_updated`, `game_ended` payloads | Score table displays correctly after each round | — |
 | **Session — spectator** | — | — | `join_game` with `role: spectator`; spectator receives all server→client events; cannot emit player actions | Join as spectator; observe game in progress | — |
 | **Session — disconnect / reconnect** | Reconnection timer logic; `state_snapshot` built from the live game's `toPlayerView(userId)` | — | Drop connection; `player_disconnected` broadcast; reconnect within window; `state_snapshot` emit; `player_reconnected` broadcast | Simulate network drop in Playwright; verify the player continues where they left off | — |
-| **Session — leave & host transfer** | Host-promotion logic (`join_order ASC` where `left_at IS NULL`) | POST /rooms/{id}/leave | `player_left`, `host_changed` | Host leaves; next player promoted; game continues | — |
-| **Admin — player removal** | — | POST /admin/rooms/{id}/kick | `player_left` broadcast after kick | Admin removes player from active room | — |
+| **Session — leave & host transfer** | Host-promotion logic (`join_order ASC` where `role = 'player'` and `left_at IS NULL`; spectators never promoted) | POST /rooms/{id}/leave | `user_left`, `host_changed` | Host leaves; next player promoted; game continues | — |
+| **Admin — player removal** | — | POST /admin/rooms/{id}/kick | `user_left` broadcast after kick | Admin removes player from active room | — |
 | **Bug reporting** | — | POST /bug-reports; 201 response; captured context fields present | — | Submit bug report via in-game UI; confirmation message displayed | — |
 | **WebSocket delivery** | — | — | Envelope schema (`event`, `payload`, `seq`, `ts`); seq monotonicity; `sync_request` on seq gap; error event naming (`_error` suffix) | — | Sustained WebSocket connections at target scale; no missed events |
 
@@ -137,8 +137,8 @@ Smoke tests run automatically after every production deployment. They are read-o
 | S-02 | Auth — login with a dedicated smoke-test account | pytest | 200 + HTTP-only session cookie set |
 | S-03 | Auth — authenticated request with the session cookie | pytest | `GET /users/me` returns 200 with the `smoke_test` user |
 | S-04 | Lobby — GET /lobby/rooms returns 200 | pytest | 200; response matches RoomSummary schema |
-| S-05 | WebSocket — connect and receive `connection_ack` | socket.io-client | Envelope schema valid; `seq: 1` |
-| S-06 | WebSocket — `sync_request` round-trip | socket.io-client | Server responds with `game_state` within 2 s |
+| S-05 | WebSocket — connect with the session cookie and receive `lobby_snapshot` | socket.io-client | Connection accepted; `lobby_snapshot` received; envelope schema valid; `seq: 1` |
+| S-06 | WebSocket — `sync_request` round-trip | socket.io-client | Server responds with `state_snapshot` within 2 s |
 | S-07 | E2E — login page loads and renders | Playwright | Page title present; login form visible |
 | S-08 | E2E — lobby loads after login | Playwright | Room list visible; no console errors |
 

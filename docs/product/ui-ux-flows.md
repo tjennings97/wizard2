@@ -26,7 +26,7 @@ The lobby is the default screen for any authenticated user not in a game. All ac
 
 This flow covers the waiting room from entry through game start. Host and non-host players see different controls.
 
-**Entry:** Player joins from lobby → `player_joined` broadcast → all members see updated player list and avatars. Join order is shown.
+**Entry:** Player joins from lobby → `user_joined` broadcast → all members see updated player list and avatars. Join order is shown.
 
 **Host controls (only the host sees these):**
 

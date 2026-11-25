@@ -914,7 +914,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Room is not joinable (in_progress for players, completing/closed for all).
+          description: >
+            Room is not joinable (in_progress for players, completing/closed for all).
+            A user who previously left an open room may rejoin it in either role;
+            a player who quit an in_progress game may rejoin only as a spectator.
           content:
             application/json:
               schema:
@@ -939,7 +942,9 @@ paths:
         If leaving before game starts, removes the user from the room.
         If the host leaves before game starts, host transfers to next player.
         If leaving during a game (as a player), the player is permanently
-        removed and cannot rejoin. Current round is voided and re-dealt.
+        removed and cannot rejoin as a player (they may rejoin as a spectator).
+        Current round is voided and re-dealt. Host transfer skips spectators;
+        if no players remain, the room closes.
       tags: [Rooms]
       security:
         - sessionCookie: []

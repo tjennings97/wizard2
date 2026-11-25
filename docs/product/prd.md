@@ -134,6 +134,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 
 - A user already in a game (as player or spectator) cannot open or join another room
 - A user cannot join a completing or closed room
+- A user who left a room before the game started may rejoin it as a player or spectator; a player who quit mid-game may rejoin only as a spectator
 
 ## Room and Pre-Game
 
@@ -142,7 +143,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 **Host role:**
 
 - The host is the first player to enter the room
-- If the host leaves before the game starts, the host role transfers to the next player who joined (determined by join order)
+- If the host leaves before the game starts, the host role transfers to the next player who joined (determined by join order); spectators are never promoted. If no players remain, the room closes
 - Host transfer is automatic and immediate; the new host is notified
 - Once the game starts, the host role is dissolved — no player has elevated control mid-game
 
@@ -203,7 +204,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 **Player drop mid-game:**
 
 - Intentional leave (`leave_game`): the player has quit and is removed permanently; current round is voided and re-dealt to remaining players; game continues
-- Disconnect: the player's seat is held for 30s so they can reconnect; if they do not, they are treated as having quit (`player_left`, `reason: "timeout"`)
+- Disconnect: the player's seat is held for 30s so they can reconnect; if they do not, they are treated as having quit (`user_left`, `reason: "timeout"`)
 - Drop to 2 players: remaining players are prompted to continue or end the game
 - If the game ends due to player drop, the session is recorded as incomplete with no winner
 
@@ -288,8 +289,8 @@ The JSONB payload for each event type captures: player hand at time of action, a
 - Socket disconnect detected server-side → 30-second server timer starts
 - Other players in the room receive a `player_disconnected` event and see a visual indicator
 - If the player reconnects within 30s (session validated), their player view of the current game (`toPlayerView(userId)`, own hand only — never the raw `GameState`) is sent via `state_snapshot` to restore their view
-- If the timer expires, the player is treated as having quit: `player_left` (`reason: "timeout"`) broadcast, game proceeds per player-drop rules
-- A player who leaves intentionally (`leave_game`) has quit: `player_left` (`reason: "voluntary"`) broadcast, game proceeds per player-drop rules
+- If the timer expires, the player is treated as having quit: `user_left` (`reason: "timeout"`) broadcast, game proceeds per player-drop rules
+- A player who leaves intentionally (`leave_game`) has quit: `user_left` (`reason: "voluntary"`) broadcast, game proceeds per player-drop rules
 - Page refresh is treated as a disconnect + reconnect; the server timer is the authoritative source, not client state
 
 **Spectator event filtering:** Spectators receive all public game events (cards played, tricks won, bids, scores, trump) but do not receive any event containing hand data. Hand data is sent only in player-specific events addressed to the individual player.
@@ -297,10 +298,10 @@ The JSONB payload for each event type captures: player hand at time of action, a
 **Key event categories:**
 
 - Lobby: `lobby_snapshot`, `rooms_updated`, `presence_updated`
-- Room: `room_snapshot`, `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
+- Room: `room_snapshot`, `user_joined`, `user_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
 - Game: `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_over`, `game_abandoned`
 - Player-specific: `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`
-- Connection: `player_disconnected`, `player_reconnected`, `player_left`, `session_error`
+- Connection: `player_disconnected`, `player_reconnected`, `user_left`, `session_error`
 
 Full event schemas and payload definitions are documented in the WebSocket Event Taxonomy.
 

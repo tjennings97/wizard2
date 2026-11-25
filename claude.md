@@ -86,13 +86,13 @@ Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/
 
 **Lobby:** `lobby_snapshot`, `rooms_updated`, `presence_updated`
 
-**Room:** `room_snapshot`, `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
+**Room:** `room_snapshot`, `user_joined`, `user_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
 
 **Game:** `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_time_warning`, `game_over`, `game_abandoned`
 
 **Player-specific (individual socket only):** `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_play_error`, `pong`
 
-**Connection:** `player_disconnected`, `player_reconnected`, `player_left` (`reason: "voluntary"` = quit, `"timeout"` = did not reconnect in time), `session_error` (`code: "SESSION_INVALIDATED"` for a displaced socket)
+**Connection:** `player_disconnected`, `player_reconnected`, `user_left` (`reason: "voluntary"` = quit, `"timeout"` = did not reconnect in time), `session_error` (`code: "SESSION_INVALIDATED"` for a displaced socket)
 
 **Spectator filtering:** Hand data is NEVER broadcast to a room. It is sent only via `socket.to(socketId).emit(...)` to the individual player.
 
@@ -123,9 +123,9 @@ Key schema notes:
 
 ## Key Behaviors
 
-**Reconnection:** A dropped connection is not a quit. The server broadcasts `player_disconnected` and holds the player's seat for 30 seconds (`setTimeout` keyed by userId). If the player rejoins within the window (`join_game` with `last_seq_seen`): session validated, `game.toPlayerView(userId)` sent via `state_snapshot` (never the raw `GameState`), missed events replayed, `player_reconnected` broadcast, and they continue exactly where they left off. If the window expires: `player_left` (`reason: "timeout"`) and player-drop rules apply.
+**Reconnection:** A dropped connection is not a quit. The server broadcasts `player_disconnected` and holds the player's seat for 30 seconds (`setTimeout` keyed by userId). If the player rejoins within the window (`join_game` with `last_seq_seen`): session validated, `game.toPlayerView(userId)` sent via `state_snapshot` (never the raw `GameState`), missed events replayed, `player_reconnected` broadcast, and they continue exactly where they left off. If the window expires: `user_left` (`reason: "timeout"`) and player-drop rules apply.
 
-**Quitting:** A player who leaves intentionally (`leave_game`, or `POST /rooms/{roomId}/leave`) has quit: `player_left` (`reason: "voluntary"`), player-drop rules apply, and they cannot rejoin.
+**Quitting:** A player who leaves intentionally (`leave_game`, or `POST /rooms/{roomId}/leave`) has quit: `user_left` (`reason: "voluntary"`), player-drop rules apply, and they cannot rejoin as a player (they may rejoin as a spectator).
 
 **No turn timers:** The game waits for each player to bid, play, or declare trump.
 
