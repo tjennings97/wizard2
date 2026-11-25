@@ -55,10 +55,11 @@ Persistence Layer (Knex)     Postgres queries
 ## Game Engine Classes
 
 - `Card` — immutable value object: suit, rank, type (suited/wizard/jester)
-- `Deck` — shuffle, deal, flip trump; `deckSize` config (60 standard, 68 extended future)
+- `Deck` — shuffle, deal, flip trump; built from a deck type (`standard`; `camelot` future)
+- `Ruleset` — per-edition rules: deck, trump from flip, follow-suit legality, trick resolution
 - `Round` — hands, bids, tricks won, score deltas per round
 - `Trick` — cards played in order; `resolve(trump)` returns winner
-- `GameState` — plain serializable snapshot; produced by `game.toGameState()`
+- `GameState` — plain serializable snapshot (server-side only: holds every hand); produced by `game.toGameState()` and written to `games.state` as a record; not used to resume games after a server restart. Client-safe views: `game.toPlayerView(userId)` (own hand only) and `game.toSpectatorView()` (no hands)
 - `Game` — orchestrator; owns Deck, current Round, player list; emits nothing
 - `User` — base: id, username, displayName, avatarConfig, sessionId
 - `Player extends User` — hand, bid, tricksWon; `placeBid(n)`, `playCard(card)`
@@ -79,15 +80,19 @@ Key endpoints:
 
 ## Socket.io Events
 
-**Lobby:** `lobby:state`, `lobby:rooms_updated`, `lobby:presence_updated`
+Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/websocket-events.md](docs/api/websocket-events.md)), which is authoritative for event names. All names are `snake_case`.
 
-**Room:** `room:state`, `room:player_joined`, `room:player_left`, `room:host_changed`, `room:chat_message`, `room:config_updated`, `room:game_starting`
+**Client → server:** `join_game` (also used to reconnect, with `last_seq_seen`), `leave_game`, `send_chat_message`, `select_trump`, `place_bid`, `play_card`, `choose_continue_or_end`, `sync_request`, `ping`
 
-**Game:** `game:round_started`, `game:bid_phase`, `game:bid_placed`, `game:trick_phase`, `game:card_played`, `game:trick_completed`, `game:round_completed`, `game:completed`
+**Lobby:** `lobby_snapshot`, `rooms_updated`, `presence_updated`
 
-**Player-specific (individual socket only):** `player:hand_dealt`, `player:your_turn`, `player:state_restored`
+**Room:** `room_snapshot`, `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
 
-**Connection:** `player:disconnected`, `player:reconnected`, `player:quit`, `session:invalidated`
+**Game:** `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_over`, `game_abandoned`
+
+**Player-specific (individual socket only):** `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_play_error`, `pong`
+
+**Connection:** `player_disconnected`, `player_reconnected`, `player_left` (`reason: "voluntary"` = quit, `"timeout"` = did not reconnect in time), `session_error` (`code: "SESSION_INVALIDATED"` for a displaced socket)
 
 **Spectator filtering:** Hand data is NEVER broadcast to a room. It is sent only via `socket.to(socketId).emit(...)` to the individual player.
 
@@ -96,7 +101,7 @@ Key endpoints:
 `users`, `sessions`, `invites`, `rooms`, `room_members`, `games`, `rounds`, `round_players`, `game_results`, `game_events` (append-only event log), `bug_reports`
 
 Key schema notes:
-- `users.avatar_config` — JSONB (three layer IDs)
+- `users.avatar_config` — JSONB (four keys: `head`, `skin`, `face`, `hair`)
 - `games.state` — JSONB checkpoint of `GameState`, written after each round
 - `game_events.payload` — JSONB full context snapshot per event
 - `sessions` stored in Postgres (not Redis); one active session per user
@@ -118,17 +123,23 @@ Key schema notes:
 
 ## Key Behaviors
 
-**Reconnection:** 30-second server-side timer (`setTimeout` keyed by userId). On reconnect within window: session validated, `GameState` snapshot pushed via `player:state_restored`. On timeout: player treated as quit.
+**Reconnection:** A dropped connection is not a quit. The server broadcasts `player_disconnected` and holds the player's seat for 30 seconds (`setTimeout` keyed by userId). If the player rejoins within the window (`join_game` with `last_seq_seen`): session validated, `game.toPlayerView(userId)` sent via `state_snapshot` (never the raw `GameState`), missed events replayed, `player_reconnected` broadcast, and they continue exactly where they left off. If the window expires: `player_left` (`reason: "timeout"`) and player-drop rules apply.
+
+**Quitting:** A player who leaves intentionally (`leave_game`, or `POST /rooms/{roomId}/leave`) has quit: `player_left` (`reason: "voluntary"`), player-drop rules apply, and they cannot rejoin.
+
+**No turn timers:** The game waits for each player to bid, play, or declare trump.
 
 **Player drop mid-game:** Current round is voided and re-dealt to remaining players. Drop to 2 players: remaining players prompted to continue or end.
 
-**Single session:** New login invalidates any existing session. Displaced socket receives `session:invalidated`.
+**Single session:** New login invalidates any existing session. Displaced socket receives `session_error` (`code: "SESSION_INVALIDATED"`, `fatal: true`).
 
 **Forced credential change:** Admin credential reset sets `requires_credential_change = true` on the user record. Client intercepts the flag on next login and forces a change-password flow before any other navigation.
 
 **Room timeout:** Room auto-closes 10 minutes after creation if game hasn't started.
 
-**GameState checkpointing:** Written to `games.state` after each round ends. Mid-trick state is not checkpointed.
+**Server restart:** In-progress games are abandoned, not resumed. Before accepting traffic, startup cleanup marks every `in_progress` game `incomplete` (`drop_reason = 'server_restart'`). Clients that reconnect receive `game_abandoned` and return to the lobby. See the Backup & Recovery Runbook.
+
+**GameState checkpointing:** Written to `games.state` after each round ends, as a record for history and bug reports. It is not used to resume a game.
 
 ## User Roles
 
@@ -148,7 +159,7 @@ Key schema notes:
 - **Routing:** React Router v6. Routes: `/` (lobby), `/room/:id`, `/game/:id`, `/profile`, `/admin`
 - **Mobile-first:** `min-width` media queries; touch targets ≥ 44×44px; no hover-only affordances; 375px viewport minimum
 - **Game board layout:** Vertical single-column on mobile (hand at bottom, trick in middle, opponents at top); table-surround on desktop
-- **Avatars:** Three SVG layers (face, expression, hair) composited via `position: absolute` stacking. No server-side image processing.
+- **Avatars:** Four SVG layers (`head`, `skin`, `face`, `hair`; see the Avatar System Specification) composited via `position: absolute` stacking. No server-side image processing.
 
 ## Security
 
@@ -173,7 +184,6 @@ Key schema notes:
 Required (validated at startup via `config.ts`):
 - Database URL
 - Session secret
-- JWT signing key (if applicable)
 - Socket.io config
 - Prometheus bearer token
 - `NODE_ENV` (`development` | `production`)
@@ -183,7 +193,8 @@ Local dev: `.env` file (not committed). See `.env.example` for required keys.
 ## Deployment
 
 - **Platform:** Railway — single service, single domain
-- **Deploy:** Auto-deploy on push to `main` branch (GitHub)
+- **Environments:** local dev and production only; no staging. E2E tests run in CI on every PR; k6 performance tests run on a CI schedule
+- **Deploy:** Auto-deploy on push to `main` branch (GitHub); PRs to `main` must pass CI
 - **Rollback:** Railway deploy history UI
 - **TLS:** Let's Encrypt via Railway; HTTP redirected to HTTPS; WebSocket connections upgrade to WSS
 - **Budget:** $10–20/month target
@@ -191,7 +202,7 @@ Local dev: `.env` file (not committed). See `.env.example` for required keys.
 ## What's Out of Scope (This Version)
 
 - Bot/AI players (interface stubbed in `BotPlayer`; `game_events` log collects training data)
-- Extended 68-card deck (engine parameterised; `Deck` takes `deckSize` constructor arg)
+- Wizard Camelot Edition deck (engine selects a `Ruleset` by `deckType`; Camelot ruleset and card types not built)
 - Public registration (invite system only)
 - Full analytics dashboard (metrics collected, display deferred)
 - Native mobile apps (mobile browser is first-class)
@@ -199,23 +210,25 @@ Local dev: `.env` file (not committed). See `.env.example` for required keys.
 
 ## Project Documents
 
+The documents below, in this repo, are the source of truth for the project's specs. Copies kept elsewhere (for example in Claude Docs) may be out of date and are not authoritative. Event names are defined by the WebSocket Event Taxonomy.
+
 | Document | URL |
 |---|---|
-| Getting Started (local dev / onboarding) | /Users/tamarajennings/wizard2/docs/development/getting-started.md |
-| PRD | /Users/tamarajennings/wizard2/docs/product/prd.md |
-| System Architecture | /Users/tamarajennings/wizard2/docs/architecture/system-architecture.md |
-| Entity Relationship Diagram & Data Dictionary | /Users/tamarajennings/wizard2/docs/architecture/data-model.md |
-| OpenAPI 3.0 Specification | /Users/tamarajennings/wizard2/docs/api/openapi-spec.md |
-| WebSocket Event Taxonomy | /Users/tamarajennings/wizard2/docs/api/websocket-events.md |
-| Game Rules Reference | /Users/tamarajennings/wizard2/docs/product/game-rules.md |
-| Game State Machine | /Users/tamarajennings/wizard2/docs/architecture/game-state-machine.md |
-| UI/UX Flow Diagrams | /Users/tamarajennings/wizard2/docs/product/ui-ux-flows.md |
-| Use Case Document | /Users/tamarajennings/wizard2/docs/product/use-cases.md |
-| Avatar System Specification | /Users/tamarajennings/wizard2/docs/architecture/avatar-system.md |
-| UI Foundation Brief | /Users/tamarajennings/wizard2/docs/design/ui-foundation.md |
-| Animation & Transition Spec | /Users/tamarajennings/wizard2/docs/design/animation-transitions.md |
-| Test Plan | /Users/tamarajennings/wizard2/docs/testing/test-plan.md |
-| Deployment & Infrastructure Plan | /Users/tamarajennings/wizard2/docs/operations/deployment-infrastructure.md |
-| Security Considerations | /Users/tamarajennings/wizard2/docs/architecture/security.md |
-| Observability & Alerting Guide | /Users/tamarajennings/wizard2/docs/operations/observability-alerting.md |
-| Backup & Recovery Runbook | /Users/tamarajennings/wizard2/docs/operations/backup-recovery.md |
+| Getting Started (local dev / onboarding) | docs/development/getting-started.md |
+| PRD | docs/product/prd.md |
+| System Architecture | docs/architecture/system-architecture.md |
+| Entity Relationship Diagram & Data Dictionary | docs/architecture/data-model.md |
+| OpenAPI 3.0 Specification | docs/api/openapi-spec.md |
+| WebSocket Event Taxonomy | docs/api/websocket-events.md |
+| Game Rules Reference | docs/product/game-rules.md |
+| Game State Machine | docs/architecture/game-state-machine.md |
+| UI/UX Flow Diagrams | docs/product/ui-ux-flows.md |
+| Use Case Document | docs/product/use-cases.md |
+| Avatar System Specification | docs/architecture/avatar-system.md |
+| UI Foundation Brief | docs/design/ui-foundation.md |
+| Animation & Transition Spec | docs/design/animation-transitions.md |
+| Test Plan | docs/testing/test-plan.md |
+| Deployment & Infrastructure Plan | docs/operations/deployment-infrastructure.md |
+| Security Considerations | docs/architecture/security.md |
+| Observability & Alerting Guide | docs/operations/observability-alerting.md |
+| Backup & Recovery Runbook | docs/operations/backup-recovery.md |

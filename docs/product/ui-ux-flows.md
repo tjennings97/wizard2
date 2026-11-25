@@ -20,13 +20,13 @@ The lobby is the default screen for any authenticated user not in a game. All ac
 
 &#91;embedded content: lobby flow · room listing, presence, four actions\]
 
-**Constraints: **A user already in a game (as player or spectator) cannot open or join another room — the lobby disables those actions. COMPLETING and CLOSED rooms are not shown. Spectators joining an in-progress game see the board but never receive hand data (`player:hand_dealt` is player-specific only).
+**Constraints: **A user already in a game (as player or spectator) cannot open or join another room — the lobby disables those actions. COMPLETING and CLOSED rooms are not shown. Spectators joining an in-progress game see the board but never receive hand data (`hand_dealt` is player-specific only).
 
 ## Flow 3 — Room & Pre-Game
 
 This flow covers the waiting room from entry through game start. Host and non-host players see different controls.
 
-**Entry:** Player joins from lobby → `room:player_joined` broadcast → all members see updated player list and avatars. Join order is shown.
+**Entry:** Player joins from lobby → `player_joined` broadcast → all members see updated player list and avatars. Join order is shown.
 
 **Host controls (only the host sees these):**
 
@@ -36,15 +36,15 @@ This flow covers the waiting room from entry through game start. Host and non-ho
 | Bid rule | Open bidding (default) / Uneven | Uneven: dealer’s bid cannot make sum equal trick count |
 | Start game | Button enabled when ≥ 3 players | Disabled below 3 players; grayed with count shown |
 
-**Host transfer:** If the host leaves before the game starts, the role passes automatically to the next player by join order. The new host is notified via `room:host_changed`; no page reload required.
+**Host transfer:** If the host leaves before the game starts, the role passes automatically to the next player by join order. The new host is notified via `host_changed`; no page reload required.
 
-**Room timeout:** If the game has not started within 10 minutes of the room opening, the server fires `room:closed` and all members are returned to the lobby.
+**Room timeout:** If the game has not started within 10 minutes of the room opening, the server fires `room_closed` and all members are returned to the lobby.
 
 **Game start sequence:**
 
 1. Host taps Start → server validates ≥ 3 players, room is OPEN
 2. Room transitions to IN PROGRESS; 10-minute timer cancelled
-3. Server emits `room:game_starting` to room, then `game:round_started` with trump card info, then `player:hand_dealt` to each player individually
+3. Server emits `game_starting` to room, then `round_started` with trump card info, then `hand_dealt` to each player individually
 4. All players are taken to the Game board; spectators remain in observer view
 5. Host role dissolves — no elevated control during the game
 
@@ -65,7 +65,7 @@ At the start of every round the server flips the top card of the remaining deck.
 | Wizard | Dealer declares | Dealer sees a suit-selection prompt; others see “Waiting for dealer” |
 | No card (60 ÷ players = 0) | None | Silent — no flip, no prompt |
 
-After any path resolves, `game:trump_set` is broadcast and the Bidding Phase begins.
+After any path resolves, `trump_revealed` is broadcast and the Bidding Phase begins.
 
 ## Flow 5 — Bidding Phase
 
@@ -84,11 +84,11 @@ For each of the N tricks in the round, the play loop runs until all players have
 **Trick play loop:**
 
 1. Lead player identified (left of dealer for trick 1; winner of previous trick thereafter)
-2. `player:your_turn` emitted to the active player; all others see “waiting”
+2. `play_request` emitted to the active player; all others see “waiting”
 3. Active player plays a card from their hand
    - **Guard:** Card must be in hand. If the player holds cards of the led suit, they must follow suit. Jester and Wizard may always be played.
    - Invalid play is rejected server-side; client shows an error and re-prompts
-4. `game:card_played` broadcast to room (hand size decrements for that player)
+4. `card_played` broadcast to room (hand size decrements for that player)
 5. If more players remain: advance to next player, return to step 2
 6. When all players have played: resolve the trick
 
@@ -101,9 +101,9 @@ For each of the N tricks in the round, the play loop runs until all players have
 | 3rd | Highest card of the led suit |
 | 4th | First Jester (all-Jester trick) |
 
-`game:trick_completed` broadcast with winner and winning card type. `tricksWon` increments for the winner. Scoreboard shows live over/under status (e.g. “Bid 3 — Won 1 — Need 2 more”).
+`trick_complete` broadcast with winner and winning card type. `tricksWon` increments for the winner. Scoreboard shows live over/under status (e.g. “Bid 3 — Won 1 — Need 2 more”).
 
-**After each trick:** If more tricks remain, winner leads the next trick (return to step 1). When all N tricks are played, `game:round_completed` is emitted and the Round Scoring flow begins (Flow 7).
+**After each trick:** If more tricks remain, winner leads the next trick (return to step 1). When all N tricks are played, `round_complete` is emitted and the Round Scoring flow begins (Flow 7).
 
 **Suit-follow display:** Playable cards are highlighted; unplayable cards are dimmed. Jester and Wizard are always selectable.
 
@@ -121,7 +121,7 @@ After all N tricks are played, the server computes scores and decides whether to
 
 Scores may go negative. Results written to `round_players`; `games.state` checkpoint written.
 
-**UI shown after `game:round_completed`:**
+**UI shown after `round_complete`:**
 
 - Full round summary: each player’s bid, tricks won, score delta, and cumulative score
 - Full scoreboard popup available (round-by-round breakdown for all past rounds)
@@ -138,7 +138,7 @@ The final round’s scores trigger the game end sequence.
 
 **Sequence after final scoring:**
 
-1. `game_results` written to DB; `games.status = complete`; `game:completed` broadcast
+1. `game_results` written to DB; `games.status = complete`; `game_over` broadcast
 2. Winner(s) announced — tied players are co-winners
 3. Full scoreboard displayed (round-by-round breakdown)
 4. 30-second countdown timer starts and is visible to all
@@ -157,11 +157,11 @@ Three events can remove a player from an active game: socket disconnect (with a 
 
 **Drop to ≥ 3 players:** Current round voided; re-dealt to remaining players for the same round number. Scores from prior rounds are kept.
 
-**Drop to exactly 2 players:** Both remaining players receive `game:continue_or_end`. They have 60 seconds to respond. If both choose continue, the round is re-dealt for 2 players. If either chooses end, or the timeout expires, the game ends as INCOMPLETE.
+**Drop to exactly 2 players:** Both remaining players receive `continue_or_end_request`. They have 60 seconds to respond. If both choose continue, the round is re-dealt for 2 players. If either chooses end, or the timeout expires, the game ends as INCOMPLETE.
 
 **Drop to ≤ 1 player:** Game ends as INCOMPLETE automatically.
 
-**Host leaves before game starts:** The host role transfers to the next player by join order. `room:host_changed` broadcast. If no players remain, the room closes.
+**Host leaves before game starts:** The host role transfers to the next player by join order. `host_changed` broadcast. If no players remain, the room closes.
 
 ## Flow 10 — Admin Panel
 

@@ -244,7 +244,7 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
 }
 ```
 
-`bid_rule`: `"open"` (no restriction) or `"uneven"` (total must differ from trick count by ≥1). `deck_type`: `"standard"` (60 cards) or `"extended"` (68 cards, future).
+`bid_rule`: `"open"` (no restriction) or `"uneven"` (total must differ from trick count by ≥1). `deck_type`: `"standard"` (60 cards). `"camelot"` (Wizard Camelot Edition, also 60 cards) is planned for a future version.
 
 ### games.state (GameState snapshot)
 
@@ -252,7 +252,7 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
 {
   "gameId": "uuid",
   "roomId": "uuid",
-  "config": { "roundCount": 10, "bidRule": "open", "deckType": "standard" },
+  "config": { "roundCount": 10, "bidRule": "open", "deckType": "standard", "deckSize": 60 },
   "currentRound": 4,
   "currentTrick": 2,
   "trumpSuit": "hearts",
@@ -279,11 +279,18 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
       "winningCardType": "suited"
     }
   ],
-  "scores": { "uuid": 85 }
+  "scores": { "uuid": 85 },
+  "droppedPlayers": [
+    { "userId": "uuid", "username": "sam", "displayName": "Sam", "avatarConfig": null, "isBot": false, "finalScore": 40 }
+  ],
+  "pendingContinue": null,
+  "winnerUserIds": []
 }
 ```
 
-The `hand` array is included in `GameState` for server-side use and reconnection restore. It is never broadcast to a room — only sent to the individual player's socket.
+`pendingContinue` is set only while two remaining players decide whether to continue: `{ "resumePhase": "round_end", "redeal": false }`, or `redeal: true` when a round was voided and must be re-dealt.
+
+The `hand` array is included in `GameState` for server-side use only. Clients never receive the raw snapshot: `game.toPlayerView(userId)` keeps only that player's hand (others become `hand: null` plus `handCount`), and `game.toSpectatorView()` keeps no hands. The snapshot is a record only: no game is rebuilt from it, and a server restart abandons in-progress games.
 
 ### game\_events payload examples
 

@@ -152,7 +152,7 @@ This cleanup runs before the application begins accepting traffic. It is idempot
 
 Clients whose sockets disconnected during the restart will attempt to reconnect using Socket.io's built-in retry. On reconnect, the server validates their session token. Since sessions are stored in Postgres (not in memory), they survive the restart and remain valid for their configured 24-hour expiry.
 
-However, because all in-progress games have been marked incomplete by the startup cleanup, reconnecting clients whose game was in progress will not be restored to a game. The server should emit a `game:abandoned` event (or equivalent) to any client that reconnects and whose last known room is now closed, directing them back to the lobby.
+However, because all in-progress games have been marked incomplete by the startup cleanup, reconnecting clients whose game was in progress will not be restored to a game. The server emits `game_abandoned` to any client that reconnects and whose last known room is now closed, directing them back to the lobby.
 
 ### Recovery Checklist — After an Unexpected Restart
 

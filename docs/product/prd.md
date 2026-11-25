@@ -24,7 +24,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 
 - Bot/AI players (interface stubbed for future implementation)
 - Public registration and discovery
-- Extended 68-card deck variant
+- Wizard Camelot Edition deck option (engine groundwork in place; rules not implemented)
 - Full analytics dashboard (metrics collected, display deferred)
 - Mobile native apps (mobile browser is first-class; native apps are not planned)
 
@@ -172,10 +172,11 @@ The lobby is the default landing page for authenticated users. It displays all a
 | Class | Responsibility |
 | --- | --- |
 | `Card` | Suit, rank, type (suited / Wizard / Jester); equality and comparison |
-| `Deck` | Card collection, shuffle, deal; configurable for standard (60) or extended (68) |
+| `Deck` | Card collection, shuffle, deal; built from a deck type (standard now; Camelot Edition in future) |
+| `Ruleset` | Per-edition rules: deck composition, trump from the flipped card, follow-suit legality, trick resolution |
 | `Round` | Tracks dealt hands, bids, tricks won, scores for one round |
-| `Trick` | Cards played in one trick; determines winner per priority rules |
-| `GameState` | Full serializable snapshot of game at any point; used for persistence and reconnection restore |
+| `Trick` | Cards played in one trick; determines winner using its edition's ruleset |
+| `GameState` | Full serializable snapshot of the game, server-side only (holds every hand). Checkpointed after each round as a record for history and bug reports. Games are not resumed from it: a server restart abandons in-progress games. Clients receive filtered views (`toPlayerView(userId)` / `toSpectatorView()`), never the raw snapshot |
 | `Game` | Orchestrates rounds and tricks; owns game configuration and lifecycle |
 | `User` | Base class: id, username, display name, avatar config, session |
 | `Player` | Extends User: hand, bid, tricks won, score; exposes `placeBid(n)` and `playCard(card)` |
@@ -187,7 +188,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 - Player list and seat order
 - Round count (chosen by host)
 - Bid total rule (open or uneven)
-- Deck type (standard; extended as future config)
+- Deck type (`standard`; `camelot` as a future option)
 
 **Game lifecycle:**
 
@@ -195,24 +196,25 @@ The lobby is the default landing page for authenticated users. It displays all a
 2. For each round N (1 to chosen round count): a. Deck shuffled, N cards dealt to each player b. Trump card flipped (or declared if Wizard flipped) c. Bidding phase — in seat order starting left of dealer d. Trick-taking phase — N tricks played e. Scores computed and applied
 3. Final round complete → game ends, results persisted
 
-**Trump determination:** Per rules reference — suited card sets trump, Jester means no trump, Wizard means dealer declares after viewing hand, last round with all cards dealt means no trump if \`deckSize\` is exactly divisible by player count (60 for standard deck, 68 for extended).
+**Trump determination:** Per rules reference — suited card sets trump, Jester means no trump, Wizard means dealer declares after viewing hand, last round with all cards dealt means no trump if \`deckSize\` is exactly divisible by player count (60 for both the standard and Camelot decks).
 
 **Trick resolution priority:** First Wizard played → highest trump → highest led suit → first Jester if all Jesters.
 
 **Player drop mid-game:**
 
-- Explicit quit: player is removed permanently; current round is voided and re-dealt to remaining players; game continues
-- Disconnect timeout (30s): if player does not reconnect, treated as quit
+- Intentional leave (`leave_game`): the player has quit and is removed permanently; current round is voided and re-dealt to remaining players; game continues
+- Disconnect: the player's seat is held for 30s so they can reconnect; if they do not, they are treated as having quit (`player_left`, `reason: "timeout"`)
 - Drop to 2 players: remaining players are prompted to continue or end the game
 - If the game ends due to player drop, the session is recorded as incomplete with no winner
 
 **Reconnection:**
 
-- On reconnect within 30s, GameState is restored and pushed to the reconnecting client
+- On reconnect within 30s, the player continues where they left off: their view of the live game (`toPlayerView(userId)`: their own hand only) is pushed via `state_snapshot` and missed events are replayed
 - Other players see a disconnection indicator during the 30s window
 - Server-side timer is authoritative; client reconnection attempts are validated against session
+- Server restart: in-progress games are abandoned; players receive `game_abandoned` and return to the lobby
 
-**Bot player stub:** `BotPlayer` class is defined with the same interface as `Player` (`placeBid`, `playCard`) but all methods throw `NotImplemented`. The game engine accepts `BotPlayer` instances without modification to core logic.
+**Bot player stub:** `BotPlayer` class is defined with the same interface as `Player` (`placeBid`, `playCard`), but both action methods throw `NotImplementedError`. All other inherited `Player` behaviour (receiving a hand, tracking tricks won and score) works normally. The game engine accepts `BotPlayer` instances without modification to core logic.
 
 ## Scoring and Scoreboard
 
@@ -282,20 +284,21 @@ The JSONB payload for each event type captures: player hand at time of action, a
 **Reconnection logic:**
 
 - Socket disconnect detected server-side → 30-second server timer starts
-- Other players in the room receive a `player:disconnected` event and see a visual indicator
-- If the player reconnects within 30s (session validated), current `GameState` snapshot is sent to restore their view
-- If the timer expires, the player is treated as having quit: `player:quit` event broadcast, game proceeds per player-drop rules
+- Other players in the room receive a `player_disconnected` event and see a visual indicator
+- If the player reconnects within 30s (session validated), their player view of the current game (`toPlayerView(userId)`, own hand only — never the raw `GameState`) is sent via `state_snapshot` to restore their view
+- If the timer expires, the player is treated as having quit: `player_left` (`reason: "timeout"`) broadcast, game proceeds per player-drop rules
+- A player who leaves intentionally (`leave_game`) has quit: `player_left` (`reason: "voluntary"`) broadcast, game proceeds per player-drop rules
 - Page refresh is treated as a disconnect + reconnect; the server timer is the authoritative source, not client state
 
 **Spectator event filtering:** Spectators receive all public game events (cards played, tricks won, bids, scores, trump) but do not receive any event containing hand data. Hand data is sent only in player-specific events addressed to the individual player.
 
 **Key event categories:**
 
-- Lobby: `lobby:rooms_updated`, `lobby:presence_updated`
-- Room: `room:player_joined`, `room:player_left`, `room:host_changed`, `room:chat_message`, `room:game_starting`
-- Game: `game:round_started`, `game:trump_set`, `game:bid_placed`, `game:card_played`, `game:trick_completed`, `game:round_completed`, `game:completed`
-- Player-specific: `player:hand_dealt`, `player:your_turn`
-- Connection: `player:disconnected`, `player:reconnected`, `player:quit`
+- Lobby: `lobby_snapshot`, `rooms_updated`, `presence_updated`
+- Room: `room_snapshot`, `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
+- Game: `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_over`, `game_abandoned`
+- Player-specific: `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`
+- Connection: `player_disconnected`, `player_reconnected`, `player_left`, `session_error`
 
 Full event schemas and payload definitions are documented in the WebSocket Event Taxonomy.
 
@@ -303,15 +306,11 @@ Full event schemas and payload definitions are documented in the WebSocket Event
 
 Avatars are composited client-side from layered SVG files. No image uploads are required; the avatar is defined by a stored configuration of selection IDs.
 
-**Configurable layers:**
+**Configurable parts:** head shape, skin tone, face, and hair, as defined in the Avatar System Specification.
 
-- Face shape (5–8 options)
-- Expression (5–8 options)
-- Hair style (5–8 options)
+All SVG layers share a consistent coordinate system and viewBox so that any combination renders correctly.
 
-All SVG layers share a consistent coordinate system and viewBox so that any combination renders correctly. Layers are stacked in z-order: face shape → expression → hair.
-
-**Storage:** Avatar configuration is stored on the user record as three integer or string IDs (one per layer). No image binary is stored.
+**Storage:** Avatar configuration is stored on the user record as an object with four string keys (`head`, `skin`, `face`, `hair`), plus the composited SVG cached in `avatar_svg`. No uploaded image is stored.
 
 **Configuration:** Users set their avatar at registration and may update it at any time from account settings.
 
@@ -434,7 +433,7 @@ All SVG layers share a consistent coordinate system and viewBox so that any comb
 - All secrets and configuration stored as environment variables
 - Local development uses a `.env` file (not committed to source control); a `.env.example` documents required keys
 - Application validates all required environment variables on startup and fails loudly if any are missing
-- Variable categories: database URL, session secret, JWT signing key (if applicable), Socket.io config, Prometheus bearer token, environment name (development / production)
+- Variable categories: database URL, session secret, Socket.io config, Prometheus bearer token, environment name (development / production)
 
 **Observability:** Grafana Cloud (free tier) scrapes the `/metrics` endpoint. Railway captures stdout logs.
 
@@ -460,7 +459,7 @@ All SVG layers share a consistent coordinate system and viewBox so that any comb
 **Planned future features:**
 
 - **Bot players:** `BotPlayer` class stub is in place. Bots will be trained on the `game_events` event log data collected from real play. Bot implementation requires the event log schema to be stable, which it is as of this version.
-- **Extended deck (68 cards):** Fifth suit of 15 cards plus 2 additional special cards. Deck and Card classes are designed to support this via configuration. Max rounds formula (`floor(deckSize / playerCount)`) already parameterised.
+- **Camelot Edition deck:** A 60-card deck with the 2s removed and four new special cards (Holy Grail, Excalibur, Merlin, Morgan le Fay). The engine already selects rules by deck type, so Camelot is added as a new ruleset without changing the standard rules. See Camelot Edition (Future) in the Game Rules Reference for the rules, open questions, and remaining work.
 - **Public launch:** Registration opens, invite system retired or made optional, discovery and public lobby enabled. Requires review of rate limiting, abuse prevention, and CORS policy.
 - **Full analytics dashboard:** Metrics are collected now. A player-facing dashboard visualising bid accuracy, score trends, win rates by player count, and perfect game history is deferred.
 - **Horizontal scaling:** If game count grows beyond single-instance capacity, Socket.io can be adapted to use Redis pub/sub as a message broker, allowing multiple Express instances to share game state. Database connection pooling (e.g. PgBouncer) would be added at the same time.

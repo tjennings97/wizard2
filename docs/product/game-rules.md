@@ -14,25 +14,13 @@ The standard Wizard deck contains 60 cards: a standard 52-card deck (2 through A
 
 **Suited cards:** The four standard suits — Hearts, Diamonds, Spades, and Clubs — each containing cards ranked 2 through Ace (13 cards per suit, 52 total). Ace is the highest ranked suited card. These follow normal suit and rank rules during trick-taking play.
 
-**Wizards:** 4 cards (one per suit color, though suit is irrelevant during play). A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
+**Wizards:** 4 cards with no suit or rank. A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
 
-**Jesters:** 4 cards (one per suit color, suit irrelevant). A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. A Jester played as the lead card means players may play any card they choose with no suit obligation.
-
-**Total:** 52 suited cards + 4 Wizards + 4 Jesters = 60 cards.
-
-This implementation is designed to support the 68-card extended edition as a future variant. The extended edition adds an additional suit of 15 cards plus 2 extra special cards. The game engine's Deck and Card classes are structured to accommodate this without modification to core game logic.
-
-The standard Wizard deck contains 60 cards divided into four suits and two special card types.
-
-**Suited cards:** Four suits — typically Blue, Red, Yellow, and Green — each containing cards numbered 1 through 13. These are the standard trick-taking cards and follow normal suit and rank rules during play.
-
-**Wizards:** 4 cards (one per suit color, though suit is irrelevant). A Wizard always wins the trick it is played in, regardless of trump or lead suit. If multiple Wizards are played in a single trick, the first Wizard played wins.
-
-**Jesters:** 4 cards (one per suit color, suit irrelevant). A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. A Jester played as the lead card means players may play any card they choose with no suit obligation.
+**Jesters:** 4 cards with no suit or rank. A Jester never wins a trick. If only Jesters are played in a trick, the first Jester played wins and the trick winner leads the next trick. If a Jester is led, the next card that is not a Jester decides the suit obligation (see Trick-Taking Phase).
 
 **Total:** 52 suited cards + 4 Wizards + 4 Jesters = 60 cards.
 
-This implementation is designed to support the 68-card extended edition as a future variant. The extended edition adds an additional suit of 15 cards plus 2 extra special cards. The game engine's Deck and Card classes are structured to accommodate this without modification to core game logic.
+**Other editions:** This implementation is designed to support the Wizard Camelot Edition as a future deck option. It is also a 60-card deck, with different cards. See Camelot Edition (Future) at the end of this document.
 
 ## Setup
 
@@ -98,11 +86,13 @@ After all players have bid, tricks are played one at a time until all cards in h
 
 **Leading a trick:** The player to the left of the dealer leads the first trick. The winner of each trick leads the next.
 
-**Following suit:** Players must follow the suit of the led card if they are able. If they cannot follow suit, they may play any card including trump or a special card.
+**Following suit:** Players must follow the suit of the led card if they are able. If they cannot follow suit, they may play any card including trump or a special card. A Wizard or Jester may be played at any time, even by a player who holds a card of the suit to follow.
 
-**Exception — Jester led:** If the lead card is a Jester, there is no suit obligation. Players may play any card.
+**Exception — Jester led:** If a Jester is led, the first card played that is not a Jester decides. If it is a suited card, it sets the suit that subsequent players must follow (if they can). If it is a Wizard, there is no suit obligation for the rest of the trick, as if the Wizard had been led.
 
 **Exception — Wizard led:** If the lead card is a Wizard, there is no suit obligation. Players may play any card.
+
+**Wizard played mid-trick:** Once a lead suit is established (by a suited lead, or by the first suited card after a Jester lead), a Wizard played later does not change the suit obligation. The remaining players must still follow the lead suit if they can.
 
 **Winning a trick:** The trick is won by the highest-ranked card according to this priority:
 
@@ -170,4 +160,69 @@ The game ends after the final chosen round is completed and all scores for that 
 
 **No trump in final round:** There is no trump suit only when every card in the deck has been dealt — that is, when the maximum number of rounds is played and 60 is exactly divisible by the player count. In all other cases at least one card remains to flip for trump in the final round. See Trump Suit for full details.
 
-**Extended deck (future):** The 68-card edition adds a fifth suit of 15 cards and 2 additional special cards. The maximum round count formula remains `floor(deckSize / playerCount)`. The game engine supports this variant through configuration without changes to core logic.
+**Camelot Edition (future):** A second 60-card deck with four new special cards. The maximum round count formula, `floor(deckSize / playerCount)`, is unchanged. See Camelot Edition (Future) below.
+
+
+## Camelot Edition (Future)
+
+The engine is built to support the **Wizard Camelot Edition** as a future deck option. It is not available in this version. The summary below is taken from the publisher's rules page: [Wizard Camelot Edition](https://wizardcards.com/Wizard/WizardCamelotEdition.html). Where that page is unclear, the gaps are listed under Open questions and must be settled before the edition is built.
+
+### Deck
+
+60 cards, the same total as the standard deck:
+
+- **48 suited cards:** the four standard suits ranked 3 through Ace (the four 2s are removed). Ace is high.
+- **4 Wizards** and **4 Jesters**, as in the standard deck.
+- **4 new special cards, one copy each:** Holy Grail, Excalibur, Merlin, Morgan le Fay.
+
+Because the deck is still 60 cards, the maximum round count (`floor(60 / playerCount)`) and the no-trump-in-the-final-round rule are unchanged.
+
+### New special cards
+
+| Card | Behaviour in a trick |
+| --- | --- |
+| **Morgan le Fay** | The most powerful card. Wins the trick unless the Holy Grail is played from an even position. |
+| **Excalibur** | Wins the trick unless Morgan le Fay is played, or the Holy Grail is played from an even position. |
+| **Holy Grail** | Depends on its position in the trick. Played 2nd, 4th or 6th, it wins over every other card, including Morgan le Fay. Played 1st, 3rd or 5th, it is a null card and always loses. |
+| **Merlin** | Played as either a Wizard or a Jester. The player declares which when playing it, and the rules for that card then apply. |
+
+**Wizards** still beat trump and all suited cards, and the first Wizard played wins among Wizards (Merlin played as a Wizard counts). A Wizard loses to Morgan le Fay, to Excalibur, and to the Holy Grail played from an even position.
+
+**Jesters** still lose unless only Jesters are played (Merlin played as a Jester counts); the first Jester then wins.
+
+### Trump
+
+- A suited card turned up sets trump, as in the standard game.
+- A Jester turned up means no trump.
+- **Any other special card turned up** (a Wizard, Holy Grail, Excalibur, Merlin or Morgan le Fay) lets the dealer choose one of the four suits as trump. The dealer may not choose no trump.
+- If every card is dealt in the final round, there is no trump.
+
+### Following suit and leading
+
+- Players must follow the suit led if possible, or play a special card. A player who cannot follow suit may play any card.
+- **Jester led:** the Jester is a null card, and the next card played sets the suit that later players must follow. This matches this implementation's standard rule (see Trick-Taking Phase).
+- **Holy Grail led:** it is in an odd position, so it is null and always loses; the next card played counts as the lead card.
+- **Wizard, Excalibur or Morgan le Fay led:** the remaining players may play any card.
+
+### Bidding and scoring
+
+Unchanged from the standard game: bidding runs clockwise from the player left of the dealer, and scoring is +20 plus 10 per trick for an exact bid, and −10 per trick over or under.
+
+### Open questions
+
+1. **Null tricks:** the page says null tricks "do not count towards the tricks won" but does not say which plays produce a null trick. This affects scoring, since the engine currently requires every trick in a round to be won by someone.
+2. **Hand One:** the page begins a sentence saying no player wins or loses points in a situation involving Hand One, but the sentence is incomplete, and its own Hand One example scores normally.
+3. **Suit obligation after a Wizard, Excalibur or Morgan le Fay lead:** "remaining players may play any card" suggests there is none, but the page does not say whether a later suited card sets a suit to follow.
+4. **"Winner of the trick is always player 1 (Odd)":** the page states this without explanation. It presumably means the trick winner leads the next trick from position 1, which matters for where the Holy Grail can be played.
+5. **Uneven bidding:** the page does not mention a bid total rule. Decide whether this implementation's uneven option applies to Camelot games.
+6. **Ranking among special cards** beyond the exceptions above is not stated, for example two cards that each "always win" except in listed cases.
+
+### What building it requires
+
+The engine selects an edition by deck type (`standard` today; `camelot` once built). Each edition is a ruleset that defines the deck, trump from the flipped card, follow-suit legality, and trick resolution, so the standard rules are not modified. Adding Camelot needs:
+
+- New card types for Holy Grail, Excalibur, Merlin and Morgan le Fay.
+- A Camelot ruleset implementing the rules above.
+- A way for the player to declare Merlin as a Wizard or a Jester when playing it, added to the play-card action and recorded with the play.
+- New winning card types for the event log.
+- A decision on null tricks, which may change how rounds are scored.

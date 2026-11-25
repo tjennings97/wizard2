@@ -41,7 +41,7 @@ All game logic is isolated in the game engine. The socket layer calls engine met
 
 All production services run within Railway's private network. The Express app serves the React build and handles both REST and WebSocket traffic on a single port behind TLS with a custom domain. Postgres is reachable only from within the Railway project — its port is not exposed to the public internet. Grafana Cloud scrapes the `/metrics` endpoint from outside Railway over HTTPS using a bearer token. GitHub triggers automatic deploys on push to main.
 
-**Environment tiers:** `development` (local, `.env` file), `production` (Railway, env vars set in dashboard). No staging tier initially; Railway's deploy history and rollback UI serve that purpose.
+**Environment tiers:** `development` (local, `.env` file), `production` (Railway, env vars set in dashboard). There is no staging tier: Railway's deploy history and rollback UI cover recovery from a bad deploy, and pre-release E2E and performance tests run in CI.
 
 **TLS:** Railway provisions Let's Encrypt certificates automatically on custom domain attachment. All browser traffic is HTTPS; WebSocket connections upgrade to WSS.
 
@@ -97,7 +97,7 @@ src/
 
 **Mobile-first layout:** CSS uses `min-width` media queries (mobile base, desktop enhancement). Touch targets are at least 44×44px. No hover-only interactions. Game board layout is a vertical single-column on mobile (current player hand at bottom, trick area in middle, opponent indicators at top), and a table-surround layout on desktop.
 
-**Avatar rendering:** Three SVG files (face, expression, hair) loaded by asset path and composited via CSS `position: absolute` stacking inside a fixed-size container. Avatar config (three IDs) is resolved to file paths client-side. No image processing on the server.
+**Avatar rendering:** Four SVG layers (`head`, `skin`, `face`, `hair`, per the Avatar System Specification) loaded by asset path and composited via CSS `position: absolute` stacking inside a fixed-size container. Avatar config (four keys) is resolved to file paths client-side, and the composited SVG is cached in `users.avatar_svg`. No image processing on the server.
 
 **Performance:** Code-split by route. Avatar SVGs are lightweight and inline-rendered. Socket events update only the relevant slice of `GameContext`, minimising re-renders.
 
@@ -107,21 +107,23 @@ src/
 
 The game engine is a pure TypeScript layer with no I/O dependencies. All classes live under `src/engine/` on the server and are importable by the socket layer and tests without any HTTP or database involvement.
 
-**Card:** Immutable value object. Properties: `suit` (Hearts/Diamonds/Spades/Clubs/null for special), `rank` (2–14 for Ace, null for special), `type` (suited/wizard/jester). Equality by suit+rank+type. The `type` field allows the engine to handle extended deck variants by adding new types without changing trick resolution logic.
+**Card:** Immutable value object. Properties: `suit` (Hearts/Diamonds/Spades/Clubs/null for special), `rank` (2–14 for Ace, null for special), `type` (suited/wizard/jester). Equality by suit+rank+type. Future editions add new values to `type`; how each type behaves in a trick is defined by the edition's `Ruleset`, not by `Card`.
 
-**Deck:** Holds a `Card[]` and a `deckSize` config (60 standard, 68 extended). Methods: `shuffle()`, `deal(n)` returns n cards and removes them, `flip()` returns the next card for trump. Deck is stateful per round and reconstructed fresh each round.
+**Deck:** Holds a `Card[]`, built from a deck type (`standard`; `camelot` in future) whose ruleset supplies the cards and `deckSize` (60 for both). Methods: `shuffle()`, `deal(n)` returns n cards and removes them, `flip()` returns the next card for trump. Deck is stateful per round and reconstructed fresh each round.
 
 **Round:** Tracks: dealt hands per player, bids per player, tricks won per player, score deltas. Owns a `Trick[]` for the round. Exposes `recordBid(playerId, n)`, `recordTrickWon(playerId)`, `computeScores()`. Immutable after `computeScores()` is called.
 
-**Trick:** Tracks cards played in order with their player IDs. Method `resolve(trump)` returns the winning player ID using the priority rule: first Wizard → highest trump → highest led suit → first Jester. Records winning card type for event log.
+**Trick:** Tracks cards played in order with their player IDs. Method `resolve(trump)` returns the winning player ID using its edition's ruleset. Standard priority: first Wizard → highest trump → highest led suit → first Jester. Records winning card type for event log.
 
-**GameState:** A plain serializable object (no methods) produced by `game.toGameState()`. Contains: game config, current round number, current trick number, all hands (per player, private), all bids, all tricks-won counts, trump suit, whose turn, scores to date, room ID. Used for: reconnection restore, Postgres checkpoint, bug report snapshot.
+**GameState:** A plain serializable object (no methods) produced by `game.toGameState()`. Contains: game config, current round number, current trick number, all hands (per player, private), all bids, all tricks-won counts, trump suit, whose turn, scores to date, room ID, dropped players (with names and final scores), and any pending continue-or-end decision. Used for: Postgres checkpoint (a record for history), bug report snapshot. It is not used to resume games after a server restart; those games are abandoned. Never sent to clients as-is: `game.toPlayerView(userId)` and `game.toSpectatorView()` produce filtered copies.
 
-**Game:** The orchestrator. Owns the `Deck`, current `Round`, and player list. Methods: `startRound()`, `recordBid()`, `playCard()`, `advanceTrick()`, `endRound()`, `endGame()`. Emits no events — the socket layer calls these methods and then broadcasts results. `toGameState()` serializes current state.
+**Game:** The orchestrator. Owns the `Deck`, current `Round`, and player list. Methods: `startRound()`, `declareTrump()`, `placeBid()`, `playCard()`, `endGame()`, `removePlayer()`, `resolveContinueOrEnd()`. Tricks advance and rounds are scored inside `playCard()`. Each method returns a result describing what happened; Game emits no events, and the socket layer broadcasts the results. `toGameState()` serializes full state; `toPlayerView(userId)` and `toSpectatorView()` produce client-safe copies.
 
 **User / Player / Spectator / BotPlayer:** `User` is the base class (id, username, displayName, avatarConfig, sessionId). `Player` adds hand, bid, tricksWon, and action methods `placeBid(n)` and `playCard(card)`. `Spectator` extends `User` with no action methods — read-only. `BotPlayer` extends `Player` with `placeBid` and `playCard` throwing `NotImplementedError`, preserving the interface for future AI integration.
 
-**Extensibility for 68-card deck:** `Deck` takes `deckSize` as a constructor argument. `Card` type enum is extensible. Max-round formula is `Math.floor(deckSize / playerCount)`. No other engine class hardcodes 60.
+**Ruleset:** One per deck edition, selected by the game's `deckType`. Defines the deck's cards and size, trump from the flipped card, follow-suit legality, and trick resolution. `Trick`, `Round` and `Game` delegate to it rather than hard-coding card behaviour.
+
+**Extensibility for other editions:** The Wizard Camelot Edition is the planned second edition. Adding it means a new `Ruleset` plus its new card types, not changes to the standard rules or the core classes. Max-round formula is `Math.floor(deckSize / playerCount)`, with `deckSize` taken from the ruleset. See the Game Rules Reference for Camelot's rules and open questions.
 
 ## Real-Time Communication Architecture
 
@@ -132,19 +134,21 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 **Reconnection sequence:**
 
 1. Socket disconnect detected → server starts a 30-second `setTimeout` keyed by `userId`
-2. `player:disconnected` broadcast to the room; other players see a visual indicator
+2. `player_disconnected` broadcast to the room; other players see a visual indicator
 3. Client attempts to reconnect (Socket.io built-in retry with the same session token)
-4. On reconnect: session validated, `setTimeout` cleared, current `GameState` snapshot sent to the reconnecting socket via `player:state_restored`
-5. `player:reconnected` broadcast to the room; indicator cleared
-6. If timer expires before reconnect: player treated as quit, `player:quit` broadcast, game drop logic applied
+4. On reconnect: session validated, `setTimeout` cleared, `game.toPlayerView(userId)` (own hand only) sent to the reconnecting socket via `state_snapshot`
+5. `player_reconnected` broadcast to the room; indicator cleared
+6. If timer expires before reconnect: player treated as quit, `player_left` (`reason: "timeout"`) broadcast, game drop logic applied
 
-**Event flow — lobby:** Client connects → joins `lobby` room → receives `lobby:state` (current rooms, presence). On room changes or player joins/leaves lobby: `lobby:rooms_updated` and `lobby:presence_updated` broadcast to all lobby members.
+A player who leaves intentionally (`leave_game`) has quit immediately: `player_left` (`reason: "voluntary"`) is broadcast and there is no reconnection window.
 
-**Event flow — room:** Player opens/joins room → joins `room:<id>` → receives `room:state`. Events: `room:player_joined`, `room:player_left`, `room:host_changed`, `room:chat_message`, `room:config_updated` (rounds, bid rule), `room:game_starting`.
+**Event flow — lobby:** Client connects → joins `lobby` room → receives `lobby_snapshot` (current rooms, presence). On room changes or player joins/leaves lobby: `rooms_updated` and `presence_updated` broadcast to all lobby members.
 
-**Event flow — game:** `game:round_started` (includes trump, hands sent individually), `game:bid_phase`, `game:bid_placed`, `game:trick_phase`, `game:card_played`, `game:trick_completed`, `game:round_completed`, `game:completed`. Player-specific events: `player:hand_dealt`, `player:your_turn`, `player:state_restored`.
+**Event flow — room:** Player opens/joins room → joins `room:<id>` → receives `room_snapshot`. Events: `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated` (rounds, bid rule), `game_starting`.
 
-**Spectator filtering:** Game events sent to the room omit hand data. After each deal, `player:hand_dealt` is emitted individually to each player socket using `socket.to(socketId).emit(...)`. Spectators never receive a hand payload.
+**Event flow — game:** `game_started`, then per round: `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`; finally `game_over` (or `game_abandoned` after a server restart). Player-specific events: `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`. Event names and payloads are defined in the WebSocket Event Taxonomy.
+
+**Spectator filtering:** Game events sent to the room omit hand data. After each deal, `hand_dealt` is emitted individually to each player socket using `socket.to(socketId).emit(...)`. Spectators never receive a hand payload.
 
 ## Persistence Architecture
 
@@ -166,7 +170,7 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 | `game_events` | id, game\_id, round\_number, trick\_number, event\_type, actor\_user\_id, payload (JSONB), created\_at | Append-only event log |
 | `bug_reports` | id, user\_id, room\_id, game\_id, trace\_id, description, severity, context (JSONB), created\_at |  |
 
-**GameState checkpointing:** After each round ends, `game.toGameState()` is serialized and written to `games.state`. This is the recovery point. If the server restarts mid-game, the last committed round's state is the restore point. Mid-trick state is not checkpointed (a restart mid-trick voids the current trick only).
+**GameState checkpointing:** After each round ends, `game.toGameState()` is serialized and written to `games.state` as a record for history and bug reports. Games are not resumed from it. If the server restarts mid-game, startup cleanup marks every `in_progress` game `incomplete` (`drop_reason = 'server_restart'`) and reconnecting clients receive `game_abandoned` (see the Backup & Recovery Runbook).
 
 **Event log pattern:** `game_events` is append-only. No updates or deletes. JSONB payloads store full context per event type (hand snapshots, bid context, play context). This table is the source for bot training data and audit.
 
@@ -183,13 +187,13 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 5. The application code stores nothing on the client — the browser manages the cookie automatically, sending it with every request. The HTTP-only flag prevents JavaScript from reading the token, so XSS attacks cannot exfiltrate it
 6. On logout (`POST /api/v1/auth/logout`), the session record is invalidated
 
-**Single-session enforcement:** The `sessions` table has at most one non-invalidated row per user at any time. On new login, the server sets `invalidated_at` on any existing active session before creating the new one. If a displaced session's socket is still connected, it receives a `session:invalidated` event and is disconnected.
+**Single-session enforcement:** The `sessions` table has at most one non-invalidated row per user at any time. On new login, the server sets `invalidated_at` on any existing active session before creating the new one. If a displaced session's socket is still connected, it receives `session_error` (`code: "SESSION_INVALIDATED"`, `fatal: true`) and is disconnected.
 
 **Session validation middleware:** All authenticated API routes run an Express middleware that reads the session cookie, hashes the token, looks up the session in Postgres, checks expiry and invalidation, and attaches the user object to `req.user`. Rejected requests receive 401.
 
 **Session-socket binding:** On Socket.io connection, the client sends the session token in the handshake `auth` object. The server runs the same validation logic and binds `socket.data.userId`. If validation fails, the connection is rejected. All socket event handlers trust `socket.data.userId` — no per-event re-validation.
 
-**Reconnection window:** When a socket disconnects, the session remains valid in Postgres. The 30-second reconnection timer is server-side state (in-memory `setTimeout`). If the server restarts during the 30-second window, the timer is lost and the player is treated as timed out on next game action. This is an acceptable edge case at current scale.
+**Reconnection window:** When a socket disconnects, the session remains valid in Postgres. The 30-second reconnection timer is server-side state (in-memory `setTimeout`). If the server restarts during the window, the timer is lost along with the game itself: the game is abandoned (see GameState checkpointing).
 
 **Password and passphrase hashing:** Both are hashed with bcrypt (work factor 12) before storage. The server never stores or logs plaintext credentials. Recovery passphrase reset follows the same flow as password reset — valid passphrase match required before allowing credential change.
 
@@ -275,4 +279,4 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 | Metrics | prom-client + Grafana Cloud | Standard Prometheus model. Free tier covers current scale. No self-hosted observability infra needed. |
 | Reconnection authority | Server-side timer | Server is the authoritative source. Client reconnects do not self-certify. Timer survives client-side page refreshes. |
 | Bot player interface | Stub in `BotPlayer` class | Preserves the `Player` interface contract so the game engine accepts bots without modification. Training data (event log) collected from day one. |
-| Deck extensibility | `deckSize` config, not hardcoded 60 | Extended 68-card deck supported by changing one constructor argument. No engine logic changes required. |
+| Deck extensibility | `Ruleset` per edition, selected by `deckType` | Card behaviour that differs between editions lives in one place. The Camelot Edition is added as a new ruleset and card types without touching the standard rules. |

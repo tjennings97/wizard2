@@ -6,7 +6,9 @@ Oct 17, 2026 · @TJ
 
 This taxonomy defines every WebSocket message exchanged between client and server in the Wizard card game. It is the authoritative contract between the frontend and the game server; the OpenAPI spec governs REST endpoints for session setup, while this document covers all real-time events once a WebSocket connection is established.
 
-**Scope.** All events emitted or consumed during a game session: lobby management, bidding, card play, scoring, reconnection, and error handling. Out of scope: HTTP authentication, lobby listing (REST), and static asset delivery.
+**Scope.** All events emitted or consumed over the WebSocket: lobby presence and room updates, room chat, bidding, card play, scoring, disconnection and reconnection, and error handling. Out of scope: HTTP authentication, REST actions such as creating a room or changing its config (their results are pushed as events below), and static asset delivery.
+
+**Source of truth for event names.** Every other document uses the event names defined here.
 
 **Relationship to the Game State Machine.** Each server-emitted event corresponds to one or more state transitions defined in the Game State Machine doc. The `event` field on every server message maps directly to a GSM transition label. Clients must apply events in order; out-of-order delivery triggers a `sync_request`.
 
@@ -54,6 +56,12 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 | `join_game` | Player opens game URL | `session_token: string`, `player_id: string`, `display_name: string`, `last_seq_seen?: number` |
 | `leave_game` | Player clicks Leave | `player_id: string` |
 
+### Room
+
+| Event | Trigger | Key Payload Fields |
+| --- | --- | --- |
+| `send_chat_message` | Player or spectator sends a chat message | `room_id: string`, `text: string` |
+
 ### Trump Selection Phase
 
 | Event | Trigger | Key Payload Fields |
@@ -72,6 +80,12 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 | --- | --- | --- |
 | `play_card` | Player plays a card | `player_id: string`, `card: { suit: string, rank: string }`, `idempotency_key?: string` |
 
+### Player Drop
+
+| Event | Trigger | Key Payload Fields |
+| --- | --- | --- |
+| `choose_continue_or_end` | One of the two remaining players answers `continue_or_end_request` | `player_id: string`, `choice: "continue"\|"end"` |
+
 ### Sync & Control
 
 | Event | Trigger | Key Payload Fields |
@@ -83,6 +97,19 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 The server broadcasts most events to all players in the session. Unicast events (marked **U**) are sent only to the addressed player.
 
+### Lobby & Room
+
+| Event | Broadcast | Key Payload Fields |
+| --- | --- | --- |
+| `lobby_snapshot` | **U** | `rooms: RoomSummary[]`, `online_users: UserSummary[]` — sent on entering the lobby |
+| `rooms_updated` | Lobby | `rooms: RoomSummary[]` |
+| `presence_updated` | Lobby | `online_users: UserSummary[]` |
+| `room_snapshot` | **U** | `room_id`, `config: RoomConfig`, `members: MemberSummary[]`, `host_id` — sent on entering a room |
+| `host_changed` | Room | `room_id`, `host_id` |
+| `room_config_updated` | Room | `room_id`, `config: RoomConfig` — after the host changes config via REST |
+| `chat_message` | Room | `room_id`, `sender_id`, `display_name`, `text`, `sent_at: ISO-8601` |
+| `room_closed` | Room | `room_id`, `reason: "inactivity"\|"game_finished"` — members return to the lobby |
+
 ### Lobby & Game Flow
 
 | Event | Broadcast | Key Payload Fields |
@@ -91,8 +118,11 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `player_left` | All | `player_id`, `reason: "voluntary"\|"timeout"` |
 | `game_starting` | All | `countdown_seconds: integer`, `player_order: string[]` |
 | `game_started` | All | `round_count: integer`, `players: PlayerSummary[]` |
-| `game_over` | All | `final_scores: ScoreEntry[]`, `winner_id: string` |
+| `game_over` | All | `final_scores: ScoreEntry[]`, `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners |
 | `game_abandoned` | All | `reason: "server_restart"`, `game_id: string` |
+| `player_disconnected` | All | `player_id`, `reconnect_deadline: ISO-8601` — socket dropped; the player's seat is held until the deadline |
+| `player_reconnected` | All | `player_id` — the player rejoined within the window; clears the disconnect indicator |
+| `continue_or_end_request` | All | `remaining_player_ids: string[]` — a drop left exactly two players; each answers with `choose_continue_or_end` within 60 s (no answer counts as end) |
 
 ### Round & Deal
 
@@ -124,11 +154,11 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `state_snapshot` | **U** | `game_state: FullGameState`, `seq: integer` (replay from `last_seq_seen`) |
+| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState` |
 | `pong` | **U** | `server_time: ISO-8601` |
 | `invalid_play_error` | **U** | `player_id`, `reason: string`, `legal_cards: Card[]` |
 | `invalid_bid_error` | **U** | `player_id`, `reason: string`, `min_bid: integer`, `max_bid: integer` |
-| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` |
+| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` — `code: "SESSION_INVALIDATED"` (fatal) is sent to a socket displaced by a newer login |
 
 ## Event Sequencing & State Transitions
 
@@ -155,7 +185,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 1. **Invalid action:** Server emits `invalid_play_error` or `invalid_bid_error` (unicast). State does not change; the client re-enables the relevant UI.
 2. **Fatal session error:** Server emits `session_error` with `fatal: true`. The client disconnects and shows a re-join prompt.
-3. **Reconnect:** Client sends `join_game` with `last_seq_seen`. Server emits `state_snapshot` then replays any events with `seq > last_seq_seen`.
+3. **Reconnect:** Client sends `join_game` with `last_seq_seen` within the 30-second window. Server validates the session, emits `state_snapshot` (the player's own view, so they resume exactly where they left off), replays any events with `seq > last_seq_seen`, and broadcasts `player_reconnected`.
 
 ## Room & Session Management Events
 
@@ -166,9 +196,10 @@ The table below maps each GSM state to the events that drive entry, the client e
 | Connect | Client | *(WebSocket upgrade, no event)* | Bearer token in `Authorization` header per OpenAPI spec |
 | Join | Client → Server | `join_game` | Carries `session_token`; server validates, assigns seat |
 | Seat confirmed | Server → Client | `player_joined` (broadcast) | All players receive newcomer's info |
-| Disconnect (clean) | Client → Server | `leave_game` | Server broadcasts `player_left` with `reason: "voluntary"` |
-| Disconnect (timeout) | Server → All | `player_left` | After 30 s no `ping`; `reason: "timeout"` |
-| Reconnect | Client → Server | `join_game` with `last_seq_seen` | Server replays missed events via `state_snapshot` |
+| Leave (intentional) | Client → Server | `leave_game` | The player has quit. Server broadcasts `player_left` with `reason: "voluntary"`; in a game, player-drop rules apply |
+| Disconnect detected | Server → All | `player_disconnected` | Socket closed or no `ping` for 30 s. Seat held; 30-second reconnection window starts |
+| Reconnect (within window) | Client → Server | `join_game` with `last_seq_seen` | Server sends `state_snapshot`, replays missed events, broadcasts `player_reconnected` |
+| Window expires | Server → All | `player_left` | `reason: "timeout"`; treated as a quit, player-drop rules apply |
 
 ### Spectator Mode
 
@@ -184,7 +215,8 @@ Spectator presence is not broadcast to players; `player_joined` is only emitted 
 
 | Condition | Timeout | Server Action |
 | --- | --- | --- |
-| No `ping` from client | 30 s | `player_left` (timeout) |
-| No `place_bid` after `bid_request` | 60 s | Auto-bid 0; `bid_placed` broadcast |
-| No `play_card` after `play_request` | 60 s | Auto-play lowest legal card; `card_played` broadcast |
+| No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 30-second reconnection window |
+| Disconnected player does not rejoin | 30 s after `player_disconnected` | `player_left` (timeout) |
 | Host disconnects in LOBBY | 120 s | Session terminated; `session_error` (fatal) to all |
+
+There are no turn timers: the game waits for a player to bid, play, or declare trump. A player who is disconnected is handled by the reconnection window above.

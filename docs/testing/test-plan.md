@@ -28,15 +28,14 @@ This plan covers all automated testing for the Wizard web application across fro
 
 ## Test Environments
 
-Three environments are defined in the PRD. Each environment has a distinct test load.
+Two environments are defined. There is no staging environment; pre-release tests run in CI. Each environment has a distinct test load.
 
 | Environment | Purpose | Tests executed |
 | --- | --- | --- |
-| **Dev** | Day-to-day development | Unit, integration, API, WebSocket, E2E (full suite) |
-| **Staging** | Pre-release validation | Integration, API, WebSocket, E2E (full suite), performance |
+| **Dev (local and CI)** | Day-to-day development and pull request checks | Unit, integration, API, WebSocket, E2E (full suite); performance on a CI schedule |
 | **Prod** | Live environment | Smoke tests only (read-only or non-destructive) |
 
-**Promotion gates.** A build may not be promoted from dev → staging until all unit, integration, API, and WebSocket tests pass. It may not be promoted from staging → prod until the full E2E suite and all performance tests pass their NFR thresholds.
+**Merge gate.** A pull request may not merge to `main` (which deploys to prod) until all unit, integration, API, WebSocket, and E2E tests pass in CI. Performance tests run on a schedule; a threshold breach must be resolved or explicitly overridden before the next release.
 
 **Prod smoke tests** are a curated read-only subset defined in §7. They run automatically after every production deployment and may be triggered manually at any time. They create no persistent data and do not mutate game or user state.
 
@@ -45,14 +44,14 @@ Three environments are defined in the PRD. Each environment has a distinct test 
 | Layer | Tool | Used for |
 | --- | --- | --- |
 | Unit | Jest | Game engine logic (Game, Round, Trick, Player classes); scoring; trump determination; state machine transitions |
-| API | pytest + httpx | REST endpoint correctness, auth flows, error catalogue responses |
+| API | pytest + requests | REST endpoint correctness, auth flows, error catalogue responses |
 | WebSocket | socket.io-client (Node.js) | Event delivery, envelope schema, seq ordering, reconnection handshake |
 | E2E / Frontend | Playwright | Full user journeys in a real browser; avatar rendering; bug report submission |
 | Performance | k6 | REST load (p95 latency) and WebSocket fan-out (event delivery latency under concurrent load) |
 
 **Test data.** Each test run provisions its own isolated data (users, rooms, games) via the API before each suite and tears it down after. No shared fixture state between suites.
 
-**CI integration.** All suites (except performance) are expected to run in CI on every pull request targeting the dev branch. Performance tests run on a scheduled pipeline against staging.
+**CI integration.** All suites (except performance) run in CI on every pull request targeting `main`, against the app and a throwaway Postgres started in the CI job. Performance tests run on a scheduled CI pipeline against the same setup.
 
 ## Feature × Test-Type Matrix
 
@@ -60,19 +59,19 @@ Each cell names the tool and a brief description of what is verified. A dash mea
 
 | Feature | Unit (Jest) | API (pytest) | WebSocket (socket.io-client) | E2E (Playwright) | Performance (k6) |
 | --- | --- | --- | --- | --- | --- |
-| **Authentication** | Password hashing; JWT signing and expiry; invite code validation logic | POST /auth/register, POST /auth/login, POST /auth/logout, POST /auth/refresh; 400/401/403/409/410 error codes | — | Register → login → logout full browser flow; session persistence across refresh | POST /auth/login at concurrent load; p95 < 500 ms |
+| **Authentication** | Password hashing; session token generation, hashing, and expiry; invite code validation logic | POST /auth/register, POST /auth/login, POST /auth/logout, POST /auth/refresh; 400/401/403/409/410 error codes | — | Register → login → logout full browser flow; session persistence across refresh | POST /auth/login at concurrent load; p95 < 500 ms |
 | **Invite system** | Invite code generation; expiry (7-day); single-use enforcement | POST /admin/invites, GET /admin/invites, DELETE /admin/invites/{id}; 403 for non-admin | — | Admin creates invite; user redeems via UC-26 registration flow | — |
 | **User profile & avatar** | Avatar config serialisation; SVG layer ordering | GET /users/me, PATCH /users/me; avatar field round-trip | — | User sets avatar parts; avatar renders correctly in lobby and in-game | — |
 | **Lobby** | Room filtering logic | GET /lobby/rooms; filter by state; pagination | `room_created`, `room_updated`, `room_removed` broadcast timing and payload schema | Browse lobby; see room appear when another player creates one | GET /lobby/rooms at concurrent load; p95 < 500 ms |
-| **Room management** | — | POST /rooms, GET /rooms/{id}, DELETE /rooms/{id}; host-only guards | `room:config_updated`, `room:host_changed`, `player_joined`, `player_left` | Create room → configure → invite players → start game | — |
+| **Room management** | — | POST /rooms, GET /rooms/{id}, DELETE /rooms/{id}; host-only guards | `room_config_updated`, `host_changed`, `player_joined`, `player_left` | Create room → configure → invite players → start game | — |
 | **Game engine — dealing** | Card distribution (correct count per round); deck composition | — | `round_started` payload: hand contents, trump card, trump suit | — | — |
 | **Game engine — trump selection** | Trump determination logic for all four Wizard-flip cases from state machine | POST /games/{id}/trump | `trump_selected` event | — | — |
 | **Game engine — bidding** | Bid validation; bid-total rule (host-configurable); per-player ordering | POST /games/{id}/bids; 400 on invalid bid; 409 on out-of-turn | `bid_placed`, `bidding_complete` ordering and seq values | Full bidding round in browser | `bid_placed` fan-out to all players; delivery < 100 ms at target concurrent rooms |
 | **Game engine — trick play** | Lead-suit enforcement; Wizard/Jester rules; winning card determination; all-Jester edge case | POST /games/{id}/tricks/current/play; 400 on illegal card | `card_played`, `trick_complete`, `trick_won` ordering | Play a full round end-to-end in browser | `card_played` fan-out; delivery < 100 ms |
 | **Scoring** | Per-round score calc (exact bid +20 +2/trick; miss −10/trick off); running totals; end-game ranking | GET /games/{id}/scores | `scores_updated`, `game_ended` payloads | Score table displays correctly after each round | — |
 | **Session — spectator** | — | — | `join_game` with `role: spectator`; spectator receives all server→client events; cannot emit player actions | Join as spectator; observe game in progress | — |
-| **Session — disconnect / reconnect** | Reconnection timer logic; GameState restore from `games.state` snapshot | — | Drop connection; `player_disconnected` broadcast; reconnect within window; `player:state` emit; `player:reconnected` broadcast | Simulate network drop in Playwright; verify game resumes | — |
-| **Session — leave & host transfer** | Host-promotion logic (`join_order ASC` where `left_at IS NULL`) | POST /rooms/{id}/leave | `player_left`, `room:host_changed` | Host leaves; next player promoted; game continues | — |
+| **Session — disconnect / reconnect** | Reconnection timer logic; `state_snapshot` built from the live game's `toPlayerView(userId)` | — | Drop connection; `player_disconnected` broadcast; reconnect within window; `state_snapshot` emit; `player_reconnected` broadcast | Simulate network drop in Playwright; verify the player continues where they left off | — |
+| **Session — leave & host transfer** | Host-promotion logic (`join_order ASC` where `left_at IS NULL`) | POST /rooms/{id}/leave | `player_left`, `host_changed` | Host leaves; next player promoted; game continues | — |
 | **Admin — player removal** | — | POST /admin/rooms/{id}/kick | `player_left` broadcast after kick | Admin removes player from active room | — |
 | **Bug reporting** | — | POST /bug-reports; 201 response; captured context fields present | — | Submit bug report via in-game UI; confirmation message displayed | — |
 | **WebSocket delivery** | — | — | Envelope schema (`event`, `payload`, `seq`, `ts`); seq monotonicity; `sync_request` on seq gap; error event naming (`_error` suffix) | — | Sustained WebSocket connections at target scale; no missed events |
@@ -113,7 +112,7 @@ Rows map to the Use Case Document (UC-01 through UC-26). UC-24 (AI Player) is ex
 
 ## Performance Test Criteria
 
-All thresholds are taken directly from the PRD Non-Functional Requirements. Tests run in **staging** using k6. A release is blocked if any threshold is breached.
+All thresholds are taken directly from the PRD Non-Functional Requirements. Tests run in **CI** on a schedule, using k6 against the app and a throwaway Postgres started in the CI job. A release is blocked if any threshold is breached.
 
 | Scenario | Tool | Load profile | Pass threshold |
 | --- | --- | --- | --- |
@@ -126,7 +125,7 @@ All thresholds are taken directly from the PRD Non-Functional Requirements. Test
 
 **Scale targets.** The PRD defines specific concurrent room and player counts. Those values are the load parameters for every WebSocket scenario above. If the PRD NFR section is updated, the k6 load profiles must be updated to match before the next performance run.
 
-**Measurement.** k6 captures p50, p95, and p99 latency per scenario. Results are stored as CI artefacts. A Grafana dashboard in staging visualises trends across runs.
+**Measurement.** k6 captures p50, p95, and p99 latency per scenario. Results are stored as CI artefacts and pushed to Grafana Cloud, where a dashboard visualises trends across runs.
 
 ## Prod Smoke Test Suite
 
@@ -135,8 +134,8 @@ Smoke tests run automatically after every production deployment. They are read-o
 | # | Test | Tool | Verified by |
 | --- | --- | --- | --- |
 | S-01 | Health check — server responds 200 on GET /health | pytest | HTTP 200; `{ status: "ok" }` body |
-| S-02 | Auth — login with a dedicated smoke-test account | pytest | 200 + valid JWT returned |
-| S-03 | Auth — token refresh | pytest | 200 + new access token; old token invalid |
+| S-02 | Auth — login with a dedicated smoke-test account | pytest | 200 + HTTP-only session cookie set |
+| S-03 | Auth — authenticated request with the session cookie | pytest | `GET /users/me` returns 200 with the `smoke_test` user |
 | S-04 | Lobby — GET /lobby/rooms returns 200 | pytest | 200; response matches RoomSummary schema |
 | S-05 | WebSocket — connect and receive `connection_ack` | socket.io-client | Envelope schema valid; `seq: 1` |
 | S-06 | WebSocket — `sync_request` round-trip | socket.io-client | Server responds with `game_state` within 2 s |
@@ -145,4 +144,4 @@ Smoke tests run automatically after every production deployment. They are read-o
 
 **Smoke test account.** A dedicated account (username: `smoke_test`, no email address) exists in production with the Player role. It must not be used for real games. Its credentials are stored in the production secrets store and injected into the smoke test pipeline at runtime.
 
-**Pass criteria.** All 8 tests must pass. Any failure pages the on-call engineer and blocks promotion of the next release until the failure is resolved or explicitly overridden.
+**Pass criteria.** All 8 tests must pass. Any failure pages the on-call engineer and blocks the next release until the failure is resolved or explicitly overridden.
