@@ -11,6 +11,8 @@ export const MIN_PLAYERS_TO_START = 3;
 export const STANDARD_DECK_SIZE = 60;
 /** A room that has not started its game this long after creation is closed. */
 export const ROOM_TIMEOUT_MS = 10 * 60 * 1000;
+/** A host of an open room who has no connected socket this long loses the host role. */
+export const HOST_AWAY_MS = 120 * 1000;
 
 export type RoomState = 'open' | 'in_progress' | 'completing' | 'closed';
 export type MemberRole = 'player' | 'spectator';

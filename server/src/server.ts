@@ -7,7 +7,7 @@ import { attachSocket } from './socket';
  * Wires the HTTP app, Socket.io and the room service onto one HTTP server. Shared by index.ts
  * and the integration tests. Call `rooms.restoreTimeouts()` before accepting traffic.
  */
-export function buildServer(options: Pick<RoomServiceOptions, 'timeoutMs'> = {}) {
+export function buildServer(options: Pick<RoomServiceOptions, 'timeoutMs' | 'hostAwayMs'> = {}) {
   // The request handler must be on the server before Socket.io attaches: Socket.io wraps the
   // listeners present at attach time so that /socket.io/ requests never reach them. A listener
   // added afterwards also sees those requests, and Express answering a pending long-poll with a

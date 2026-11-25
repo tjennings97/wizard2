@@ -38,7 +38,7 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService): Attach
   io.on('connection', (socket: AppSocket) => {
     socket.data.seq = 0;
     socket.data.roomId = null;
-    void onConnection(realtime, socket).catch((err) => {
+    void onConnection(realtime, rooms, socket).catch((err) => {
       realtime.logError(socket, err, 'socket connect handling failed');
       socket.disconnect(true);
     });
@@ -47,7 +47,7 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService): Attach
   return { io, realtime, detach: () => sessionEvents.off('invalidated', onInvalidated) };
 }
 
-async function onConnection(realtime: Realtime, socket: AppSocket): Promise<void> {
+async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppSocket): Promise<void> {
   const auth = await authenticateSocket(socket.handshake.headers.cookie);
   if (!auth.ok) {
     logger.info({ socketId: socket.id, code: auth.code }, 'socket rejected');
@@ -76,7 +76,10 @@ async function onConnection(realtime: Realtime, socket: AppSocket): Promise<void
     logger.info({ ...realtime.logContext(socket), reason }, 'socket disconnected');
     // Rooms are already left by now; another tab may still hold the user's lobby presence.
     if (socket.data.roomId === null && !realtime.isInLobby(user.id)) realtime.broadcastPresence();
+    // The user's last socket in a room: start the host-away grace period (a no-op unless they host it).
+    if (socket.data.roomId !== null && !realtime.isConnected(user.id)) rooms.userDisconnected(user.id, socket.data.roomId);
   });
+  rooms.userReconnected(user.id);
 
   // Read first, then join channels synchronously, so a socket that dropped meanwhile is not
   // added to a channel after its disconnect.

@@ -223,6 +223,6 @@ Spectator joins and leaves are broadcast to the room like players': `user_joined
 | --- | --- | --- |
 | No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 30-second reconnection window |
 | Disconnected player does not rejoin | 30 s after `player_disconnected` | `user_left` (timeout) |
-| Host disconnects in LOBBY | 120 s | Session terminated; `session_error` (fatal) to all |
+| Host of an open room has no connected socket | 120 s | The host role passes to the connected player with the lowest join order (`host_changed` to the room, `rooms_updated` to the lobby). The old host stays a member and returns as a regular player. If no other player is connected, nothing changes. Reconnecting within the 120 s keeps the role |
 
 There are no turn timers: the game waits for a player to bid, play, or declare trump. A player who is disconnected is handled by the reconnection window above.

@@ -48,7 +48,7 @@ export async function createUser(
   return { id, displayName, cookie: cookieFor(session.token) };
 }
 
-export async function startServer(options: { timeoutMs?: number } = {}) {
+export async function startServer(options: { timeoutMs?: number; hostAwayMs?: number } = {}) {
   const built = buildServer(options);
   await new Promise<void>((resolve) => built.httpServer.listen(0, '127.0.0.1', resolve));
   const { port } = built.httpServer.address() as AddressInfo;

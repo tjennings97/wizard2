@@ -4,6 +4,7 @@ import { ApiError } from '../http/errors';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, type RoomRow, type RoomView } from './queries';
 import {
+  HOST_AWAY_MS,
   MIN_PLAYERS_TO_START,
   ROOM_TIMEOUT_MS,
   clampConfig,
@@ -93,16 +94,85 @@ export interface RoomServiceOptions {
   notifier?: RoomNotifier;
   /** Inactivity timeout from creation. Tests shorten it. */
   timeoutMs?: number;
+  /** How long a disconnected host of an open room keeps the role. Tests shorten it. */
+  hostAwayMs?: number;
 }
 
 export class RoomService {
   private notifier: RoomNotifier;
   private readonly timeoutMs: number;
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly hostAwayMs: number;
+  /** Host-away grace timers, keyed by the disconnected user's id. */
+  private readonly awayTimers = new Map<string, NodeJS.Timeout>();
 
-  constructor({ notifier = noopNotifier, timeoutMs = ROOM_TIMEOUT_MS }: RoomServiceOptions = {}) {
+  constructor({ notifier = noopNotifier, timeoutMs = ROOM_TIMEOUT_MS, hostAwayMs = HOST_AWAY_MS }: RoomServiceOptions = {}) {
     this.notifier = notifier;
     this.timeoutMs = timeoutMs;
+    this.hostAwayMs = hostAwayMs;
+  }
+
+  /**
+   * The user's last socket closed while they were in `roomId`. If they are that open room's host
+   * and still have no socket after the grace period, the host role passes on (transferHostIfAway).
+   * Cheap to call for non-hosts: everything is checked when the timer fires.
+   */
+  userDisconnected(userId: string, roomId: string): void {
+    this.cancelAway(userId);
+    const timer = setTimeout(() => {
+      this.awayTimers.delete(userId);
+      this.transferHostIfAway(userId, roomId).catch((err) =>
+        logger.error({ err, userId, roomId }, 'host-away transfer failed'),
+      );
+    }, this.hostAwayMs);
+    timer.unref();
+    this.awayTimers.set(userId, timer);
+  }
+
+  /** The user has a socket again: they keep the host role. */
+  userReconnected(userId: string): void {
+    this.cancelAway(userId);
+  }
+
+  hasAwayTimer(userId: string): boolean {
+    return this.awayTimers.has(userId);
+  }
+
+  /**
+   * Gives the host role to the connected player with the lowest join order, if `userId` is still
+   * the disconnected host of the open room. The old host stays a member. With no other connected
+   * player, nothing changes (the inactivity timeout still closes the room).
+   */
+  async transferHostIfAway(userId: string, roomId: string): Promise<string | null> {
+    const newHostId = await db.transaction(async (trx) => {
+      const row = await lockRoom(trx, roomId);
+      if (!row || row.state !== 'open' || row.host_user_id !== userId) return null;
+      if (this.notifier.isConnected(userId)) return null;
+      const candidates: { user_id: string }[] = await trx('room_members')
+        .where({ room_id: roomId, role: 'player' })
+        .whereNull('left_at')
+        .whereNot({ user_id: userId })
+        .orderBy('join_order', 'asc')
+        .select('user_id');
+      const next = candidates.find((c) => this.notifier.isConnected(c.user_id));
+      if (!next) return null;
+      await trx('rooms').where({ id: roomId }).update({ host_user_id: next.user_id });
+      return next.user_id;
+    });
+    if (!newHostId) return null;
+
+    logger.info({ userId, roomId, newHostId }, 'host disconnected: role transferred');
+    await this.notify(async () => {
+      await this.notifier.hostChanged(roomId, newHostId);
+      await this.notifier.lobbyChanged();
+    });
+    return newHostId;
+  }
+
+  private cancelAway(userId: string): void {
+    const timer = this.awayTimers.get(userId);
+    if (timer) clearTimeout(timer);
+    this.awayTimers.delete(userId);
   }
 
   /** The socket layer is created after the service (it reads rooms on connect), so it is set late. */
@@ -322,6 +392,8 @@ export class RoomService {
   stop(): void {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    for (const t of this.awayTimers.values()) clearTimeout(t);
+    this.awayTimers.clear();
   }
 
   hasTimeout(roomId: string): boolean {

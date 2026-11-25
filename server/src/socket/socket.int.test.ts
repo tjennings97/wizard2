@@ -458,3 +458,98 @@ describe('room inactivity timeout', () => {
     await b.waitFor('rooms_updated', (p) => p.rooms.length === 0);
   });
 });
+
+describe('host disconnects from an open room', () => {
+  const AWAY_MS = 300;
+  let fast: Awaited<ReturnType<typeof startServer>>;
+  beforeAll(async () => {
+    fast = await startServer({ hostAwayMs: AWAY_MS });
+  });
+  afterAll(async () => {
+    await fast.close();
+  });
+
+  const fastApi = () => request(fast.app);
+  async function room(host: TestUser, ...players: TestUser[]): Promise<string> {
+    const res = await fastApi().post('/api/v1/rooms').set('Cookie', host.cookie).expect(201);
+    for (const p of players) {
+      await fastApi().post(`/api/v1/rooms/${res.body.id}/join`).set('Cookie', p.cookie).send({ role: 'player' }).expect(200);
+    }
+    return res.body.id;
+  }
+  async function on(user: TestUser): Promise<TestClient> {
+    const c = await connectReady(fast.url, user.cookie);
+    clients.push(c);
+    return c;
+  }
+  const hostOf = async (roomId: string) => (await db('rooms').where({ id: roomId }).first()).host_user_id;
+
+  it('passes the host role to the next connected player after the grace period; the old host stays', async () => {
+    const [ann, bob, cat, spec] = await Promise.all(['Ann', 'Bob', 'Cat', 'Spec'].map((n) => createUser(n)));
+    const roomId = await room(ann, bob, cat);
+    await fastApi().post(`/api/v1/rooms/${roomId}/join`).set('Cookie', spec.cookie).send({ role: 'spectator' }).expect(200);
+    const a = await on(ann);
+    // Bob (next in join order) is offline, so Cat is next in line among connected players.
+    const c = await on(cat);
+    await on(spec);
+
+    a.close();
+    const changed = await c.waitFor('host_changed', () => true, { timeoutMs: 3000 });
+    expect(changed.payload).toEqual({ room_id: roomId, host_id: cat.id });
+    expect(await hostOf(roomId)).toBe(cat.id);
+    expect(ids(await db('room_members').where({ room_id: roomId }).whereNull('left_at').select('user_id as userId'))).toEqual(
+      ids([{ userId: ann.id }, { userId: bob.id }, { userId: cat.id }, { userId: spec.id }]),
+    );
+
+    // Ann comes back as a regular player.
+    const back = await on(ann);
+    const snap = back.events('room_snapshot').at(-1)!;
+    expect(snap.payload.host_id).toBe(cat.id);
+  });
+
+  it('keeps the host if they reconnect within the grace period', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    const a = await on(ann);
+    const b = await on(bob);
+    a.close();
+    await sleep(AWAY_MS / 3);
+    await on(ann);
+    await sleep(AWAY_MS * 2);
+    expect(b.events('host_changed')).toHaveLength(0);
+    expect(await hostOf(roomId)).toBe(ann.id);
+    expect(fast.rooms.hasAwayTimer(ann.id)).toBe(false);
+  });
+
+  it('keeps the host while another of their tabs is still connected', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    const tab1 = await on(ann);
+    await on(ann);
+    const b = await on(bob);
+    tab1.close();
+    await sleep(AWAY_MS * 2);
+    expect(b.events('host_changed')).toHaveLength(0);
+    expect(await hostOf(roomId)).toBe(ann.id);
+  });
+
+  it('changes nothing when no other player is connected', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    const a = await on(ann);
+    a.close();
+    await sleep(AWAY_MS * 2);
+    expect(await hostOf(roomId)).toBe(ann.id);
+  });
+
+  it('does not touch a non-host who disconnects', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    const a = await on(ann);
+    const b = await on(bob);
+    b.close();
+    await sleep(AWAY_MS * 2);
+    expect(a.events('host_changed')).toHaveLength(0);
+    expect(await hostOf(roomId)).toBe(ann.id);
+  });
+});
