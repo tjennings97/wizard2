@@ -27,7 +27,7 @@ For prerequisites, Postgres setup, commands, and troubleshooting, see **[Getting
 - In-app **bug reporting** that captures session and game-state context
 - Structured logging (pino) and Prometheus metrics scraped by Grafana Cloud
 
-**Out of scope for v1:** bot/AI players (interface stubbed), public registration, the 68-card extended deck, a full analytics dashboard, and native mobile apps.
+**Out of scope for v1:** bot/AI players (interface stubbed), public registration, the Wizard Camelot Edition deck, a full analytics dashboard, and native mobile apps.
 
 ## Planned tech stack
 
@@ -111,7 +111,7 @@ New to the project? Begin with [Getting Started](docs/development/getting-starte
 
 | Document | What it covers |
 | --- | --- |
-| [Deployment & Infrastructure Plan](docs/operations/deployment-infrastructure.md) | Dev/staging/prod environments, Railway setup, branch strategy, GitHub Actions CI, rollback, secrets, backups |
+| [Deployment & Infrastructure Plan](docs/operations/deployment-infrastructure.md) | Dev and prod environments, Railway setup, branch strategy, GitHub Actions CI, rollback, secrets, backups |
 | [Observability & Alerting Guide](docs/operations/observability-alerting.md) | Logging, Prometheus metrics, Grafana dashboards, alert rules and thresholds, k6 metrics, log retention |
 | [Backup & Recovery Runbook](docs/operations/backup-recovery.md) | Backup schedule, `pg_dump` exports, restore procedure, recovery scenarios, server-restart handling |
 
@@ -129,12 +129,18 @@ Currently required: `DATABASE_URL`, `SESSION_SECRET`, `PROMETHEUS_TOKEN`, `NODE_
 
 ## Spec inconsistencies to resolve
 
-These conflicts between the documents should be settled before the affected parts are built:
+**Open:**
 
-1. **Environments:** the Architecture doc says there is no staging tier initially. The Deployment & Infrastructure Plan supersedes this with a three-tier dev/staging/prod model, so the Architecture doc should be updated to match.
-2. **API test client:** the Architecture doc lists `pytest + requests`, while the Test Plan and Deployment Plan list `pytest + httpx`.
-3. **JWT signing key:** the Deployment Plan lists a JWT signing key as an environment variable, but the Security doc notes that no JWT auth is used and the key should be removed.
-4. **Smoke test account:** the Test Plan refers to an email address for the smoke test account, but accounts have no email. The Deployment Plan uses the username `smoke_test`.
-5. **Avatar config:** CLAUDE.md describes three avatar layers (face, expression, hair). The Avatar System Specification defines four required keys: `head`, `skin`, `face`, `hair`. The game engine follows the Avatar System Specification.
-6. **Following suit with Wizards and Jesters:** the Game Rules Reference says players must follow the led suit if able, but doesn't say whether a Wizard or Jester may be played instead when the player holds a card of that suit. The engine allows it, as the standard Wizard rules do.
-7. **Jester lead:** the Game Rules Reference says a Jester lead removes the suit obligation. In the standard Wizard rules, the first suited card played after the Jester sets the suit that later players must follow. The engine follows the rules doc: no one has to follow suit in that trick. In both versions, the first suited card decides the winner when no Wizard or trump is played.
+1. **Camelot Edition gaps (future):** the publisher's Camelot rules leave several points unclear, including null tricks and an incomplete Hand One rule. They are listed under Open questions in the Game Rules Reference's Camelot Edition section and must be settled before that edition is built.
+
+**Resolved (Nov 25, 2026):** the docs were updated to match these decisions.
+
+- **Environments:** local dev and production only, with no staging. E2E tests run in CI on every PR; k6 performance tests run on a CI schedule.
+- **API test client:** `pytest + requests`.
+- **JWT signing key:** removed. Auth uses HTTP-only session cookies only.
+- **Smoke test account:** username `smoke_test`, with no email address.
+- **Avatar config:** four keys (`head`, `skin`, `face`, `hair`), per the Avatar System Specification.
+- **Following suit:** a Wizard or Jester may be played at any time, even by a player who holds the suit to follow.
+- **Jester lead:** the first card that is not a Jester decides. A Wizard means no suit obligation for the rest of the trick; a suited card sets the suit, and a later Wizard does not cancel it.
+- **Server restart:** in-progress games are abandoned (`game_abandoned`), not resumed.
+- **Event names:** defined by the WebSocket Event Taxonomy (`docs/api/websocket-events.md`).

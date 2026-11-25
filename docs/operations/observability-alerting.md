@@ -12,7 +12,7 @@ All observability components are grounded in the architecture decisions in the S
 
 - **Structured logging:** pino emitting JSON to stdout, captured by Railway and forwarded to Grafana Cloud Loki
 - **Metrics:** prom-client exposing a `/metrics` endpoint, scraped by Grafana Cloud every 30 seconds
-- **Dashboards:** Grafana Cloud, single shared dashboard for production and staging toggled by an `env` variable
+- **Dashboards:** Grafana Cloud, a production dashboard plus k6 performance trends
 - **Alerting:** Grafana Cloud alerting rules, notifications delivered via email
 - **Performance test metrics:** k6 pushing results to Grafana Cloud via Prometheus remote write during CI runs
 - **Trace correlation:** a `traceId` UUID generated per session, propagated through all logs and bug reports, and stored on bug report records as the correlation key between user reports and server logs
@@ -51,7 +51,7 @@ The diagram below shows how the observability components connect at runtime.
 **Key design points:**
 
 - The Express app is the only component that emits observability data. The game engine and persistence layers are instrumented at the socket and API layers above them — the engine itself has no logging or metrics calls.
-- Production and staging both emit metrics and logs. They are distinguished by an `env` label (`production` / `staging`) on every metric series and every log stream. A single Grafana dashboard uses an `env` variable to filter between them.
+- Only production sends metrics and logs to Grafana Cloud. Every metric series and log stream still carries an `env` label (`production`), so another environment could be added later without changing queries.
 - The `/metrics` endpoint is protected by a bearer token stored as a Railway environment variable (`PROMETHEUS_BEARER_TOKEN`). Grafana Cloud is configured with this token as a scrape header. The endpoint is publicly accessible over HTTPS (Grafana Cloud's scraper reaches it from outside Railway), but is protected from unauthorised access by the bearer token requirement.
 - The `traceId` for a session is generated at login and stored on the session record. It is attached to `req.user` by session middleware and to `socket.data` on socket connect. All log calls in the API and socket layers include it automatically. It is also written to the `bug_reports` table when a bug report is submitted.
 
@@ -122,7 +122,7 @@ Production runs at `info` level. The log level is set via the `LOG_LEVEL` enviro
 - Player disconnected — 30-second reconnection timer started (include `userId`, `gameId`)
 - Player reconnected successfully within the window (include `userId`, `gameId`, elapsed time)
 - Reconnection timer expired — player treated as quit (include `userId`, `gameId`)
-- `session:invalidated` sent to a displaced socket (a new login from another device)
+- `session_error` (`SESSION_INVALIDATED`) sent to a displaced socket (a new login from another device)
 
 **Always log at `info` for database operations:**
 
@@ -165,7 +165,7 @@ All metrics are registered using `prom-client` and exposed on `GET /metrics`. Th
 
 Every metric series includes two global labels applied via prom-client's default labels mechanism — they do not need to be specified per metric:
 
-- `env` — set from the `NODE_ENV` environment variable (`production` or `staging`)
+- `env` — set from the `NODE_ENV` environment variable (`production` in the deployed app)
 - `version` — set from the application version string (e.g. the value of `npm_package_version`, or `RAILWAY_GIT_COMMIT_SHA` truncated to 7 characters). This label allows dashboard queries to be scoped to a specific deployed version and makes it straightforward to correlate a metric change with a particular release.
 
 ### Infrastructure metrics
@@ -226,7 +226,7 @@ Metrics must be updated at the following points in the application:
 
 ## Dashboards
 
-All dashboards are hosted in Grafana Cloud. A single dashboard covers both production and staging, with template variables at the top that filter all panels. The default environment is `production`.
+All dashboards are hosted in Grafana Cloud. Dashboards cover production. Panels keep an `env` template variable so another environment could be added later.
 
 ### Environment variable setup
 
@@ -234,7 +234,7 @@ In the Grafana dashboard settings, add a template variable:
 
 - **Name:** `env`
 - **Type:** Custom
-- **Values:** `production, staging`
+- **Values:** `production`
 - **Default:** `production`
 
 All panel queries include `env="$env"` as a label selector.
@@ -305,7 +305,7 @@ See [k6 Performance Test Metrics](#k6-performance-test-metrics) for setup. Once 
 
 ## Alerting
 
-Alerts are defined in Grafana Cloud's alerting system using PromQL rules. All alerts deliver notifications to a single email contact point. Alerts are defined for production only unless otherwise noted; staging emits the same metrics but alert rules are scoped to `env="production"`.
+Alerts are defined in Grafana Cloud's alerting system using PromQL rules. All alerts deliver notifications to a single email contact point. Alert rules are scoped to `env="production"`.
 
 ### Contact point
 
@@ -408,7 +408,7 @@ Railway redeploys the app automatically on push to `main`. A redeploy causes a b
 
 ## k6 Performance Test Metrics
 
-k6 performance tests run on a schedule in CI against the staging environment (see the Deployment and Infrastructure Plan, `ci-perf.yml`). Rather than storing results only as CI artifacts, k6 is configured to push metrics directly to Grafana Cloud via the Prometheus remote write protocol. This means performance test results are visible in the same Grafana Cloud instance as runtime metrics, queryable in PromQL, and displayable on a dedicated dashboard.
+k6 performance tests run on a schedule in CI against the app and a throwaway Postgres started in the CI job (see the Deployment and Infrastructure Plan, `ci-perf.yml`). Rather than storing results only as CI artifacts, k6 is configured to push metrics directly to Grafana Cloud via the Prometheus remote write protocol. This means performance test results are visible in the same Grafana Cloud instance as runtime metrics, queryable in PromQL, and displayable on a dedicated dashboard.
 
 ### How it works
 
@@ -475,7 +475,7 @@ This dashboard displays virtual users, request rate, response time percentiles, 
 
 ### NFR thresholds
 
-The k6 test scripts define pass/fail thresholds matching the PRD non-functional requirements. These thresholds are enforced in CI — a threshold breach fails the `ci-perf.yml` workflow and blocks promotion to production. The Grafana dashboard visualises trends across runs to show whether performance is improving or regressing over time.
+The k6 test scripts define pass/fail thresholds matching the PRD non-functional requirements. These thresholds are enforced in CI — a threshold breach fails the `ci-perf.yml` workflow and must be resolved or explicitly overridden before the next release. The Grafana dashboard visualises trends across runs to show whether performance is improving or regressing over time.
 
 ## Log Retention and Forwarding
 
@@ -501,7 +501,7 @@ Railway does not natively push logs to external services, but it supports log dr
 
 1. In Grafana Cloud, navigate to **Connections → Add new connection → Logs → Railway**. Follow the Railway log drain integration guide to obtain the Loki push URL and credentials.
 2. Alternatively, configure a custom log drain in Railway: in the project settings, add a log drain pointing to the Grafana Cloud Loki push API endpoint with a basic auth header using a Grafana Cloud Access Policy Token with the `logs:write` scope.
-3. Add stream labels to every forwarded log line to enable filtering in Grafana: at minimum `app="wizard"` and `env="production"` (or `"staging"`).
+3. Add stream labels to every forwarded log line to enable filtering in Grafana: at minimum `app="wizard"` and `env="production"`.
 4. Verify the drain is working by checking **Explore → Loki** in Grafana Cloud for recent log entries.
 
 **Note on label carriage:** pino logs are structured JSON. Grafana's Loki pipeline can parse JSON log lines and extract fields as labels or indexed fields. The `env` label should be set at the drain/stream level (not per log line) to avoid high-cardinality label issues. The `traceId`, `userId`, `roomId`, and `gameId` fields are best left as structured log fields (not labels) and queried via `| json` filters in LogQL.
