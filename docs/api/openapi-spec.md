@@ -89,7 +89,10 @@ components:
           description: >
             True when the admin has reset this user's credentials.
             The client should redirect to a forced change-password flow
-            on the next login response when this flag is true.
+            on the next login response when this flag is true. The server
+            enforces it: while true, every authenticated route except
+            GET /users/me, PATCH /users/me and POST /auth/logout returns
+            403 CREDENTIAL_CHANGE_REQUIRED.
 
     RoomConfig:
       type: object
@@ -297,10 +300,9 @@ paths:
                 avatarSvg:
                   type: string
                   nullable: true
-                  description: Cached SVG string of the composited avatar. Null if not yet set.
-                avatarSvg:
-                  type: string
-                  description: Serialized SVG string of the fully composited avatar, produced by the builder UI.
+                  description: >
+                    Serialized SVG string of the fully composited avatar, produced by the
+                    builder UI. The key is required; the value may be null if not yet set.
       responses:
         '201':
           description: Account created successfully.
@@ -342,6 +344,7 @@ paths:
       description: >
         Validates credentials and issues an HTTP-only session cookie.
         Any existing active session for this user is invalidated.
+        The username is trimmed and matched case-insensitively (usernames are stored lowercase).
       tags: [Auth]
       requestBody:
         required: true
@@ -410,6 +413,7 @@ paths:
       description: >
         Validates the recovery passphrase for the given username.
         On success, updates the password. Does not require an active session.
+        The username is trimmed and matched case-insensitively (usernames are stored lowercase).
       tags: [Auth]
       requestBody:
         required: true
@@ -433,20 +437,16 @@ paths:
         '204':
           description: Password reset successfully.
         '401':
-          description: Recovery passphrase does not match.
+          description: >
+            Username not found or recovery passphrase does not match. Both cases return
+            the same response so the endpoint does not reveal which usernames exist.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
                 code: INVALID_RECOVERY
-                message: Recovery passphrase is incorrect.
-        '404':
-          description: Username not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+                message: Username or recovery passphrase is incorrect.
         '429':
           description: Rate limited.
           content:
@@ -472,7 +472,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/User'
         '401':
-          description: Not authenticated.
+          description: >
+            Not authenticated, or REAUTH_REQUIRED: the session is within 24 hours of its
+            30-day cap and the user is not an active player in a game in progress. The client
+            calls this on app load, and on REAUTH_REQUIRED shows the login screen.
           content:
             application/json:
               schema:
@@ -726,11 +729,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Room'
         '401':
-          description: Not authenticated.
+          description: >
+            Not authenticated, or REAUTH_REQUIRED: the session is within 24 hours of its
+            30-day cap, so the user must log in again before entering a new game.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              example:
+                code: REAUTH_REQUIRED
+                message: Your session is about to expire. Please log in again.
         '409':
           description: User is already in a room or game.
           content:
@@ -888,6 +896,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Room'
+        '401':
+          description: >
+            Not authenticated, or REAUTH_REQUIRED: the session is within 24 hours of its
+            30-day cap, so the user must log in again before entering a new game.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: REAUTH_REQUIRED
+                message: Your session is about to expire. Please log in again.
         '400':
           description: Invalid role.
           content:
@@ -970,6 +989,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Room'
+        '401':
+          description: >
+            Not authenticated, or REAUTH_REQUIRED: the session is within 24 hours of its
+            30-day cap, so the user must log in again before entering a new game.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: REAUTH_REQUIRED
+                message: Your session is about to expire. Please log in again.
         '400':
           description: Not enough players (minimum 3 required).
           content:
@@ -1602,9 +1632,11 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 400 | `SELF_DEMOTION_FORBIDDEN` | Admin attempted to remove their own admin role. |
 | 401 | `UNAUTHORIZED` | No valid session cookie present. |
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
-| 401 | `INVALID_RECOVERY` | Recovery passphrase does not match on password reset. |
+| 401 | `INVALID_RECOVERY` | Username not found or recovery passphrase does not match on password reset (one response for both). |
 | 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device. |
+| 401 | `REAUTH_REQUIRED` | Session is within 24 hours of its 30-day cap. The user must log in again before doing anything except finishing a game in progress. The session is still valid and the cookie is not cleared. |
 | 403 | `FORBIDDEN` | Authenticated but not permitted (e.g. non-admin on admin route). |
+| 403 | `CREDENTIAL_CHANGE_REQUIRED` | An admin reset this user's credentials. Only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` are allowed until both the password and recovery passphrase are changed. |
 | 403 | `NOT_HOST` | Action requires host role in the room. |
 | 403 | `GAME_ALREADY_STARTED` | Action is only valid before the game starts. |
 | 403 | `ROOM_NOT_JOINABLE` | Room state does not permit joining. |
@@ -1613,6 +1645,8 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 409 | `ALREADY_IN_ROOM` | User is already an active member of a room or game. |
 | 409 | `USERNAME_TAKEN` | Username is already registered. |
 | 409 | `ROOM_FULL` | Room has reached its player or spectator limit. |
+| 413 | `PAYLOAD_TOO_LARGE` | Request body is over the JSON body size limit (100 KB). |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request body uses an unsupported content encoding or charset. |
 | 422 | `INVITE_INVALID` | Invite code not found, expired, or already redeemed. |
 | 429 | `RATE_LIMITED` | Too many requests. Applies to auth and bug report endpoints. |
 | 500 | `INTERNAL_ERROR` | Unexpected server error. Includes a `traceId` field in `details` for correlation with logs. |
@@ -1634,5 +1668,6 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 
 - All endpoints that require authentication return `401 UNAUTHORIZED` when no valid session is present — not `403`.
 - `403` is reserved for cases where the user is authenticated but lacks permission for the specific action.
+- Sessions use a sliding 24-hour idle timeout with a 30-day hard cap. In the last 24 hours before the cap, authenticated requests return `401 REAUTH_REQUIRED` unless the user is an active player in a game in progress. `POST /rooms`, `POST /rooms/{roomId}/join`, and `POST /rooms/{roomId}/start` return it in that window regardless, so no game can start that the session would not outlast (games are capped at 3 hours). `POST /auth/logout` is always allowed.
 - The `traceId` in 500 responses matches the `trace_id` on the user's session record and in server logs, enabling support correlation.
 - Rate limiting headers (`Retry-After`, `X-RateLimit-Remaining`) are returned on `429` responses.

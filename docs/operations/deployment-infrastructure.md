@@ -41,6 +41,8 @@ One Railway project contains the production environment, which provisions two se
 - Socket.io config
 - Prometheus bearer token
 - `NODE_ENV` / environment name (`development` / `production`)
+- `APP_ORIGIN`: the public origin the app is served from, for example `https://wizard.example.com` (scheme and host, no path or trailing slash). It is required when `NODE_ENV=production`: the server refuses to start without it. Use the custom domain once attached; until then, the Railway-generated domain (`https://<name>.up.railway.app`). Update it if the domain changes.
+- `TRUST_PROXY_HOPS` (optional): proxy hops to trust for the client IP. It defaults to `1` in production, which matches Railway's single edge proxy.
 
 **Private networking.** The Postgres service is not exposed to the public internet. The application connects via Railway's internal hostname.
 
@@ -126,7 +128,7 @@ All secrets and configuration are stored as environment variables. No secret is 
 | Session | Session secret |
 | Real-time | Socket.io config |
 | Observability | Prometheus bearer token |
-| App config | `NODE_ENV`, environment name |
+| App config | `NODE_ENV`, environment name, `APP_ORIGIN`, `TRUST_PROXY_HOPS` (optional) |
 
 **Local development.** Developers use a `.env` file at the project root. A `.env.example` file with placeholder values is committed to source control. The `.env` file itself is listed in `.gitignore`.
 

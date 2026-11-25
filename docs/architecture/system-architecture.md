@@ -93,7 +93,7 @@ src/
 
 **Socket client:** A single Socket.io client instance, created on login and torn down on logout. The `useSocket` hook provides access to it. All incoming game events update `GameContext` via dispatchers. Outgoing actions (bid, play card) call socket emit functions exposed by `useGame`.
 
-**Routing:** React Router v6. Routes: `/` (lobby), `/room/:id` (room/pre-game), `/game/:id` (active game), `/profile` (history and settings), `/admin` (admin panel, role-guarded).
+**Routing:** React Router v7. Routes: `/` (lobby), `/room/:id` (room/pre-game), `/game/:id` (active game), `/profile` (history and settings), `/admin` (admin panel, role-guarded).
 
 **Mobile-first layout:** CSS uses `min-width` media queries (mobile base, desktop enhancement). Touch targets are at least 44×44px. No hover-only interactions. Game board layout is a vertical single-column on mobile (current player hand at bottom, trick area in middle, opponent indicators at top), and a table-surround layout on desktop.
 
@@ -197,7 +197,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `player_l
 
 **Password and passphrase hashing:** Both are hashed with bcrypt (work factor 12) before storage. The server never stores or logs plaintext credentials. Recovery passphrase reset follows the same flow as password reset — valid passphrase match required before allowing credential change.
 
-**Forced credential change:** When an admin resets a user's credentials, the `requires_credential_change` flag on the `users` record is set to `true`. On the next successful login, the server includes this flag in the response. The client intercepts it and redirects the user to a forced change-password flow before allowing any other navigation. Once the user updates both their password and recovery passphrase, the server sets the flag back to `false`.
+**Forced credential change:** When an admin resets a user's credentials, the `requires_credential_change` flag on the `users` record is set to `true`. On the next successful login, the server includes this flag in the response. The client intercepts it and redirects the user to a forced change-password flow before allowing any other navigation. Once the user updates both their password and recovery passphrase, the server sets the flag back to `false`. While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly.
 
 **Session expiry:** Sessions expire after a configurable duration (default: 24 hours). Expired sessions are treated as invalid by the middleware. A background cleanup job (or lazy deletion on lookup) removes expired rows.
 

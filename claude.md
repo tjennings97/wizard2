@@ -10,7 +10,7 @@ Web-based multiplayer implementation of the Wizard card game. React frontend + E
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18, React Router v6, Vite |
+| Frontend | React 18, React Router v7, Vite |
 | Backend | Node.js + Express 4 |
 | Language | TypeScript (throughout) |
 | Real-time | Socket.io 4 |
@@ -88,7 +88,7 @@ Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/
 
 **Room:** `room_snapshot`, `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated`, `room_closed`, `game_starting`
 
-**Game:** `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_over`, `game_abandoned`
+**Game:** `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_time_warning`, `game_over`, `game_abandoned`
 
 **Player-specific (individual socket only):** `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_play_error`, `pong`
 
@@ -129,11 +129,15 @@ Key schema notes:
 
 **No turn timers:** The game waits for each player to bid, play, or declare trump.
 
+**Game time limit:** A game lasts at most 3 hours. `game_time_warning` is broadcast at 2 h 45 min; at 3 hours the game is abandoned (`game_abandoned`, `reason: "time_limit"`) and recorded `incomplete` (`drop_reason = 'time_limit'`, no winner).
+
+**Session lifetime:** Sliding 24h idle timeout, 30-day hard cap (cookie lives 30 days; the database decides validity). In the last 24h before the cap, requests return `401 REAUTH_REQUIRED` unless the user is an active player in a game in progress; creating, joining, or starting a room returns it regardless (`requireSessionRunway`). Logout always works. The client shows the login screen on `REAUTH_REQUIRED`. Each login deletes the user's session rows that ended more than 24h ago (kept that long so a displaced device still gets `SESSION_INVALIDATED`). The socket layer must validate with `authenticateToken` on connect and on game actions so socket-only play keeps the session alive.
+
 **Player drop mid-game:** Current round is voided and re-dealt to remaining players. Drop to 2 players: remaining players prompted to continue or end.
 
 **Single session:** New login invalidates any existing session. Displaced socket receives `session_error` (`code: "SESSION_INVALIDATED"`, `fatal: true`).
 
-**Forced credential change:** Admin credential reset sets `requires_credential_change = true` on the user record. Client intercepts the flag on next login and forces a change-password flow before any other navigation.
+**Forced credential change:** Admin credential reset sets `requires_credential_change = true` on the user record. Client intercepts the flag on next login and forces a change-password flow before any other navigation. While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly. Routes opt in with `authenticate({ allowDuringCredentialChange: true })`.
 
 **Room timeout:** Room auto-closes 10 minutes after creation if game hasn't started.
 
@@ -156,7 +160,7 @@ Key schema notes:
 - `GameContext` — live game state from socket events
 - `AuthContext` — session state
 - `SocketContext` — single Socket.io client instance (created on login, torn down on logout)
-- **Routing:** React Router v6. Routes: `/` (lobby), `/room/:id`, `/game/:id`, `/profile`, `/admin`
+- **Routing:** React Router v7 (import from `react-router`; `react-router-dom` is not used). Routes: `/` (lobby), `/room/:id`, `/game/:id`, `/profile`, `/admin`
 - **Mobile-first:** `min-width` media queries; touch targets ≥ 44×44px; no hover-only affordances; 375px viewport minimum
 - **Game board layout:** Vertical single-column on mobile (hand at bottom, trick in middle, opponents at top); table-surround on desktop
 - **Avatars:** Four SVG layers (`head`, `skin`, `face`, `hair`; see the Avatar System Specification) composited via `position: absolute` stacking. No server-side image processing.

@@ -37,7 +37,7 @@ All human actors except Unregistered Users must be authenticated (Registered Pla
 
 **UC-02 Log In** · Actors: Registered Player, System · Pre: account exists and verified · Trigger: login form submitted · Main: validate credentials, issue an HTTP-only session cookie (invalidating any prior session), land on lobby · Ext: 1a bad credentials 401 generic error; 1b 5 failed attempts 403 cooldown message · State: UNAUTHENTICATED to AUTHENTICATED · API: POST /auth/login
 
-**UC-04 Log Out** · Actors: Registered Player, System · Pre: authenticated and not in active game · Trigger: user clicks Log out · Main: System invalidates session and refresh token, returns to landing screen · Ext: 0a mid-game UI warns Leaving forfeits your seat, · State: AUTHENTICATED to UNAUTHENTICATED · API: POST /auth/logout
+**UC-04 Log Out** · Actors: Registered Player, System · Pre: authenticated and not in active game · Trigger: user clicks Log out · Main: System invalidates the session, clears the session cookie, returns to landing screen · Ext: 0a mid-game UI warns Leaving forfeits your seat, · State: AUTHENTICATED to UNAUTHENTICATED · API: POST /auth/logout
 
 **UC-05 Edit Profile** · Actors: Registered Player, System · Pre: authenticated · Trigger: user submits profile settings changes · Main: System validates display name uniqueness, persists changes, UI updates immediately · Ext: 1a name taken 409 prompt alternate · State: no transition · API: PATCH /players/{playerId}
 
