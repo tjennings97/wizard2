@@ -5,7 +5,7 @@ import { logger } from '../logger';
 
 export function attachSocket(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
-    cors: config.isProduction ? undefined : { origin: 'http://localhost:5173', credentials: true },
+    cors: { origin: config.corsOrigin, credentials: true },
   });
 
   io.on('connection', (socket) => {

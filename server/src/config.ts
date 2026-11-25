@@ -16,9 +16,13 @@ export interface Config {
   nodeEnv: NodeEnv;
   port: number;
   isProduction: boolean;
+  /** Origin allowed by CORS. Production: APP_ORIGIN. Otherwise: the Vite dev server. */
+  corsOrigin: string;
+  /** Number of reverse-proxy hops to trust for the client IP (Express `trust proxy`). */
+  trustProxyHops: number;
 }
 
-function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const missing = REQUIRED_VARS.filter((key) => !env[key] || env[key]!.trim() === '');
   if (missing.length > 0) {
     throw new Error(
@@ -37,6 +41,24 @@ function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid PORT "${env.PORT}". Expected a positive integer.`);
   }
 
+  // In production the CORS origin must be stated explicitly; never fall back to a default.
+  const appOrigin = env.APP_ORIGIN?.trim();
+  if (nodeEnv === 'production' && !appOrigin) {
+    throw new Error('Missing required environment variable APP_ORIGIN (required when NODE_ENV=production).');
+  }
+  if (appOrigin && !/^https?:\/\/[^/]+$/.test(appOrigin)) {
+    throw new Error(`Invalid APP_ORIGIN "${appOrigin}". Expected an origin like https://example.com (no path).`);
+  }
+
+  // Railway puts one proxy in front of the app, so production trusts one hop by default.
+  // Locally there is no proxy, so X-Forwarded-For is ignored unless explicitly enabled.
+  // An empty or blank value counts as unset, so it cannot silently become 0 behind Railway.
+  const trustProxyHopsRaw = env.TRUST_PROXY_HOPS?.trim() || (nodeEnv === 'production' ? '1' : '0');
+  const trustProxyHops = Number(trustProxyHopsRaw);
+  if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0) {
+    throw new Error(`Invalid TRUST_PROXY_HOPS "${env.TRUST_PROXY_HOPS}". Expected a non-negative integer.`);
+  }
+
   return {
     databaseUrl: env.DATABASE_URL!,
     sessionSecret: env.SESSION_SECRET!,
@@ -44,6 +66,8 @@ function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     nodeEnv,
     port,
     isProduction: nodeEnv === 'production',
+    corsOrigin: nodeEnv === 'production' ? appOrigin! : 'http://localhost:5173',
+    trustProxyHops,
   };
 }
 

@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router';
 import { LobbyPage } from './pages/Lobby';
 import { RoomPage } from './pages/Room';
 import { GamePage } from './pages/Game';

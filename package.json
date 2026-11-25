@@ -13,5 +13,5 @@
     "concurrently": "^8.2.2",
     "typescript": "^5.4.5"
   },
-  "engines": { "node": ">=18.17" }
+  "engines": { "node": ">=20" }
 }

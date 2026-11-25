@@ -1,11 +1,21 @@
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { config } from './config';
+import { errorHandler } from './http/errors';
 import { apiRouter } from './routes';
 
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  // Needed for per-IP rate limiting behind Railway's proxy; 0 (local) ignores X-Forwarded-For.
+  app.set('trust proxy', config.trustProxyHops);
+
+  // Production allows only the production origin; development allows the Vite dev server.
+  app.use(cors({ origin: config.corsOrigin, credentials: true }));
+  app.use(cookieParser(config.sessionSecret));
   app.use(express.json());
 
   // Liveness check at the root as well as under /api/v1
@@ -21,5 +31,6 @@ export function createApp() {
     });
   }
 
+  app.use(errorHandler);
   return app;
 }
