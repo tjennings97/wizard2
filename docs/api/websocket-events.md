@@ -12,7 +12,7 @@ This taxonomy defines every WebSocket message exchanged between client and serve
 
 **Relationship to the Game State Machine.** Each server-emitted event corresponds to one or more state transitions defined in the Game State Machine doc. The `event` field on every server message maps directly to a GSM transition label. Clients must apply events in order; out-of-order delivery triggers a `sync_request`.
 
-**Relationship to the OpenAPI Spec.** The OpenAPI spec defines the `POST /sessions` endpoint that returns the `session_token` and WebSocket URL (`wss://…/game/{sessionId}`). All subsequent real-time communication uses the events below, not HTTP.
+**Relationship to the OpenAPI Spec.** The OpenAPI spec defines `POST /auth/login`, which sets the signed HTTP-only session cookie. The browser sends that cookie with the Socket.io handshake; the client never reads or sends the token itself. All subsequent real-time communication uses the events below, not HTTP.
 
 ## Event Design Principles
 
@@ -41,9 +41,11 @@ Every message, in both directions, is a JSON object with this top-level envelope
 - **At-most-once from client:** Clients do not retry unless they receive a connection-level disconnect; reconnect carries a `last_seq_seen` to allow the server to replay missed events.
 - **Idempotency:** Client events include an optional `idempotency_key` (UUID v4). Replayed events with a duplicate key within a 60-second window are silently acknowledged without reprocessing.
 
-### Versioning
+### Connection
 
-The WebSocket URL includes the API version: `wss://…/v1/game/{sessionId}`. Breaking changes to the event schema increment the major version. Additive fields (new optional payload keys) are non-breaking and may appear in any minor release.
+The client opens one Socket.io connection per logged-in session, on the same origin as the page, at Socket.io's default path (`/socket.io/`, default namespace). In local dev, Vite proxies `/socket.io` to the server. The URL carries no session or game identifier: the session comes from the cookie sent with the handshake, and lobby/room/game membership is managed server-side via Socket.io rooms (`lobby`, `room:<roomId>`).
+
+The event protocol is not versioned. The client and server ship in the same build and deploy together.
 
 ## Client → Server Events
 
@@ -53,7 +55,7 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `join_game` | Player opens game URL | `session_token: string`, `player_id: string`, `display_name: string`, `last_seq_seen?: number` |
+| `join_game` | Player opens game URL | `player_id: string`, `display_name: string`, `last_seq_seen?: number` |
 | `leave_game` | Player clicks Leave | `player_id: string` |
 
 ### Room
@@ -108,14 +110,14 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `host_changed` | Room | `room_id`, `host_id` |
 | `room_config_updated` | Room | `room_id`, `config: RoomConfig` — after the host changes config via REST |
 | `chat_message` | Room | `room_id`, `sender_id`, `display_name`, `text`, `sent_at: ISO-8601` |
-| `room_closed` | Room | `room_id`, `reason: "inactivity"\|"game_finished"` — members return to the lobby |
+| `room_closed` | Room | `room_id`, `reason: "inactivity"\|"game_finished"\|"empty"\|"host_closed"` — members (including spectators) return to the lobby. `empty`: the last player left an open room; `host_closed`: the host closed it via `DELETE /rooms/{roomId}` |
 
 ### Lobby & Game Flow
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `player_joined` | All | `player_id`, `display_name`, `seat_index`, `player_count` |
-| `player_left` | All | `player_id`, `reason: "voluntary"\|"timeout"` |
+| `user_joined` | All | `user_id`, `display_name`, `role: "player"\|"spectator"`, `seat_index: integer\|null` (null for spectators), `player_count`, `spectator_count` — sent for players and spectators |
+| `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress |
 | `game_starting` | All | `countdown_seconds: integer`, `player_order: string[]` |
 | `game_started` | All | `round_count: integer`, `players: PlayerSummary[]` |
 | `game_over` | All | `final_scores: ScoreEntry[]`, `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners |
@@ -167,7 +169,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 | GSM State | Entry Event (Server) | Valid Client Events | Exit Event (Server) |
 | --- | --- | --- | --- |
-| `LOBBY` | `player_joined` | &#32;`leave_game` | `game_starting` |
+| `LOBBY` | `user_joined` | &#32;`leave_game` | `game_starting` |
 | `DEALING` | `game_started` / `round_started` | — | `hand_dealt` (all players) |
 | `BIDDING` | `all_bids_placed` pending; `bid_request` per player | `place_bid` | `all_bids_placed` |
 | `PLAYING` | `all_bids_placed` | `play_card` | `round_complete` |
@@ -196,13 +198,13 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 | Phase | Who | Event | Notes |
 | --- | --- | --- | --- |
-| Connect | Client | *(WebSocket upgrade, no event)* | Bearer token in `Authorization` header per OpenAPI spec |
-| Join | Client → Server | `join_game` | Carries `session_token`; server validates, assigns seat |
-| Seat confirmed | Server → Client | `player_joined` (broadcast) | All players receive newcomer's info |
-| Leave (intentional) | Client → Server | `leave_game` | The player has quit. Server broadcasts `player_left` with `reason: "voluntary"`; in a game, player-drop rules apply |
+| Connect | Client | *(WebSocket upgrade, no event)* | The browser sends the signed HTTP-only session cookie with the handshake (`withCredentials: true`). The server verifies the cookie and calls `authenticateToken` (the same check as REST `requireAuth`). On failure it emits `session_error` (`code` = the failure code, e.g. `UNAUTHORIZED` or `SESSION_INVALIDATED`, `fatal: true`) and disconnects. If the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress, it emits `session_error` (`code: "REAUTH_REQUIRED"`, `fatal: true`) and disconnects |
+| Join | Client → Server | `join_game` | Server uses the session bound at connect (`socket.data.userId`); assigns seat |
+| Seat confirmed | Server → Client | `user_joined` (broadcast) | All room members receive the newcomer's info and role |
+| Leave (intentional) | Client → Server | `leave_game` | The player has quit. Server broadcasts `user_left` with `reason: "voluntary"`; in a game, player-drop rules apply |
 | Disconnect detected | Server → All | `player_disconnected` | Socket closed or no `ping` for 30 s. Seat held; 30-second reconnection window starts |
 | Reconnect (within window) | Client → Server | `join_game` with `last_seq_seen` | Server sends `state_snapshot`, replays missed events, broadcasts `player_reconnected` |
-| Window expires | Server → All | `player_left` | `reason: "timeout"`; treated as a quit, player-drop rules apply |
+| Window expires | Server → All | `user_left` | `reason: "timeout"`; treated as a quit, player-drop rules apply |
 
 ### Spectator Mode
 
@@ -212,14 +214,14 @@ Spectators connect with `join_game` and a `role: "spectator"` payload field. The
 - Never sends `bid_request`, `play_request`, or `hand_dealt` to them.
 - Rejects any action events (`place_bid`, `play_card`) with `session_error` code `SPECTATOR_ACTION_FORBIDDEN`.
 
-Spectator presence is not broadcast to players; `player_joined` is only emitted for active players.
+Spectator joins and leaves are broadcast to the room like players': `user_joined` / `user_left` with `role: "spectator"`. A spectator leaving never triggers player-drop rules.
 
 ### Idle & Timeout Policy
 
 | Condition | Timeout | Server Action |
 | --- | --- | --- |
 | No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 30-second reconnection window |
-| Disconnected player does not rejoin | 30 s after `player_disconnected` | `player_left` (timeout) |
+| Disconnected player does not rejoin | 30 s after `player_disconnected` | `user_left` (timeout) |
 | Host disconnects in LOBBY | 120 s | Session terminated; `session_error` (fatal) to all |
 
 There are no turn timers: the game waits for a player to bid, play, or declare trump. A player who is disconnected is handled by the reconnection window above.

@@ -31,7 +31,9 @@ This document defines the complete state machines that govern Wizard's room, gam
 | — | Host opens room | User not already in a room or game | **OPEN** | Insert `rooms` row; join Socket.io room; broadcast `rooms_updated`; start 10-minute inactivity timer |
 | **OPEN** | Host starts game | ≥ 3 players in room; room is OPEN | **IN PROGRESS** | Cancel inactivity timer; create `games` row; deal round 1; broadcast `game_starting`, `round_started`; emit `hand_dealt` to each player |
 | **OPEN** | 10-minute inactivity timer fires | Game not yet started | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed`; all members returned to lobby |
-| **OPEN** | All players leave | Room is OPEN | **CLOSED** | Set `rooms.closed_at`; broadcast `rooms_updated` |
+| **OPEN** | Host leaves | Room is OPEN; at least one other player remains | **OPEN** | Set host's `room_members.left_at`; promote the remaining player with the lowest `join_order` (`role = 'player'`, `left_at IS NULL`; spectators are never promoted); update `rooms.host_user_id`; broadcast `user_left`, then `host_changed`; broadcast `rooms_updated` |
+| **OPEN** | All players leave | Room is OPEN (spectators may remain) | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed` (`reason: "empty"`) to the room; remaining spectators returned to lobby; broadcast `rooms_updated` |
+| **OPEN** | Host closes room (`DELETE /rooms/{roomId}`) | Requester is host; room is OPEN | **CLOSED** | Cancel inactivity timer; set `rooms.closed_at`; broadcast `room_closed` (`reason: "host_closed"`); all members returned to lobby; broadcast `rooms_updated` |
 | **IN PROGRESS** | Final round scoring complete | — | **COMPLETING** | Write final `game_results`; write `games.state` snapshot; broadcast `game_over`; start 30-second countdown timer |
 | **IN PROGRESS** | Player drop reduces game to 2 players and both choose to end | — | **COMPLETING** | Write `games.status = incomplete`; write `game_results` with `outcome = incomplete`; broadcast `game_over`; start 30-second countdown |
 | **COMPLETING** | 30-second countdown timer fires | — | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed`; all users returned to lobby |
@@ -50,8 +52,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **ROUND END** | More rounds remain | `currentRound < config.roundCount` | **INITIALISING** | Increment round; rotate dealer; shuffle deck; deal |
 | **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` |
 | **Any active phase** (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player drop reduces game to 2 players and mutual end chosen | — | **INCOMPLETE** | Set `games.status = incomplete`; write partial `game_results`; emit `game_over` |
-| Any active phase (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player quits or times out; ≥ 3 players remain after drop | remainingPlayerCount >= 3 | INITIALISING (same round number) | Void current round; remove dropped player; re-deal same round number to remaining players; emit `player_left` to room, then the re-dealt round (`round_started`, `hand_dealt`) |
-| **Any active phase** | 3-hour game time limit reached | `now - games.started_at >= 3h` | **INCOMPLETE** | Set `games.status = incomplete`, `drop_reason = 'time_limit'`; write `game_results` with `outcome = incomplete` (no winner); emit `game_abandoned` (`reason: "time_limit"`) |
+| Any active phase (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player quits or times out; ≥ 3 players remain after drop | remainingPlayerCount >= 3 | INITIALISING (same round number) | Void current round; remove dropped player; re-deal same round number to remaining players; emit `user_left` to room, then the re-dealt round (`round_started`, `hand_dealt`) |
 | **GAME END** | — | — | (Room → COMPLETING) | Room state machine takes over |
 | **INCOMPLETE** | — | — | (Room → COMPLETING) | Room state machine takes over |
 
@@ -96,12 +97,12 @@ This document defines the complete state machines that govern Wizard's room, gam
 
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
-| — | Player joins room (socket connect) | Valid session token in handshake | **CONNECTED** | Bind `socket.data.userId`; join Socket.io room; emit `player_joined` |
+| — | Player joins room (socket connect) | Valid signed session cookie in handshake | **CONNECTED** | Bind `socket.data.userId`; join Socket.io room; emit `user_joined` |
 | **CONNECTED** | Socket disconnect detected | Player is in an active game | **DISCONNECTED** | Start 30-second server-side `setTimeout` keyed by `userId`; emit `player_disconnected` to room; other players see indicator |
-| **CONNECTED** | Player sends `leave_game` (intentional quit) | — | **QUIT** | Set `room_members.left_at`; emit `player_left` (`reason: "voluntary"`) to room; trigger player-drop game logic; player cannot rejoin |
+| **CONNECTED** | Player sends `leave_game` (intentional quit) | — | **QUIT** | Set `room_members.left_at`; emit `user_left` (`reason: "voluntary"`) to room; trigger player-drop game logic; player cannot rejoin as a player (may rejoin as a spectator) |
 | **DISCONNECTED** | Player reconnects (socket reconnect) | Session still valid; timer still running; `clearTimeout` | **RECONNECTED** | Send `game.toPlayerView(userId)` (own hand only) via `state_snapshot` to reconnecting socket; emit `player_reconnected` to room; indicator cleared |
 | **DISCONNECTED** | Player sends `leave_game` while socket is down | Server receives leave event on reconnect before timer clears | **QUIT** | Treat as explicit quit; clear timer; trigger player-drop game logic |
-| **DISCONNECTED** | 30-second timer fires | Player has not reconnected | **TIMED OUT** | Treat as quit; trigger player-drop game logic; emit `player_left` (`reason: "timeout"`) to room; set `room_members.left_at` |
+| **DISCONNECTED** | 30-second timer fires | Player has not reconnected | **TIMED OUT** | Treat as quit; trigger player-drop game logic; emit `user_left` (`reason: "timeout"`) to room; set `room_members.left_at` |
 | **RECONNECTED** | Continues playing | — | **CONNECTED** | Normal gameplay resumes |
 | **QUIT** | — | — | (terminal) | Player removed permanently; cannot re-enter this game |
 | **TIMED OUT** | — | — | (terminal) | Same as QUIT; player-drop game logic applied |
@@ -120,7 +121,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 
 **Game time limit:** A game may run for at most 3 hours from start. The server sets one timer when the game starts. At 2 h 45 min it broadcasts `game_time_warning`; at 3 hours it abandons the game from whatever phase it is in (the round in progress is not scored), records it incomplete with `drop_reason = 'time_limit'` and no winner, and broadcasts `game_abandoned` (`reason: "time_limit"`). The timers are cleared if the game ends first. The limit also guarantees a game ends before the players' sessions do: entering a room or starting a game requires more than 24 hours left on the session.
 
-**Host leaves before game starts:** The game engine is not involved. The server queries `room_members` ordered by `join_order ASC` where `left_at IS NULL` and promotes the first result as the new host. `rooms.host_user_id` is updated and `host_changed` is broadcast. If no players remain, the room closes.
+**Host leaves before game starts:** The game engine is not involved. The server queries `room_members` ordered by `join_order ASC` where `role = 'player'` and `left_at IS NULL` and promotes the first result as the new host. Spectators are never promoted. `rooms.host_user_id` is updated and `host_changed` is broadcast. If no players remain, the room closes.
 
 **All-Jester trick:** No special branch in code. Trick resolution applies the priority rules — with no Wizards, no trump, and no suited cards, the first Jester played wins. The lead player wins the trick. `winningCardType = jester` is recorded.
 

@@ -75,11 +75,18 @@ Junction table tracking who is in a room and in what role. A user can appear onc
 | `room_id` | `uuid` | No | FK → `rooms.id`, NOT NULL | The room |
 | `user_id` | `uuid` | No | FK → `users.id`, NOT NULL | The member |
 | `role` | `varchar(16)` | No | NOT NULL, CHECK (`role` IN ('player','spectator')) | Member role in this room |
-| `join_order` | `integer` | No | NOT NULL | Sequential join position (1 = first to join). Used for host transfer ordering. |
+| `join_order` | `integer` | No | NOT NULL | Sequential join position across all members (1 = first to join). Used for host transfer ordering: the new host is the active player (`role = 'player'`, `left_at IS NULL`) with the lowest `join_order`. Spectators are never promoted. |
 | `joined_at` | `timestamptz` | No | NOT NULL, default `now()` | When the user joined the room |
 | `left_at` | `timestamptz` | Yes | — | When the user left. Null = still in room. |
 
 Composite PK: `(room_id, user_id)`.
+
+**Rejoining.** A user who leaves and rejoins the same room reuses their existing row rather than inserting a new one: clear `left_at`, set the new `role`, set `join_order` to the room's current maximum + 1, and reset `joined_at`. Allowed roles on rejoin:
+
+- Room `open`: player or spectator.
+- Room `in_progress`: spectator only. A player who quit mid-game cannot rejoin as a player.
+
+Past game participation is preserved in `round_players` and `game_results`, not in this row.
 
 ## Data Dictionary — games
 

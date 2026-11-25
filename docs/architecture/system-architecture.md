@@ -129,7 +129,7 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 
 **Socket.io room model:** Each game room maps to a Socket.io room named `room:<roomId>`. Lobby presence is a separate room `lobby`. Players and spectators join the same Socket.io room; spectator filtering is applied at the emit level — hand data is never broadcast to a room, only sent in individual player-targeted events.
 
-**Session-socket binding:** On socket connect, the client sends its session token in the handshake auth payload. The server validates the token, looks up the user, and stores `socket.data.userId` and `socket.data.roomId`. Every subsequent event handler reads from `socket.data` — no session lookup per event.
+**Session-socket binding:** On socket connect, the browser sends the signed HTTP-only session cookie with the handshake (`withCredentials: true`); the client never reads the token. The server validates the cookie's session, looks up the user, and stores `socket.data.userId` and `socket.data.roomId`. Every subsequent event handler reads from `socket.data` — no session lookup per event.
 
 **Reconnection sequence:**
 
@@ -138,13 +138,13 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 3. Client attempts to reconnect (Socket.io built-in retry with the same session token)
 4. On reconnect: session validated, `setTimeout` cleared, `game.toPlayerView(userId)` (own hand only) sent to the reconnecting socket via `state_snapshot`
 5. `player_reconnected` broadcast to the room; indicator cleared
-6. If timer expires before reconnect: player treated as quit, `player_left` (`reason: "timeout"`) broadcast, game drop logic applied
+6. If timer expires before reconnect: player treated as quit, `user_left` (`reason: "timeout"`) broadcast, game drop logic applied
 
-A player who leaves intentionally (`leave_game`) has quit immediately: `player_left` (`reason: "voluntary"`) is broadcast and there is no reconnection window.
+A player who leaves intentionally (`leave_game`) has quit immediately: `user_left` (`reason: "voluntary"`) is broadcast and there is no reconnection window.
 
 **Event flow — lobby:** Client connects → joins `lobby` room → receives `lobby_snapshot` (current rooms, presence). On room changes or player joins/leaves lobby: `rooms_updated` and `presence_updated` broadcast to all lobby members.
 
-**Event flow — room:** Player opens/joins room → joins `room:<id>` → receives `room_snapshot`. Events: `player_joined`, `player_left`, `host_changed`, `chat_message`, `room_config_updated` (rounds, bid rule), `game_starting`.
+**Event flow — room:** Player opens/joins room → joins `room:<id>` → receives `room_snapshot`. Events: `user_joined`, `user_left`, `host_changed`, `chat_message`, `room_config_updated` (rounds, bid rule), `game_starting`.
 
 **Event flow — game:** `game_started`, then per round: `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`; finally `game_over` (or `game_abandoned` after a server restart). Player-specific events: `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`. Event names and payloads are defined in the WebSocket Event Taxonomy.
 
@@ -191,7 +191,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `player_l
 
 **Session validation middleware:** All authenticated API routes run an Express middleware that reads the session cookie, hashes the token, looks up the session in Postgres, checks expiry and invalidation, and attaches the user object to `req.user`. Rejected requests receive 401.
 
-**Session-socket binding:** On Socket.io connection, the client sends the session token in the handshake `auth` object. The server runs the same validation logic and binds `socket.data.userId`. If validation fails, the connection is rejected. All socket event handlers trust `socket.data.userId` — no per-event re-validation.
+**Session-socket binding:** On Socket.io connection, the server reads the signed session cookie from the handshake headers and runs the same validation logic as the REST middleware and binds `socket.data.userId`. If validation fails, the connection is rejected. All socket event handlers trust `socket.data.userId` — no per-event re-validation.
 
 **Reconnection window:** When a socket disconnects, the session remains valid in Postgres. The 30-second reconnection timer is server-side state (in-memory `setTimeout`). If the server restarts during the window, the timer is lost along with the game itself: the game is abandoned (see GameState checkpointing).
 
