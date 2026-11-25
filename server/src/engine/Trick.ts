@@ -1,5 +1,7 @@
 import { Card, CardData, Suit } from './Card';
 import { EngineError } from './errors';
+import type { Ruleset } from './rulesets';
+import { STANDARD_RULESET } from './rulesets/standard';
 
 export type WinningCardType = 'wizard' | 'trump' | 'suited' | 'jester';
 
@@ -24,17 +26,20 @@ export interface TrickData {
 
 /**
  * Cards played in one trick, in play order. Turn order and player count are
- * enforced by Game; Trick only records plays and determines the winner.
+ * enforced by Game; Trick records plays and asks the ruleset for legality and
+ * the winner.
  */
 export class Trick {
   readonly trickNumber: number;
   readonly leaderId: string;
+  private readonly ruleset: Ruleset;
   private readonly played: PlayedCard[] = [];
   private result: TrickResult | null = null;
 
-  constructor(trickNumber: number, leaderId: string) {
+  constructor(trickNumber: number, leaderId: string, ruleset: Ruleset = STANDARD_RULESET) {
     this.trickNumber = trickNumber;
     this.leaderId = leaderId;
+    this.ruleset = ruleset;
   }
 
   get cards(): readonly PlayedCard[] {
@@ -53,33 +58,19 @@ export class Trick {
     return this.result;
   }
 
-  /**
-   * Suit that "highest of led suit" is judged against: the suit of the first
-   * suited card played. Null if no suited card has been played.
-   */
+  /** Suit of the first suited card played, or null if none has been played. */
   get ledSuit(): Suit | null {
     return this.played.find((p) => p.card.isSuited)?.card.suit ?? null;
   }
 
-  /**
-   * Suit players are obliged to follow. Set only when the lead card is a
-   * suited card; a Wizard or Jester lead frees everyone to play any card.
-   */
+  /** Suit players are obliged to follow, per the ruleset. */
   get suitToFollow(): Suit | null {
-    const lead = this.played[0]?.card;
-    return lead && lead.isSuited ? lead.suit : null;
+    return this.ruleset.suitToFollow(this.played);
   }
 
-  /**
-   * Whether `card` may legally be played from `hand`. Wizards and Jesters may
-   * always be played. A suited card must match the suit to follow unless the
-   * hand holds no card of that suit.
-   */
+  /** Whether `card` may legally be played from `hand`, per the ruleset. */
   isLegalPlay(hand: readonly Card[], card: Card): boolean {
-    if (!card.isSuited) return true;
-    const follow = this.suitToFollow;
-    if (follow === null || card.suit === follow) return true;
-    return !hand.some((c) => c.isSuited && c.suit === follow);
+    return this.ruleset.isLegalPlay(this.played, hand, card);
   }
 
   playCard(playerId: string, card: Card): void {
@@ -92,31 +83,15 @@ export class Trick {
     this.played.push({ playerId, card });
   }
 
-  /**
-   * Winner priority: first Wizard → highest trump → highest card of the led
-   * suit → first Jester (only when every card is a Jester).
-   */
+  /** Determines the winner per the ruleset and returns their player ID. */
   resolve(trump: Suit | null): string {
     if (this.played.length === 0) {
       throw new EngineError('INVALID_PHASE', 'Cannot resolve an empty trick');
     }
-
-    const wizard = this.played.find((p) => p.card.isWizard);
-    if (wizard) return this.finish(wizard, 'wizard');
-
-    if (trump !== null) {
-      const best = highest(this.played.filter((p) => p.card.suit === trump));
-      if (best) return this.finish(best, 'trump');
-    }
-
-    const led = this.ledSuit;
-    if (led !== null) {
-      const best = highest(this.played.filter((p) => p.card.suit === led));
-      if (best) return this.finish(best, 'suited');
-    }
-
-    // Only Jesters remain: the first one played wins.
-    return this.finish(this.played[0], 'jester');
+    const { winnerIndex, winningCardType } = this.ruleset.resolveTrick(this.played, trump);
+    const play = this.played[winnerIndex];
+    this.result = { winnerId: play.playerId, winningCard: play.card, winningCardType };
+    return play.playerId;
   }
 
   toData(): TrickData {
@@ -128,16 +103,4 @@ export class Trick {
       winningCardType: this.result?.winningCardType ?? null,
     };
   }
-
-  private finish(play: PlayedCard, type: WinningCardType): string {
-    this.result = { winnerId: play.playerId, winningCard: play.card, winningCardType: type };
-    return play.playerId;
-  }
-}
-
-function highest(plays: PlayedCard[]): PlayedCard | undefined {
-  return plays.reduce<PlayedCard | undefined>(
-    (best, p) => (!best || (p.card.rank as number) > (best.card.rank as number) ? p : best),
-    undefined,
-  );
 }

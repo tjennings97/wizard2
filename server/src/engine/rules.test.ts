@@ -1,5 +1,4 @@
-import { Card } from './Card';
-import { determineTrump, maxRounds, scoreRound } from './rules';
+import { maxRounds, scoreRound } from './rules';
 
 describe('maxRounds = Math.floor(deckSize / playerCount)', () => {
   it.each([
@@ -15,44 +14,10 @@ describe('maxRounds = Math.floor(deckSize / playerCount)', () => {
     expect(maxRounds(60, players)).toBe(rounds);
   });
 
-  it('uses the configured deck size (68-card extended)', () => {
+  it('works for any deck size', () => {
     expect(maxRounds(68, 3)).toBe(22);
     expect(maxRounds(68, 4)).toBe(17);
     expect(maxRounds(68, 6)).toBe(11);
-  });
-});
-
-describe('determineTrump', () => {
-  it('suited card flipped → that suit is trump', () => {
-    expect(determineTrump(Card.suited('clubs', 9))).toEqual({
-      trumpSuit: 'clubs',
-      trumpSource: 'flip',
-      requiresDeclaration: false,
-    });
-  });
-
-  it('Jester flipped → no trump', () => {
-    expect(determineTrump(Card.jester())).toEqual({
-      trumpSuit: null,
-      trumpSource: null,
-      requiresDeclaration: false,
-    });
-  });
-
-  it('Wizard flipped → dealer must declare', () => {
-    expect(determineTrump(Card.wizard())).toEqual({
-      trumpSuit: null,
-      trumpSource: null,
-      requiresDeclaration: true,
-    });
-  });
-
-  it('no card left to flip (all cards dealt) → no trump', () => {
-    expect(determineTrump(null)).toEqual({
-      trumpSuit: null,
-      trumpSource: null,
-      requiresDeclaration: false,
-    });
   });
 });
 

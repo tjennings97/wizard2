@@ -1,6 +1,8 @@
 import { Card, CardData, Suit, isSuit } from './Card';
 import { EngineError } from './errors';
-import { BidRule, TrumpSource, determineTrump, scoreRound } from './rules';
+import { BidRule, TrumpSource, scoreRound } from './rules';
+import type { Ruleset } from './rulesets';
+import { STANDARD_RULESET } from './rulesets/standard';
 import { Trick } from './Trick';
 
 export interface RoundOptions {
@@ -13,6 +15,8 @@ export interface RoundOptions {
   trumpCard: Card | null;
   /** Hands as dealt, keyed by player ID. Kept for history/event logging. */
   dealtHands?: Record<string, readonly Card[]>;
+  /** Edition rules for trump and tricks. Defaults to standard. */
+  ruleset?: Ruleset;
 }
 
 export interface RoundPlayerResult {
@@ -35,6 +39,7 @@ export class Round {
   /** Player IDs in bidding order (left of dealer first, dealer last). */
   readonly bidOrder: readonly string[];
   readonly dealtHands: Readonly<Record<string, readonly CardData[]>>;
+  readonly ruleset: Ruleset;
 
   private _trumpSuit: Suit | null;
   private _trumpSource: TrumpSource;
@@ -53,6 +58,7 @@ export class Round {
     this.dealerId = opts.dealerId;
     this.bidRule = opts.bidRule;
     this.trumpCard = opts.trumpCard;
+    this.ruleset = opts.ruleset ?? STANDARD_RULESET;
     const n = opts.seatOrder.length;
     this.bidOrder = opts.seatOrder.map((_, i) => opts.seatOrder[(dealerIndex + 1 + i) % n]);
     for (const id of this.bidOrder) this.tricksWon.set(id, 0);
@@ -63,7 +69,7 @@ export class Round {
     }
     this.dealtHands = hands;
 
-    const trump = determineTrump(opts.trumpCard);
+    const trump = this.ruleset.determineTrump(opts.trumpCard);
     this._trumpSuit = trump.trumpSuit;
     this._trumpSource = trump.trumpSource;
     this._awaitingDeclaration = trump.requiresDeclaration;
@@ -195,7 +201,7 @@ export class Round {
     if (this._tricks.length >= this.roundNumber) {
       throw new EngineError('INVALID_PHASE', 'All tricks in this round have been played');
     }
-    const trick = new Trick(this._tricks.length + 1, leaderId);
+    const trick = new Trick(this._tricks.length + 1, leaderId, this.ruleset);
     this._tricks.push(trick);
     return trick;
   }

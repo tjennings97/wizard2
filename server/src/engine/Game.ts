@@ -1,21 +1,29 @@
 import { Card, CardData, Suit } from './Card';
-import { Deck, RandomSource, STANDARD_DECK_SIZE } from './Deck';
+import { Deck, RandomSource } from './Deck';
 import { EngineError } from './errors';
-import type { GameConfig, GamePhase, GameState, RoundSummary } from './GameState';
+import type {
+  GameConfig,
+  GamePhase,
+  GameState,
+  GameStateView,
+  PendingContinue,
+  RoundSummary,
+} from './GameState';
 import { Player } from './Player';
 import { Round } from './Round';
+import { DeckType, Ruleset, getRuleset } from './rulesets';
 import { BidRule, MAX_PLAYERS, MIN_PLAYERS, TrumpSource, maxRounds } from './rules';
 import type { Trick, WinningCardType } from './Trick';
 
 /** Builds the deck for a round. Must return a deck that is ready to deal (shuffled). */
-export type DeckFactory = (deckSize: number, roundNumber: number) => Deck;
+export type DeckFactory = (ruleset: Ruleset, roundNumber: number) => Deck;
 
 export interface GameOptions {
   gameId: string;
   roomId: string;
   /** Players in seat order. Seat 1 deals round 1. */
   players: Player[];
-  config: { roundCount: number; bidRule?: BidRule; deckSize?: number };
+  config: { roundCount: number; bidRule?: BidRule; deckType?: DeckType };
   /** Used by the default deck factory. */
   random?: RandomSource;
   /** Override deck construction (e.g. stacked decks in tests). */
@@ -100,6 +108,7 @@ export class Game {
 
   private players: Player[];
   private readonly dropped: Player[] = [];
+  private readonly ruleset: Ruleset;
   private readonly deckFactory: DeckFactory;
   private _phase: GamePhase = 'not_started';
   private roundNumber = 0;
@@ -107,11 +116,12 @@ export class Game {
   private round: Round | null = null;
   private readonly history: RoundSummary[] = [];
   private winnerIds: string[] = [];
-  /** Phase to return to if two remaining players choose to continue. */
-  private pausedFrom: { phase: GamePhase; redeal: boolean } | null = null;
+  /** What happens if the two remaining players choose to continue. */
+  private pendingContinue: PendingContinue | null = null;
 
   constructor(opts: GameOptions) {
-    const deckSize = opts.config.deckSize ?? STANDARD_DECK_SIZE;
+    // Throws INVALID_CONFIG for an unknown deck type.
+    const ruleset = getRuleset(opts.config.deckType ?? 'standard');
     const count = opts.players.length;
     if (count < MIN_PLAYERS || count > MAX_PLAYERS) {
       throw new EngineError('INVALID_CONFIG', `A game needs ${MIN_PLAYERS}–${MAX_PLAYERS} players; got ${count}`);
@@ -123,7 +133,7 @@ export class Game {
     if (bidRule !== 'open' && bidRule !== 'uneven') {
       throw new EngineError('INVALID_CONFIG', `Invalid bid rule: ${String(bidRule)}`);
     }
-    const max = maxRounds(deckSize, count);
+    const max = maxRounds(ruleset.deckSize, count);
     const { roundCount } = opts.config;
     if (!Number.isInteger(roundCount) || roundCount < 1 || roundCount > max) {
       throw new EngineError('INVALID_CONFIG', `Round count must be 1–${max} for ${count} players`);
@@ -131,12 +141,16 @@ export class Game {
 
     this.gameId = opts.gameId;
     this.roomId = opts.roomId;
-    this.config = Object.freeze({ roundCount, bidRule, deckSize });
+    this.ruleset = ruleset;
+    this.config = Object.freeze({
+      roundCount,
+      bidRule,
+      deckType: ruleset.deckType,
+      deckSize: ruleset.deckSize,
+    });
     this.players = [...opts.players];
     const random = opts.random ?? Math.random;
-    this.deckFactory = opts.deckFactory ?? ((size) => new Deck(size, random).shuffle());
-    // Constructing a Deck validates deckSize up front.
-    if (!opts.deckFactory) new Deck(deckSize);
+    this.deckFactory = opts.deckFactory ?? ((r) => new Deck(r.deckType, random).shuffle());
   }
 
   // --- Queries -----------------------------------------------------------
@@ -308,7 +322,7 @@ export class Game {
     const player = this.getPlayer(playerId);
     const roundInProgress =
       ACTIVE_ROUND_PHASES.includes(this._phase) ||
-      (this._phase === 'awaiting_continue_decision' && this.pausedFrom?.redeal === true);
+      (this._phase === 'awaiting_continue_decision' && this.pendingContinue?.redeal === true);
 
     if (this.dealerId === playerId) {
       // The deal passes to the next seat. If the round is re-dealt, that seat
@@ -324,12 +338,12 @@ export class Game {
     const remaining = this.players.length;
     if (remaining <= 1) {
       this._phase = 'incomplete';
-      this.pausedFrom = null;
+      this.pendingContinue = null;
       return { playerId, outcome: 'incomplete', roundStarted: null };
     }
     if (remaining === 2) {
       if (this._phase !== 'awaiting_continue_decision') {
-        this.pausedFrom = { phase: this._phase, redeal: roundInProgress };
+        this.pendingContinue = { resumePhase: this._phase, redeal: roundInProgress };
       }
       this._phase = 'awaiting_continue_decision';
       return { playerId, outcome: 'continue_or_end', roundStarted: null };
@@ -343,14 +357,14 @@ export class Game {
   /** Two remaining players chose to continue (true) or end (false). */
   resolveContinueOrEnd(continueGame: boolean): RoundStarted | null {
     this.assertPhase('awaiting_continue_decision');
-    const paused = this.pausedFrom as { phase: GamePhase; redeal: boolean };
-    this.pausedFrom = null;
+    const pending = this.pendingContinue as PendingContinue;
+    this.pendingContinue = null;
     if (!continueGame) {
       this._phase = 'incomplete';
       return null;
     }
-    if (paused.redeal) return this.deal();
-    this._phase = paused.phase;
+    if (pending.redeal) return this.deal();
+    this._phase = pending.resumePhase;
     return null;
   }
 
@@ -395,18 +409,54 @@ export class Game {
       }),
       roundHistory: this.history.map((r) => ({ ...r, players: r.players.map((p) => ({ ...p })) })),
       scores: this.scores,
-      droppedUserIds: this.dropped.map((p) => p.id),
+      droppedPlayers: this.dropped.map((p) => ({
+        userId: p.id,
+        username: p.username,
+        displayName: p.displayName,
+        avatarConfig: p.avatarConfig ? { ...p.avatarConfig } : null,
+        isBot: p.isBot,
+        finalScore: p.score,
+      })),
+      pendingContinue: this.pendingContinue ? { ...this.pendingContinue } : null,
       winnerUserIds: [...this.winnerIds],
     };
   }
 
+  /**
+   * Snapshot for one player's client: every other player's hand is replaced
+   * by a card count. Send this, never `toGameState()`, in
+   * `state_snapshot`.
+   */
+  toPlayerView(userId: string): GameStateView {
+    this.getPlayer(userId); // throws UNKNOWN_PLAYER for non-players
+    return this.toView(userId);
+  }
+
+  /** Snapshot for a spectator: no hands at all, only card counts. */
+  toSpectatorView(): GameStateView {
+    return this.toView(null);
+  }
+
   // --- Internals ---------------------------------------------------------
+
+  private toView(viewerUserId: string | null): GameStateView {
+    const { players, ...rest } = this.toGameState();
+    return {
+      ...rest,
+      viewerUserId,
+      players: players.map(({ hand, ...p }) => ({
+        ...p,
+        hand: p.userId === viewerUserId ? hand : null,
+        handCount: hand.length,
+      })),
+    };
+  }
 
   /** Shuffles and deals the current round number, then determines trump. */
   private deal(): RoundStarted {
     const dealerId = this.dealerId as string;
     const n = this.roundNumber;
-    const deck = this.deckFactory(this.config.deckSize, n);
+    const deck = this.deckFactory(this.ruleset, n);
     const seatOrder = this.players.map((p) => p.id);
     const dealerIndex = seatOrder.indexOf(dealerId);
 
@@ -426,6 +476,7 @@ export class Game {
       bidRule: this.config.bidRule,
       trumpCard,
       dealtHands: hands,
+      ruleset: this.ruleset,
     });
     this.round = round;
     this._phase = round.awaitingDeclaration ? 'trump_declaration' : 'bidding';

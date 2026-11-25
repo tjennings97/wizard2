@@ -1,4 +1,7 @@
-import { Card, Suit } from './Card';
+/**
+ * Game rules shared by every deck edition. Rules that differ between editions
+ * belong in that edition's Ruleset instead.
+ */
 import { EngineError } from './errors';
 
 export const MIN_PLAYERS = 3;
@@ -13,31 +16,6 @@ export function maxRounds(deckSize: number, playerCount: number): number {
     throw new EngineError('INVALID_CONFIG', `Invalid player count: ${playerCount}`);
   }
   return Math.floor(deckSize / playerCount);
-}
-
-export interface TrumpDetermination {
-  trumpSuit: Suit | null;
-  trumpSource: TrumpSource;
-  /** True when a Wizard was flipped and the dealer must declare a suit before bidding. */
-  requiresDeclaration: boolean;
-}
-
-/**
- * Trump from the flipped card. Pass `null` when every card was dealt (final
- * round where deckSize is divisible by the player count): no card to flip, no trump.
- */
-export function determineTrump(flipped: Card | null): TrumpDetermination {
-  if (flipped === null) {
-    return { trumpSuit: null, trumpSource: null, requiresDeclaration: false };
-  }
-  switch (flipped.type) {
-    case 'suited':
-      return { trumpSuit: flipped.suit, trumpSource: 'flip', requiresDeclaration: false };
-    case 'jester':
-      return { trumpSuit: null, trumpSource: null, requiresDeclaration: false };
-    case 'wizard':
-      return { trumpSuit: null, trumpSource: null, requiresDeclaration: true };
-  }
 }
 
 /** Exact: 20 + 10 × tricks. Otherwise: −10 × |tricks − bid|. */

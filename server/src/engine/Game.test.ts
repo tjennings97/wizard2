@@ -26,7 +26,11 @@ function stacked(top: Card[]): Deck {
   return Deck.fromCards([...top, ...rest]);
 }
 
-/** Deterministic PRNG (mulberry32). */
+/**
+ * Deterministic PRNG for reproducible shuffles in tests.
+ * Standard mulberry32 (Tommy Ettinger); see github.com/bryc/code/blob/master/jshash/PRNGs.md.
+ * Not cryptographically secure — never use outside tests.
+ */
 function seeded(seed: number): () => number {
   let a = seed;
   return () => {
@@ -52,7 +56,7 @@ function makeGame(overrides: Partial<GameOptions> = {}): Game {
  * the next card is flipped. Round 1 dealer is seat 1 ('a'), so order is b, c, a.
  */
 function gameWithDecks(decks: Record<number, Deck>, overrides: Partial<GameOptions> = {}): Game {
-  return makeGame({ deckFactory: (_size, round) => decks[round], ...overrides });
+  return makeGame({ deckFactory: (_ruleset, round) => decks[round], ...overrides });
 }
 
 /** Plays the current round to completion: everyone bids their first allowed bid and plays their first legal card. */
@@ -87,16 +91,16 @@ describe('Game construction', () => {
     expect(() => makeGame({ config: { roundCount: 0 } })).toThrow(EngineError);
   });
 
-  it('rejects duplicate players, bad bid rules, and unsupported deck sizes', () => {
+  it('rejects duplicate players, bad bid rules, and unsupported deck types', () => {
     expect(() => makeGame({ players: players('a', 'a', 'b') })).toThrow(EngineError);
     expect(() => makeGame({ config: { roundCount: 1, bidRule: 'strict' as never } })).toThrow(EngineError);
-    expect(() => makeGame({ config: { roundCount: 1, deckSize: 68 } })).toThrow(EngineError);
+    expect(() => makeGame({ config: { roundCount: 1, deckType: 'camelot' as never } })).toThrow(EngineError);
   });
 
   it('starts in not_started with defaults applied', () => {
     const g = makeGame();
     expect(g.phase).toBe('not_started');
-    expect(g.config).toEqual({ roundCount: 3, bidRule: 'open', deckSize: 60 });
+    expect(g.config).toEqual({ roundCount: 3, bidRule: 'open', deckType: 'standard', deckSize: 60 });
   });
 });
 
@@ -392,7 +396,9 @@ describe('Game player drops', () => {
     expect(g.currentRound!.bidOrder).toEqual(['c', 'a', 'b']);
     const { d: _d, ...remaining } = scoresBefore;
     expect(g.scores).toEqual(remaining);
-    expect(g.toGameState().droppedUserIds).toEqual(['d']);
+    expect(g.toGameState().droppedPlayers).toEqual([
+      { userId: 'd', username: 'd', displayName: 'D', avatarConfig: null, isBot: false, finalScore: scoresBefore.d },
+    ]);
   });
 
   it('passes the deal to the next seat when the dealer drops mid-round', () => {
@@ -419,10 +425,15 @@ describe('Game player drops', () => {
     g.startRound();
     expect(g.removePlayer('c').outcome).toBe('continue_or_end');
     expect(g.phase).toBe('awaiting_continue_decision');
+    expect(g.toGameState().pendingContinue).toEqual({
+      resumePhase: expect.stringMatching(/^(bidding|trump_declaration)$/),
+      redeal: true,
+    });
     expect(() => g.placeBid('a', 0)).toThrow(EngineError);
 
     const restarted = g.resolveContinueOrEnd(true);
     expect(restarted).toMatchObject({ roundNumber: 2 });
+    expect(g.toGameState().pendingContinue).toBeNull();
     expect(g.phase).toMatch(/bidding|trump_declaration/);
     autoPlayRound(g);
     expect(g.phase).toBe('round_end');
@@ -458,5 +469,45 @@ describe('Game with a BotPlayer', () => {
     expect(g.currentTurnId).toBe('bot');
     expect(g.currentRound!.getBid('bot')).toBeNull();
     expect(g.toGameState().players[1].isBot).toBe(true);
+  });
+});
+
+function errorCode(fn: () => unknown): string | null {
+  try {
+    fn();
+  } catch (e) {
+    return (e as EngineError).code ?? null;
+  }
+  return null;
+}
+
+describe('Game.toPlayerView / toSpectatorView', () => {
+  it("includes only the viewer's own hand; others show a card count", () => {
+    const g = makeGame({ random: seeded(21) });
+    g.startRound();
+    const full = g.toGameState();
+    const view = g.toPlayerView('b');
+    expect(view.viewerUserId).toBe('b');
+    expect(JSON.parse(JSON.stringify(view))).toEqual(view);
+    for (const p of view.players) {
+      expect(p.handCount).toBe(1);
+      expect(p.hand).toEqual(p.userId === 'b' ? full.players.find((f) => f.userId === 'b')!.hand : null);
+    }
+  });
+
+  it('gives spectators no hands', () => {
+    const g = makeGame({ random: seeded(22) });
+    g.startRound();
+    const view = g.toSpectatorView();
+    expect(view.viewerUserId).toBeNull();
+    expect(view.players.every((p) => p.hand === null && p.handCount === 1)).toBe(true);
+  });
+
+  it('refuses a view for someone who is not an active player', () => {
+    const g = makeGame({ players: players('a', 'b', 'c', 'd'), random: seeded(23) });
+    g.startRound();
+    g.removePlayer('d');
+    expect(errorCode(() => g.toPlayerView('nobody'))).toBe('UNKNOWN_PLAYER');
+    expect(errorCode(() => g.toPlayerView('d'))).toBe('UNKNOWN_PLAYER');
   });
 });

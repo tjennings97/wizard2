@@ -5,6 +5,8 @@ export * from './errors';
 export * from './Card';
 export * from './Deck';
 export * from './rules';
+export * from './rulesets';
+export * from './rulesets/standard';
 export * from './Trick';
 export * from './Round';
 export * from './GameState';

@@ -1,5 +1,6 @@
 import { Card, SUITS } from './Card';
-import { Deck, STANDARD_DECK_SIZE } from './Deck';
+import { Deck } from './Deck';
+import { DECK_TYPES, getRuleset } from './rulesets';
 import { EngineError } from './errors';
 
 /** Deterministic PRNG (mulberry32) for reproducible shuffles. */
@@ -18,7 +19,7 @@ describe('Deck', () => {
   it('builds the standard 60-card deck by default', () => {
     const deck = new Deck();
     const cards = deck.peekAll();
-    expect(deck.deckSize).toBe(STANDARD_DECK_SIZE);
+    expect(deck.deckSize).toBe(60);
     expect(cards).toHaveLength(60);
     expect(cards.filter((c) => c.isWizard)).toHaveLength(4);
     expect(cards.filter((c) => c.isJester)).toHaveLength(4);
@@ -28,12 +29,20 @@ describe('Deck', () => {
     }
   });
 
-  it('rejects unsupported deck sizes', () => {
-    expect(() => new Deck(68)).toThrow(EngineError);
+  it('rejects unsupported deck types', () => {
+    expect(() => new Deck('camelot' as never)).toThrow(EngineError);
+  });
+
+  it('every supported deck type builds exactly its declared size', () => {
+    for (const type of DECK_TYPES) {
+      const deck = new Deck(type);
+      expect(deck.remaining).toBe(getRuleset(type).deckSize);
+      expect(deck.deckSize).toBe(getRuleset(type).deckSize);
+    }
   });
 
   it('shuffle permutes the cards without losing any', () => {
-    const deck = new Deck(60, seeded(42));
+    const deck = new Deck('standard', seeded(42));
     const before = deck.peekAll().map(String);
     deck.shuffle();
     const after = deck.peekAll().map(String);
@@ -42,8 +51,8 @@ describe('Deck', () => {
   });
 
   it('shuffle is deterministic for a given random source', () => {
-    const a = new Deck(60, seeded(7)).shuffle().peekAll().map(String);
-    const b = new Deck(60, seeded(7)).shuffle().peekAll().map(String);
+    const a = new Deck('standard', seeded(7)).shuffle().peekAll().map(String);
+    const b = new Deck('standard', seeded(7)).shuffle().peekAll().map(String);
     expect(a).toEqual(b);
   });
 

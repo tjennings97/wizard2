@@ -108,13 +108,63 @@ describe('Trick follow-suit legality', () => {
     expect(t.isLegalPlay(hand, J())).toBe(true);
   });
 
-  it.each([
-    ['Wizard', W()],
-    ['Jester', J()],
-  ])('a %s lead imposes no suit obligation', (_name, lead) => {
-    const t = trickOf(['a', lead], ['b', S('hearts', 5)]);
+  it('a Wizard lead imposes no suit obligation, even after a suited card', () => {
+    const t = trickOf(['a', W()], ['b', S('hearts', 5)]);
     expect(t.suitToFollow).toBeNull();
     expect(t.isLegalPlay([S('hearts', 9), S('clubs', 3)], S('clubs', 3))).toBe(true);
+  });
+
+  it('a Jester lead imposes no suit obligation until a suited card is played', () => {
+    const t = trickOf(['a', J()]);
+    expect(t.suitToFollow).toBeNull();
+    expect(t.isLegalPlay([S('hearts', 9), S('clubs', 3)], S('clubs', 3))).toBe(true);
+  });
+
+  it('after a Jester lead, the first suited card sets the suit to follow', () => {
+    const t = trickOf(['a', J()], ['b', S('hearts', 5)]);
+    expect(t.suitToFollow).toBe('hearts');
+    const hand = [S('hearts', 9), S('clubs', 3)];
+    expect(t.isLegalPlay(hand, S('clubs', 3))).toBe(false);
+    expect(t.isLegalPlay(hand, S('hearts', 9))).toBe(true);
+  });
+
+  it('after several Jesters, the first suited card still sets the suit', () => {
+    const t = trickOf(['a', J()], ['b', J()], ['c', S('spades', 4)], ['d', S('hearts', 14)]);
+    expect(t.suitToFollow).toBe('spades');
+    expect(t.isLegalPlay([S('spades', 2), S('hearts', 3)], S('hearts', 3))).toBe(false);
+  });
+
+  it('a Wizard played after a suited lead does not cancel the obligation', () => {
+    const t = trickOf(['a', S('hearts', 7)], ['b', W()]);
+    expect(t.suitToFollow).toBe('hearts');
+    const hand = [S('hearts', 2), S('spades', 14)];
+    expect(t.isLegalPlay(hand, S('spades', 14))).toBe(false);
+    expect(t.isLegalPlay(hand, S('hearts', 2))).toBe(true);
+  });
+
+  it('a Jester lead followed immediately by a Wizard imposes no suit obligation', () => {
+    const t = trickOf(['a', J()], ['b', W()], ['c', S('clubs', 6)]);
+    expect(t.suitToFollow).toBeNull();
+    expect(t.isLegalPlay([S('clubs', 2), S('hearts', 3)], S('hearts', 3))).toBe(true);
+  });
+
+  it('several Jesters then a Wizard impose no suit obligation', () => {
+    const t = trickOf(['a', J()], ['b', J()], ['c', W()], ['d', S('clubs', 6)]);
+    expect(t.suitToFollow).toBeNull();
+    expect(t.isLegalPlay([S('clubs', 2), S('hearts', 3)], S('hearts', 3))).toBe(true);
+  });
+
+  it('after a Jester lead sets a suit, a later Wizard does not cancel it', () => {
+    const t = trickOf(['a', J()], ['b', S('clubs', 6)], ['c', W()]);
+    expect(t.suitToFollow).toBe('clubs');
+    const hand = [S('clubs', 2), S('hearts', 3)];
+    expect(t.isLegalPlay(hand, S('hearts', 3))).toBe(false);
+    expect(t.isLegalPlay(hand, S('clubs', 2))).toBe(true);
+  });
+
+  it('an all-Jester trick never sets a suit', () => {
+    const t = trickOf(['a', J()], ['b', J()]);
+    expect(t.suitToFollow).toBeNull();
   });
 
   it('the leader may play anything', () => {

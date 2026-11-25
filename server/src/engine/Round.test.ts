@@ -1,6 +1,8 @@
 import { Card } from './Card';
 import { EngineError } from './errors';
 import { Round, RoundOptions } from './Round';
+import type { Ruleset } from './rulesets';
+import { STANDARD_RULESET } from './rulesets/standard';
 
 const SEATS = ['a', 'b', 'c'];
 
@@ -175,5 +177,116 @@ describe('Round.computeScores', () => {
 
   it('rejects unknown players', () => {
     expect(() => makeRound().recordTrickWon('zed')).toThrow(expect.objectContaining({ code: 'UNKNOWN_PLAYER' }));
+  });
+});
+
+describe('Round construction', () => {
+  it('rejects a dealer who is not seated', () => {
+    expect(() => makeRound({ dealerId: 'zed' })).toThrow(expect.objectContaining({ code: 'UNKNOWN_PLAYER' }));
+  });
+
+  it('stores dealt hands as plain CardData snapshots', () => {
+    const r = makeRound({ dealtHands: { a: [Card.wizard()], b: [Card.suited('clubs', 7)] } });
+    expect(r.dealtHands).toEqual({
+      a: [Card.wizard().toData()],
+      b: [Card.suited('clubs', 7).toData()],
+    });
+    expect(r.dealtHands.a[0]).not.toBeInstanceOf(Card);
+    expect(makeRound().dealtHands).toEqual({});
+  });
+
+  it('getBid is null until the player bids', () => {
+    const r = makeRound();
+    expect(r.getBid('b')).toBeNull();
+    r.recordBid('b', 2);
+    expect(r.getBid('b')).toBe(2);
+  });
+
+  it('getTricksWon starts at zero and rejects unknown players', () => {
+    const r = makeRound();
+    expect(r.getTricksWon('a')).toBe(0);
+    play(r, { a: 1, b: 0, c: 0 }, { a: 1 });
+    expect(r.getTricksWon('a')).toBe(1);
+    expect(() => r.getTricksWon('zed')).toThrow(expect.objectContaining({ code: 'UNKNOWN_PLAYER' }));
+  });
+});
+
+describe('Round.startTrick', () => {
+  const bidAll = (r: Round) => {
+    for (const id of r.bidOrder) r.recordBid(id, 0);
+  };
+
+  it('requires all bids first', () => {
+    const r = makeRound();
+    r.recordBid('b', 0);
+    expect(() => r.startTrick('b')).toThrow(expect.objectContaining({ code: 'INVALID_PHASE' }));
+  });
+
+  it('rejects an unknown leader', () => {
+    const r = makeRound();
+    bidAll(r);
+    expect(() => r.startTrick('zed')).toThrow(expect.objectContaining({ code: 'UNKNOWN_PLAYER' }));
+  });
+
+  it('numbers tricks, tracks the current one, and waits for it to resolve', () => {
+    const r = makeRound();
+    bidAll(r);
+    expect(r.currentTrick).toBeNull();
+    expect(r.tricks).toEqual([]);
+
+    const t1 = r.startTrick('b');
+    expect(t1).toMatchObject({ trickNumber: 1, leaderId: 'b' });
+    expect(r.currentTrick).toBe(t1);
+    expect(() => r.startTrick('b')).toThrow(expect.objectContaining({ code: 'INVALID_PHASE' }));
+
+    t1.playCard('b', Card.suited('hearts', 2));
+    t1.resolve(r.trumpSuit);
+    const t2 = r.startTrick('c');
+    expect(t2).toMatchObject({ trickNumber: 2, leaderId: 'c' });
+    expect(r.tricks).toEqual([t1, t2]);
+    expect(r.currentTrick).toBe(t2);
+  });
+
+  it('stops after roundNumber tricks', () => {
+    const r = makeRound({ roundNumber: 1 });
+    bidAll(r);
+    const t = r.startTrick('b');
+    t.playCard('b', Card.jester());
+    t.resolve(r.trumpSuit);
+    expect(() => r.startTrick('b')).toThrow(expect.objectContaining({ code: 'INVALID_PHASE' }));
+  });
+
+  it('cannot start a trick once the round is scored', () => {
+    const r = makeRound({ roundNumber: 1 });
+    play(r, { a: 0, b: 1, c: 0 }, { b: 1 });
+    r.computeScores();
+    expect(() => r.startTrick('b')).toThrow(expect.objectContaining({ code: 'ROUND_CLOSED' }));
+  });
+});
+
+describe('Round ruleset', () => {
+  it('defaults to the standard ruleset', () => {
+    expect(makeRound().ruleset).toBe(STANDARD_RULESET);
+  });
+
+  it('uses an injected ruleset for trump and for its tricks', () => {
+    const ruleset: Ruleset = {
+      ...STANDARD_RULESET,
+      determineTrump: jest.fn(() => ({ trumpSuit: 'spades' as const, trumpSource: 'flip' as const, requiresDeclaration: false })),
+      resolveTrick: jest.fn(() => ({ winnerIndex: 1, winningCardType: 'suited' as const })),
+    };
+    const flipped = Card.suited('hearts', 4);
+    const r = makeRound({ roundNumber: 1, trumpCard: flipped, ruleset });
+
+    expect(ruleset.determineTrump).toHaveBeenCalledWith(flipped);
+    expect(r.trumpSuit).toBe('spades');
+
+    for (const id of r.bidOrder) r.recordBid(id, 0);
+    const t = r.startTrick('b');
+    t.playCard('b', Card.suited('hearts', 14));
+    t.playCard('c', Card.suited('hearts', 2));
+    // Standard rules would pick b's ace; the stub picks index 1.
+    expect(t.resolve(r.trumpSuit)).toBe('c');
+    expect(ruleset.resolveTrick).toHaveBeenCalledTimes(1);
   });
 });

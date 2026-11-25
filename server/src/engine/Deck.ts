@@ -1,47 +1,33 @@
-import { Card, SUITS, MIN_RANK, MAX_RANK } from './Card';
+import { Card } from './Card';
 import { EngineError } from './errors';
-
-export const STANDARD_DECK_SIZE = 60;
-/**
- * Deck sizes the engine can currently build. The 68-card extended edition is
- * a planned variant; add its composition to `buildCards` and list it here.
- */
-export const SUPPORTED_DECK_SIZES: readonly number[] = [STANDARD_DECK_SIZE];
+import { DeckType, getRuleset } from './rulesets';
 
 /** Returns a float in [0, 1). Injectable so shuffles are deterministic in tests. */
 export type RandomSource = () => number;
 
-function buildCards(deckSize: number): Card[] {
-  if (deckSize !== STANDARD_DECK_SIZE) {
-    throw new EngineError(
-      'INVALID_CONFIG',
-      `Unsupported deck size ${deckSize}; supported: ${SUPPORTED_DECK_SIZES.join(', ')}`,
-    );
-  }
-  const cards: Card[] = [];
-  for (const suit of SUITS) {
-    for (let rank = MIN_RANK; rank <= MAX_RANK; rank++) {
-      cards.push(Card.suited(suit, rank));
-    }
-  }
-  for (let i = 0; i < 4; i++) cards.push(Card.wizard());
-  for (let i = 0; i < 4; i++) cards.push(Card.jester());
-  return cards;
-}
-
 /**
  * A stateful pile of cards for one round. Index 0 is the top of the deck:
- * `deal` and `flip` both draw from the top.
+ * `deal` and `flip` both draw from the top. The deck type's ruleset decides
+ * which cards it contains.
  */
 export class Deck {
   readonly deckSize: number;
   private cards: Card[];
   private readonly random: RandomSource;
 
-  constructor(deckSize: number = STANDARD_DECK_SIZE, random: RandomSource = Math.random) {
-    this.deckSize = deckSize;
+  constructor(deckType: DeckType = 'standard', random: RandomSource = Math.random) {
+    const ruleset = getRuleset(deckType);
+    const cards = ruleset.buildDeck();
+    if (cards.length !== ruleset.deckSize) {
+      // Guards against a ruleset whose deckSize disagrees with its deck.
+      throw new EngineError(
+        'INVALID_CONFIG',
+        `Deck type "${deckType}" declares ${ruleset.deckSize} cards but builds ${cards.length}`,
+      );
+    }
+    this.deckSize = ruleset.deckSize;
     this.random = random;
-    this.cards = buildCards(deckSize);
+    this.cards = cards;
   }
 
   /** Builds a deck in an exact order (top first). Intended for tests and replay. */
