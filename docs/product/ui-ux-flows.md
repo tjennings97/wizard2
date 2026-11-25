@@ -191,7 +191,7 @@ The admin panel is a protected section of the main application, accessible only 
 2. Admin sets a temporary password and recovery passphrase
 3. Temporary credentials returned once in the response (never stored in plaintext)
 4. `requires_credential_change = true` flag set on the user record
-5. On the user’s next login, the client intercepts and forces the credential change screen before any other navigation (see Flow 1)
+5. On the user’s next login, the client intercepts and forces the credential change screen before any other navigation (see Flow 1). The server enforces this too: until the change is made, every route except `GET /users/me`, `PATCH /users/me` and logout returns `403 CREDENTIAL_CHANGE_REQUIRED`
 6. Flag clears once both password and recovery passphrase are updated
 
 **Security:** All admin routes are protected by role-check middleware. Admin panel is part of the main React app, not a separate service.

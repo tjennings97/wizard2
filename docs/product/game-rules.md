@@ -132,6 +132,8 @@ Scoring is applied at the end of each round after all tricks have been played.
 
 The game ends after the final chosen round is completed and all scores for that round have been applied.
 
+**Time limit:** A game may last at most 3 hours. Players are warned 15 minutes before the limit. If the limit is reached, the game is abandoned: it is recorded as incomplete with no winner, and everyone returns to the lobby.
+
 **Winner:** The player with the highest cumulative score wins. In the case of a tie, all tied players are recorded as co-winners.
 
 **Post-game flow:** After scoring is displayed, a 30-second visible countdown is shown to all players and spectators. When the countdown expires, all users are returned to the lobby automatically. Users may leave manually before the countdown ends.

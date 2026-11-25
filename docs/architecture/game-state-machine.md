@@ -51,6 +51,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` |
 | **Any active phase** (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player drop reduces game to 2 players and mutual end chosen | — | **INCOMPLETE** | Set `games.status = incomplete`; write partial `game_results`; emit `game_over` |
 | Any active phase (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player quits or times out; ≥ 3 players remain after drop | remainingPlayerCount >= 3 | INITIALISING (same round number) | Void current round; remove dropped player; re-deal same round number to remaining players; emit `player_left` to room, then the re-dealt round (`round_started`, `hand_dealt`) |
+| **Any active phase** | 3-hour game time limit reached | `now - games.started_at >= 3h` | **INCOMPLETE** | Set `games.status = incomplete`, `drop_reason = 'time_limit'`; write `game_results` with `outcome = incomplete` (no winner); emit `game_abandoned` (`reason: "time_limit"`) |
 | **GAME END** | — | — | (Room → COMPLETING) | Room state machine takes over |
 | **INCOMPLETE** | — | — | (Room → COMPLETING) | Room state machine takes over |
 
@@ -116,6 +117,8 @@ This document defines the complete state machines that govern Wizard's room, gam
 ## Special Cases
 
 **Two-player edge case:** When dropout reduces a game to exactly 2 players, the server emits `continue_or_end_request` to both remaining players. Both must confirm within 60 seconds. If both choose continue, the round is re-dealt for 2 players. If either chooses end, or the timeout expires, the game transitions to INCOMPLETE with `outcome = incomplete` for both. The room then enters COMPLETING.
+
+**Game time limit:** A game may run for at most 3 hours from start. The server sets one timer when the game starts. At 2 h 45 min it broadcasts `game_time_warning`; at 3 hours it abandons the game from whatever phase it is in (the round in progress is not scored), records it incomplete with `drop_reason = 'time_limit'` and no winner, and broadcasts `game_abandoned` (`reason: "time_limit"`). The timers are cleared if the game ends first. The limit also guarantees a game ends before the players' sessions do: entering a room or starting a game requires more than 24 hours left on the session.
 
 **Host leaves before game starts:** The game engine is not involved. The server queries `room_members` ordered by `join_order ASC` where `left_at IS NULL` and promotes the first result as the new host. `rooms.host_user_id` is updated and `host_changed` is broadcast. If no players remain, the room closes.
 

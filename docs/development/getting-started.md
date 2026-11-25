@@ -10,7 +10,7 @@ This guide takes a new developer from a fresh clone to a running local copy of W
 
 | Tool | Version | Check with |
 |---|---|---|
-| Node.js | 18.17 or newer (20 LTS recommended) | `node -v` |
+| Node.js | 20 or newer (React Router 7 requires it; `.nvmrc` pins 20) | `node -v` |
 | npm | 9 or newer (comes with Node) | `npm -v` |
 | PostgreSQL | 16 is the production target; 14 or newer works locally | `psql --version` |
 | Git | any recent version | `git --version` |
@@ -66,6 +66,8 @@ Then edit `.env` and set these values:
 | `PROMETHEUS_TOKEN` | yes | Bearer token for `/api/v1/metrics` | any string locally |
 | `NODE_ENV` | yes | `development`, `production`, or `test` | `development` |
 | `PORT` | no | HTTP port for the server | `3000` (default) |
+| `APP_ORIGIN` | production only | The one origin CORS allows in production, e.g. `https://wizard.example.com` (no path). Outside production, CORS allows only `http://localhost:5173`. | leave unset |
+| `TRUST_PROXY_HOPS` | no | Reverse-proxy hops to trust for the client IP, which auth rate limiting keys on. Defaults to `1` in production (Railway's proxy) and `0` elsewhere. | leave unset; `1` when running the API tests |
 
 `.env` is git-ignored, so never commit it. If you add a new required variable, add it to both `server/src/config.ts` and `.env.example`.
 
@@ -168,6 +170,25 @@ Run these from the repository root:
 | `npm start` | Runs the built server (production mode; also serves `client/dist`) |
 | `npm run migrate:latest -w server` | Applies pending database migrations |
 | `npm run migrate:rollback -w server` | Rolls back the last batch of migrations |
+
+### Running the API tests (pytest)
+
+The tests in `tests/api/` call a running server over HTTP and seed rows directly in its database, so point both at a separate test database:
+
+```bash
+createdb wizard_test   # once
+python3 -m venv .venv && .venv/bin/pip install -r tests/api/requirements.txt   # once
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/wizard_test
+npm run migrate:latest -w server
+
+# Terminal 1: TRUST_PROXY_HOPS=1 gives each test its own rate-limit bucket
+NODE_ENV=test TRUST_PROXY_HOPS=1 PORT=3100 npm run dev -w server
+
+# Terminal 2
+API_BASE_URL=http://127.0.0.1:3100/api/v1 .venv/bin/pytest tests/api
+```
+
+Each test sends a random client IP, so you can rerun the suite without restarting the server. Test users, invites and sessions are deleted when the run ends.
 
 ### Running a production build locally
 

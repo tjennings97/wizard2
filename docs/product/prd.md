@@ -213,6 +213,8 @@ The lobby is the default landing page for authenticated users. It displays all a
 - Other players see a disconnection indicator during the 30s window
 - Server-side timer is authoritative; client reconnection attempts are validated against session
 - Server restart: in-progress games are abandoned; players receive `game_abandoned` and return to the lobby
+- Game time limit: a game lasts at most 3 hours; players get `game_time_warning` 15 minutes before, then the game is abandoned (`game_abandoned`, `reason: "time_limit"`) and recorded as incomplete with no winner
+- Session lifetime: a session expires after 24 hours of inactivity and at most 30 days after login. In the last 24 hours before the 30-day cap, the user is sent to the login screen unless they are mid-game, and cannot create, join, or start a room until they log in again
 
 **Bot player stub:** `BotPlayer` class is defined with the same interface as `Player` (`placeBid`, `playCard`), but both action methods throw `NotImplementedError`. All other inherited `Player` behaviour (receiving a hand, tracking tricks won and score) works normally. The game engine accepts `BotPlayer` instances without modification to core logic.
 

@@ -52,7 +52,7 @@ The assets an attacker has most incentive to target, the realistic actors, and t
 
 **Risk:** Credentials leaked from other services are tried against Wizard accounts. Players reuse passwords.
 
-**Mitigation:** Enforce a minimum password length of 12 characters. Recommend (but do not require) a passphrase style. Consider checking submitted passwords against a known-breached list (e.g. the HaveIBeenPwned k-anonymity API) at registration and on password change.
+**Mitigation:** Enforce a minimum password length of 8 characters (matching the OpenAPI spec). Recommend (but do not require) a passphrase style. Consider checking submitted passwords against a known-breached list (e.g. the HaveIBeenPwned k-anonymity API) at registration and on password change.
 
 ### Password and recovery passphrase requirements
 
@@ -60,14 +60,14 @@ Best practice minimums to apply at registration and on change:
 
 | Field | Minimum length | Character requirement | Notes |
 | --- | --- | --- | --- |
-| Password | 12 characters | None beyond length | Reject passwords on known-breach lists |
-| Recovery passphrase | 16 characters (or 4 words if diceware) | None | Used as a second credential; treat with the same hashing and rate-limit protections as the password |
+| Password | 8 characters (max 72 bytes) | None beyond length | Reject passwords on known-breach lists. The 72-byte maximum is bcrypt's input limit; longer input is rejected rather than silently truncated. |
+| Recovery passphrase | 8 characters (max 72 bytes) | None | Used as a second credential; treat with the same hashing and rate-limit protections as the password |
 
 ### Session hijacking
 
 **Risk:** An attacker obtains a valid session token via network interception, XSS, or server-side leakage, then impersonates the victim.
 
-**Mitigation:** HTTP-only cookies prevent JavaScript access. TLS prevents network interception. Tokens are hashed before storage, so a database breach does not yield usable tokens. Ensure `SameSite=Strict` or `SameSite=Lax` is set on the session cookie to reduce CSRF exposure.
+**Mitigation:** HTTP-only cookies prevent JavaScript access. TLS prevents network interception. Tokens are hashed before storage, so a database breach does not yield usable tokens. Ensure `SameSite=Strict` or `SameSite=Lax` is set on the session cookie to reduce CSRF exposure. Sessions expire after 24 hours idle and at most 30 days after login, so a stolen token cannot be kept alive indefinitely; in the last 24 hours before the cap the user must log in again (`REAUTH_REQUIRED`) unless mid-game.
 
 ### Account takeover via reset flow
 
@@ -230,6 +230,6 @@ These items are not fully resolved by the current documentation and should be ad
 | Transitive dependency vulnerabilities | The policy for transitive (indirect) npm dependency vulnerabilities is described as "documented in the upgrade/patch management guide" — that guide does not yet exist. | Write the policy before first production deployment. |
 | No security-specific logging or alerting | There is no mention of alerting on suspicious patterns (repeated rate-limit hits, failed login spikes, admin route access). | Define a minimum set of security events to log and the threshold at which an alert fires. |
 | CSRF protection not explicitly confirmed | `SameSite` cookie attribute and CORS restriction to production domain reduce CSRF risk, but there is no explicit mention of a CSRF token on state-changing REST endpoints. | Confirm whether CSRF tokens are required given the cookie + CORS configuration, and document the conclusion. |
-| Bcrypt work factor not specified | The docs specify bcrypt but not the cost factor. An inadequate factor weakens offline brute-force resistance. | Set and document a minimum cost factor of 12; review annually as hardware improves. |
+| Bcrypt work factor review | Resolved: work factor 12 is set in code (`server/src/auth/credentials.ts`) and documented above. | Review annually as hardware improves. |
 | Chat rate limiting not scalable beyond single instance | The in-memory counter approach for Socket.io chat rate limiting only works on a single server instance. With multiple instances each maintains its own counter, effectively multiplying the limit by the number of instances. | Replace in-memory counters with a shared Redis store (keyed by userId + roomId) before introducing horizontal scaling. Note: Redis is not currently part of the architecture. |
 | Stolen session token undetected | Single-session enforcement only prevents two concurrent logins. A stolen token used before the legitimate user next logs in is invisible — no forced logout, no alert. The active session indicator is reactive and depends on the user noticing.&#32; | Evaluate short token expiry with silent refresh, or session binding to a device/IP fingerprint, as a stronger detection mechanism. |

@@ -119,7 +119,8 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `game_starting` | All | `countdown_seconds: integer`, `player_order: string[]` |
 | `game_started` | All | `round_count: integer`, `players: PlayerSummary[]` |
 | `game_over` | All | `final_scores: ScoreEntry[]`, `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners |
-| `game_abandoned` | All | `reason: "server_restart"`, `game_id: string` |
+| `game_time_warning` | All | `game_id: string`, `ends_at: ISO-8601`, `minutes_remaining: 15`: sent once, 15 minutes before the 3-hour game time limit |
+| `game_abandoned` | All | `reason: "server_restart"\|"time_limit"`, `game_id: string` |
 | `player_disconnected` | All | `player_id`, `reconnect_deadline: ISO-8601` — socket dropped; the player's seat is held until the deadline |
 | `player_reconnected` | All | `player_id` — the player rejoined within the window; clears the disconnect indicator |
 | `continue_or_end_request` | All | `remaining_player_ids: string[]` — a drop left exactly two players; each answers with `choose_continue_or_end` within 60 s (no answer counts as end) |
@@ -158,7 +159,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `pong` | **U** | `server_time: ISO-8601` |
 | `invalid_play_error` | **U** | `player_id`, `reason: string`, `legal_cards: Card[]` |
 | `invalid_bid_error` | **U** | `player_id`, `reason: string`, `min_bid: integer`, `max_bid: integer` |
-| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` — `code: "SESSION_INVALIDATED"` (fatal) is sent to a socket displaced by a newer login |
+| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean` — `code: "SESSION_INVALIDATED"` (fatal) is sent to a socket displaced by a newer login; `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress |
 
 ## Event Sequencing & State Transitions
 
@@ -174,6 +175,8 @@ The table below maps each GSM state to the events that drive entry, the client e
 | `GAME_OVER` | `game_over` | `leave_game` | — |
 
 **Server restart.** `game_abandoned` (broadcast, `reason: "server_restart"`) may be emitted from any non-terminal state (`DEALING`, `BIDDING`, `PLAYING`, `SCORING`) when the server restarts and the startup cleanup closes an in-progress game. Clients that reconnect and receive this event must return the player to the lobby. There is no valid client event in response; the game cannot be resumed.
+
+**Game time limit.** A game may run for at most 3 hours from `game_started`. At 2 h 45 min the server broadcasts `game_time_warning`. At 3 hours it broadcasts `game_abandoned` (`reason: "time_limit"`) from whatever non-terminal state the game is in, and the game is recorded as incomplete with no winner, exactly as for a server restart. Clients return to the lobby.
 
 ### Ordering Guarantees
 

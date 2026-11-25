@@ -4,7 +4,7 @@
 
 &#91;embedded content: Wizard database ERD · 11 tables · PostgreSQL 16\]
 
-The database has 9 tables. `users` is the central entity — sessions, invites, room membership, round participation, game results, and bug reports all foreign-key to it. `games` and `game_events` are the two most write-intensive tables; `game_events` is append-only and never updated or deleted.
+The database has 11 tables. `users` is the central entity — sessions, invites, room membership, round participation, game results, and bug reports all foreign-key to it. `games` and `game_events` are the two most write-intensive tables; `game_events` is append-only and never updated or deleted.
 
 ## Data Dictionary — users
 
@@ -17,29 +17,15 @@ Central entity. Every other table that tracks a person foreign-keys to this tabl
 | `display_name` | `varchar(64)` | No | NOT NULL | Name shown to other players. Does not need to be unique. Mutable. |
 | `password_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash (work factor 12) of the user's password. |
 | `recovery_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash of the recovery passphrase. Used for password reset without email. |
-| `role` | `varchar(16)` | No | NOT NULL, CHECK IN ('player','admin'), default 'player' | Account role. |
+| `role` | `varchar(16)` | No | NOT NULL, CHECK (`role` IN ('player','admin')), default `'player'` | Account role. `player` = standard user; `admin` = elevated privileges. |
 | `avatar_config` | `jsonb` | No | NULL | Structured avatar part selections. Schema: {"head": "round", "skin": "medium", "face": "smile-01", "hair": "curly-short-brown"}. Each value is a slug mapping to an SVG layer asset in the frontend. Null means no avatar set.. |
 | `avatar_svg` | `text` | Yes | — | Cached SVG string of the fully composited avatar. Written at registration and on each avatar update. Null until avatar is first set. Rendered directly in the browser — avoids recompositing layers on every load. |
-| `requires_credential_change` | `boolean` | No | NOT NULL, default `false` | Set to `true` by an admin when resetting a user's credentials. On next login the server includes this flag and the client forces a change-password flow before any other action. Reset to `false` once the user updates both password and recovery passphrase. |
-| `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Account creation timestamp (UTC). |
-
-Central entity. Every other table that tracks a person foreign-keys to this table.
-
-| Column | Type | Nullable | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `id` | `uuid` | No | PK, default `gen_random_uuid()` | Surrogate primary key |
-| `username` | `varchar(32)` | No | UNIQUE, NOT NULL | Login identifier. Immutable after creation. Lowercase, alphanumeric + underscore. |
-| `display_name` | `varchar(64)` | No | NOT NULL | Name shown to other players. Does not need to be unique. Mutable. |
-| `password_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash (work factor 12) of the user's password. |
-| `recovery_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash of the recovery passphrase. Used for password reset without email. |
-| `role` | `varchar(16)` | No | NOT NULL, CHECK (`role` IN ('player','admin')), default `'player'` | Account role. `player` = standard user; `admin` = elevated privileges. |
-| `avatar_config` | `jsonb` | No | `NULL` | `Structured avatar part selections. Schema: {"head": "round", "skin": "medium", "face": "smile-01", "hair": "curly-short-brown"}. Each value is a slug mapping to an SVG layer asset in the frontend. Null means no avatar set.`. |
-| `avatar_svg` | `text` | Yes | — | Cached SVG string of the fully composited avatar. Written at registration and on each avatar update. Null until avatar is first set. Rendered directly in the browser — avoids recompositing layers on every load. |
+| `requires_credential_change` | `boolean` | No | NOT NULL, default `false` | Set to `true` by an admin when resetting a user's credentials. On next login the server includes this flag and the client forces a change-password flow before any other action. Reset to `false` once the user updates both password and recovery passphrase. While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Account creation timestamp (UTC). |
 
 ## Data Dictionary — sessions
 
-One active session per user at any time. A new login invalidates the prior session by setting `invalidated_at`.
+One active session per user at any time. A new login invalidates the prior session by setting `invalidated_at`, and deletes the user's sessions that ended (invalidated or expired) more than 24 hours earlier. Ended rows are kept for those 24 hours so a displaced device still receives `SESSION_INVALIDATED` rather than `UNAUTHORIZED`.
 
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -48,7 +34,7 @@ One active session per user at any time. A new login invalidates the prior sessi
 | `token_hash` | `varchar(255)` | No | UNIQUE, NOT NULL | SHA-256 hash of the session token. Raw token is in the HTTP-only cookie only. |
 | `trace_id` | `uuid` | No | NOT NULL, default `gen_random_uuid()` | Correlation ID for logs and bug reports. Unique per session. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Session creation time |
-| `expires_at` | `timestamptz` | No | NOT NULL | Session expiry (24 hours after creation by default) |
+| `expires_at` | `timestamptz` | No | NOT NULL | Sliding expiry: 24 hours after the session's last authenticated activity (HTTP request or socket event), so active players are not logged out mid-game. Moved forward at most once an hour. Never later than `created_at` + 30 days (hard cap). In the last 24 hours before the cap the user must log in again (`401 REAUTH_REQUIRED`) unless they are an active player in a game in progress. |
 | `invalidated_at` | `timestamptz` | Yes | — | Set on logout or when a new login displaces this session. Null = still valid (if not expired). |
 
 ## Data Dictionary — invites
@@ -107,7 +93,7 @@ One game per room per lifecycle. The `state` column holds the latest `GameState`
 | `started_at` | `timestamptz` | No | NOT NULL, default `now()` | When the game started |
 | `ended_at` | `timestamptz` | Yes | — | When the game ended (all rounds complete or early termination). Null while in progress. |
 | `status` | `varchar(16)` | No | NOT NULL, CHECK (`status` IN ('in\_progress','complete','incomplete')), default `'in_progress'` | Game completion status |
-| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end')) | Populated only when `status = 'incomplete'`. Records why the game ended early. |
+| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end','server\_restart','time\_limit')) | Populated only when `status = 'incomplete'`. Records why the game ended early. |
 | `player_count_at_drop` | `smallint` | Yes | — | Player count when the game ended early. Null for complete games. |
 
 ## Data Dictionary — rounds
@@ -164,7 +150,7 @@ Per-player outcome record for each game. Written at game end (complete or incomp
 | `user_id` | `uuid` | No | FK → `users.id`, NOT NULL | The player |
 | `final_score` | `integer` | No | NOT NULL | Denormalised cumulative score for this player at game end (or at point of departure for incomplete). Derived from summing \`round\_players.score\_delta\` for this player; stored here to avoid recomputing on every query. Head-to-head scores for all players in a game are obtained by fetching all \`game\_results\` rows with the same \`game\_id\` |
 | `outcome` | `varchar(16)` | No | NOT NULL, CHECK (`outcome` IN ('win','loss','incomplete')) | Player's game outcome |
-| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end')) | For incomplete records: why this player's game ended early |
+| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end','server\_restart','time\_limit')) | For incomplete records: why this player's game ended early |
 | `rounds_played` | `smallint` | No | NOT NULL | Number of rounds this player participated in |
 
 Composite UNIQUE: `(game_id, user_id)` — one result row per player per game.
