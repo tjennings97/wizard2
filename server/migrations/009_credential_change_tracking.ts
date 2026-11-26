@@ -15,7 +15,7 @@ import type { Knex } from 'knex';
  * server/src/auth/sessionEvents.ts), so a REST 401 SESSION_INVALIDATED can say why, as the
  * socket session_error already does. NULL for rows ended before this migration.
  *
- * Numbered 009 because 008 is taken by the Phase 6c branch (game_events connection types).
+ * Follows 008_game_events_connection_types.ts (Phase 6c).
  */
 export async function up(knex: Knex): Promise<void> {
   await knex.schema.alterTable('users', (t) => {
