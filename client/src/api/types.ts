@@ -153,5 +153,7 @@ export interface GameStateView {
   tricksSoFar: { trickNumber: number; leaderUserId: string; cards: { userId: string; card: Card }[]; winnerUserId: string | null }[];
   /** Scored rounds, oldest first. */
   roundHistory: { roundNumber: number; players: { userId: string; bid: number; tricksWon: number; scoreDelta: number }[] }[];
+  /** Players who left, in the order they left (kept so scoreboards can still name them). */
+  droppedPlayers: { userId: string; displayName: string }[];
   winnerUserIds: string[];
 }

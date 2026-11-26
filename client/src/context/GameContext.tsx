@@ -56,7 +56,7 @@ export interface TrickView {
 /** One scored round, for the round summary and the full scoreboard. */
 export interface RoundResult {
   roundNumber: number;
-  /** Seat order. `score` is the round's delta. */
+  /** The players dealt into that round, in seat order (someone who left later is still listed). */
   players: { userId: string; bid: number; tricksWon: number; delta: number; total: number }[];
 }
 
@@ -76,6 +76,8 @@ export interface GameView {
   bidRule: BidRule;
   /** Seat order. */
   seats: SeatView[];
+  /** Display name of everyone who has played in this game, including players who left. */
+  names: Record<string, string>;
   isSpectator: boolean;
   roundNumber: number;
   dealerId: string | null;
@@ -174,14 +176,11 @@ function historyFromView(view: GameStateView): RoundResult[] {
   const totals = new Map<string, number>();
   return view.roundHistory.map((r) => ({
     roundNumber: r.roundNumber,
-    players: [...view.players]
-      .sort((a, b) => a.seatOrder - b.seatOrder)
-      .map((p) => {
-        const x = r.players.find((q) => q.userId === p.userId);
-        const total = (totals.get(p.userId) ?? 0) + (x?.scoreDelta ?? 0);
-        totals.set(p.userId, total);
-        return { userId: p.userId, bid: x?.bid ?? 0, tricksWon: x?.tricksWon ?? 0, delta: x?.scoreDelta ?? 0, total };
-      }),
+    players: r.players.map((x) => {
+      const total = (totals.get(x.userId) ?? 0) + x.scoreDelta;
+      totals.set(x.userId, total);
+      return { userId: x.userId, bid: x.bid, tricksWon: x.tricksWon, delta: x.scoreDelta, total };
+    }),
   }));
 }
 
@@ -224,6 +223,11 @@ function snapshotState(view: GameStateView, seq: number, prev: State): GameView 
     roundCount: view.config.roundCount,
     bidRule: view.config.bidRule,
     seats,
+    names: {
+      ...same?.names,
+      ...Object.fromEntries((view.droppedPlayers ?? []).map((p) => [p.userId, p.displayName])),
+      ...Object.fromEntries(view.players.map((p) => [p.userId, p.displayName])),
+    },
     isSpectator: view.viewerUserId === null,
     roundNumber: view.currentRound,
     dealerId: view.dealerUserId,
@@ -304,6 +308,7 @@ function reducer(state: State, action: Action): State {
         connected: true,
         reconnectDeadline: null,
       })),
+      names: Object.fromEntries(action.players.map((p) => [p.user_id, p.display_name])),
       isSpectator: !action.players.some((p) => p.user_id === action.userId),
       roundNumber: 0,
       dealerId: null,
@@ -428,10 +433,13 @@ function reducer(state: State, action: Action): State {
       const totals = new Map(action.totals.map((t) => [t.player_id, t.score]));
       const result: RoundResult = {
         roundNumber: action.roundNumber,
-        players: next.seats.map((s) => {
-          const x = action.scores.find((e) => e.player_id === s.userId);
-          return { userId: s.userId, bid: x?.bid ?? 0, tricksWon: x?.tricks_won ?? 0, delta: x?.score ?? 0, total: totals.get(s.userId) ?? s.score };
-        }),
+        players: action.scores.map((x) => ({
+          userId: x.player_id,
+          bid: x.bid,
+          tricksWon: x.tricks_won,
+          delta: x.score,
+          total: totals.get(x.player_id) ?? 0,
+        })),
       };
       return {
         ...next,
@@ -478,6 +486,9 @@ function reducer(state: State, action: Action): State {
       };
     case 'user_left': {
       if (action.role !== 'player') return next;
+      // Once the game has ended the table is final: players leaving for the lobby must not
+      // drop their seats, or the results screen loses their names and scores.
+      if (next.stage === 'game_over' || next.stage === 'abandoned') return next;
       const seat = next.seats.find((s) => s.userId === action.playerId);
       if (!seat) return next;
       const why = action.reason === 'timeout' ? 'did not reconnect in time' : 'left the game';
