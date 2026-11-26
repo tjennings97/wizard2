@@ -76,6 +76,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 **Spec:** `docs/api/openapi-spec.md` (`/users/me` patch). `docs/architecture/security.md` says to rotate all tokens on a password or passphrase change.
 
+**Status: done.** `PATCH /users/me` in `server/src/routes/users.ts`; migration `009_credential_change_tracking.ts` adds `users.password_changed_at` / `recovery_changed_at`, and the flag clears once both are set. `currentPassword` is required for either secret (wrong → `401 INVALID_CURRENT_PASSWORD`, rate-limited on failures), new secrets must differ from the current ones, and the rotation ends other sessions with `reason: "credential_change"`. Avatar fields are refused until the avatar work (§8). Tests: `tests/api/test_users.py`, socket cases in `server/src/socket/socket.int.test.ts`.
+
 **Build:**
 - Verify `currentPassword` with `verifySecret`; return `401` if it is wrong.
 - Hash new secrets with `hashSecret`, using the same length rules as registration (8 characters minimum, 72 bytes maximum, via `BodyValidator.newSecret`).
@@ -85,11 +87,11 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 ### 4b. Admin credential reset (`POST /admin/users/{userId}/reset-credentials`)
 
-**Build:** set `requires_credential_change = true`, set the temporary credentials as the spec describes, and call `invalidateUserSessions` so the user must log in again. Admin routes check `req.user.role === 'admin'`; `requireAuth` re-reads the role from the database on every request.
+**Build:** set `requires_credential_change = true`, set `password_changed_at` and `recovery_changed_at` to `NULL` (so the user must change both again, see §4a), set the temporary credentials as the spec describes, and call `invalidateUserSessions` so the user must log in again. Admin routes check `req.user.role === 'admin'`; `requireAuth` re-reads the role from the database on every request.
 
 **Already enforced:** the server enforces the forced change in `authenticate()`. While the flag is true, every route returns `403 CREDENTIAL_CHANGE_REQUIRED` unless it opts in with `allowDuringCredentialChange`; only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` should. Do not opt any other route in.
 
-**Done when:** pytest covers an admin reset followed by login (`requiresCredentialChange: true`), a blocked route returning `403 CREDENTIAL_CHANGE_REQUIRED`, `PATCH /users/me` changing only the password (still flagged), then the passphrase (flag cleared), and the blocked route then succeeding.
+**Done when:** (the `PATCH /users/me` half is covered in `tests/api/test_users.py` with a simulated reset; swap `simulate_admin_reset` for the real endpoint) pytest covers an admin reset followed by login (`requiresCredentialChange: true`), a blocked route returning `403 CREDENTIAL_CHANGE_REQUIRED`, `PATCH /users/me` changing only the password (still flagged), then the passphrase (flag cleared), and the blocked route then succeeding.
 
 ### 4c. Admin invites (`/admin/invites`)
 
@@ -104,6 +106,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 ## 5. Client auth flows
 
 **Spec:** `docs/product/ui-ux-flows.md`, `CLAUDE.md` (Frontend Notes, Forced credential change).
+
+**Status: done, except the avatar step.** Register, reset-password, forced change and `/profile` pages in `client/src/pages/`; the mapping below in `client/src/context/AuthContext.tsx`; the re-auth prompt is documented in `docs/product/ui-ux-flows.md` (Flow 1). Registration sends a placeholder `avatarConfig` and `avatarSvg: null` (`client/src/api/avatar.ts`) until the avatar picker lands with the §8 decision.
 
 **Build:**
 - `AuthContext`.
@@ -120,7 +124,7 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 - Socket `session_error` with `fatal: true`: tear down the socket and apply the same mapping.
 - Login response with `requiresCredentialChange: true`: force the change-password flow before any other navigation.
 
-**Also:** add the re-auth prompt to `docs/product/ui-ux-flows.md`, which doesn't mention it yet.
+**Also:** ~~add the re-auth prompt to `docs/product/ui-ux-flows.md`~~ (done).
 
 ## 6. CI
 

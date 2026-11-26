@@ -4,6 +4,8 @@ export class ApiRequestError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Field errors from a 400 VALIDATION_ERROR (`details.fields`), keyed by request field. */
+    readonly fields: Record<string, string> = {},
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -43,7 +45,8 @@ export async function apiFetch<T>(path: string, { method = 'GET', body, ignoreSe
     }
     // Every route but the credential-change ones refuses a flagged user: show the change screen.
     if (res.status === 403 && code === 'CREDENTIAL_CHANGE_REQUIRED') onSessionEnded?.(code);
-    throw new ApiRequestError(res.status, code, data?.message ?? `Request failed (${res.status}).`);
+    const fields = data?.details?.fields && typeof data.details.fields === 'object' ? data.details.fields : {};
+    throw new ApiRequestError(res.status, code, data?.message ?? `Request failed (${res.status}).`, fields);
   }
   return data as T;
 }

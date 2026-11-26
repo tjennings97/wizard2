@@ -60,9 +60,14 @@ interface SessionJoinRow extends UserRow {
  * Invalidates every still-active session for the user, deletes their sessions that ended
  * more than a day ago, then creates a new one. Must run inside a transaction that holds a lock
  * on the user's row, so two concurrent logins cannot both leave an active session behind.
+ * `reason` is what the ended sessions' sockets are told (a login displaces them by default).
  */
-export async function rotateSession(trx: Knex.Transaction, userId: string): Promise<IssuedSession> {
-  await invalidateUserSessions(trx, userId, 'displaced');
+export async function rotateSession(
+  trx: Knex.Transaction,
+  userId: string,
+  reason: InvalidationReason = 'displaced',
+): Promise<IssuedSession> {
+  await invalidateUserSessions(trx, userId, reason);
   await pruneEndedSessions(trx, userId);
   const token = generateSessionToken();
   const now = Date.now();

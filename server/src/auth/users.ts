@@ -16,6 +16,9 @@ export interface UserRow {
   avatar_config: AvatarConfig | null;
   avatar_svg: string | null;
   requires_credential_change: boolean;
+  /** When the user last chose their password / passphrase; NULL after an admin reset. */
+  password_changed_at: Date | null;
+  recovery_changed_at: Date | null;
   created_at: Date;
 }
 
