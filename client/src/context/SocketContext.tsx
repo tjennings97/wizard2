@@ -121,7 +121,7 @@ type Payloads = {
  * logout. Keeps the lobby and room state the server pushes.
  */
 export function SocketProvider({ children }: { children: ReactNode }) {
-  const { user, endSession } = useAuth();
+  const { user, endSession, sessionEpoch } = useAuth();
   const userId = user?.id ?? null;
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -162,7 +162,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setConnected(false);
       dispatch({ type: 'reset' });
     };
-  }, [userId, endSession]);
+    // sessionEpoch: a password/passphrase change gave this device a new session cookie; reconnect with it.
+  }, [userId, endSession, sessionEpoch]);
 
   const value: SocketValue = { ...state, socket, connected, clearNotice: () => dispatch({ type: 'clear_notice' }) };
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;

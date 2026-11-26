@@ -3,6 +3,7 @@ import { Server } from 'socket.io';
 import { config } from '../config';
 import { isSessionInvalidated } from '../auth/sessions';
 import { sessionEvents, type InvalidationReason } from '../auth/sessionEvents';
+import { userEvents } from '../auth/userEvents';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, listLobbyRooms, type RoomSummary, type RoomView } from '../rooms/queries';
 import type { RoomService } from '../rooms/service';
@@ -59,6 +60,12 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
   const onInvalidated = (sessionIds: string[], reason: InvalidationReason) =>
     realtime.sessionsInvalidated(sessionIds, reason, INVALIDATION_MESSAGES[reason]);
   sessionEvents.on('invalidated', onInvalidated);
+  const onDisplayName = (userId: string, displayName: string) => {
+    realtime.displayNameChanged(userId, displayName).catch((err) =>
+      logger.error({ err, userId }, 'refreshing a renamed user failed'),
+    );
+  };
+  userEvents.on('displayNameChanged', onDisplayName);
 
   io.on('connection', (socket: AppSocket) => {
     socket.data.seq = 0;
@@ -74,7 +81,14 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
     });
   });
 
-  return { io, realtime, detach: () => sessionEvents.off('invalidated', onInvalidated) };
+  return {
+    io,
+    realtime,
+    detach: () => {
+      sessionEvents.off('invalidated', onInvalidated);
+      userEvents.off('displayNameChanged', onDisplayName);
+    },
+  };
 }
 
 async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppSocket, timing: Timing): Promise<void> {
@@ -84,7 +98,8 @@ async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppS
       { socketId: socket.id, userId: auth.userId, traceId: auth.traceId, code: auth.code },
       'socket rejected',
     );
-    realtime.rejectSocket(socket, auth.code, SESSION_ERROR_MESSAGES[auth.code]);
+    // An already-ended session says why, as the live SESSION_INVALIDATED does.
+    realtime.rejectSocket(socket, auth.code, SESSION_ERROR_MESSAGES[auth.code], auth.reason ? { reason: auth.reason } : {});
     return;
   }
   if (!socket.connected) return;

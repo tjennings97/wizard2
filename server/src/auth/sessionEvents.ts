@@ -9,8 +9,12 @@ import type { Knex } from 'knex';
  * Postgres LISTEN/NOTIFY or the Redis adapter) to hear about another instance's logins.
  */
 
-/** Why the sessions ended. Sent to the displaced sockets so the client can say what happened. */
-export type InvalidationReason = 'displaced' | 'logout' | 'password_reset';
+/**
+ * Why the sessions ended. Sent to the displaced sockets so the client can say what happened.
+ * credential_change: the user changed their password or recovery passphrase (PATCH /users/me);
+ * the device that made the change gets a new session, every other one is signed out.
+ */
+export type InvalidationReason = 'displaced' | 'logout' | 'password_reset' | 'credential_change';
 
 interface SessionEventMap {
   /** Session ids that were just invalidated, and why. */

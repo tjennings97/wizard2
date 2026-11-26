@@ -10,7 +10,7 @@ export type SocketAuthFailure = 'UNAUTHORIZED' | 'SESSION_INVALIDATED' | 'REAUTH
 export type SocketAuthResult =
   | { ok: true; user: PublicUser; session: AuthSession }
   /** userId and traceId are set when the session was found, for logging the rejection. */
-  | { ok: false; code: SocketAuthFailure; userId?: string; traceId?: string };
+  | { ok: false; code: SocketAuthFailure; userId?: string; traceId?: string; reason?: InvalidationReason };
 
 export const SESSION_ERROR_MESSAGES: Record<SocketAuthFailure, string> = {
   UNAUTHORIZED: 'Session is invalid or expired.',
@@ -24,6 +24,7 @@ export const INVALIDATION_MESSAGES: Record<InvalidationReason, string> = {
   displaced: 'Session was ended by a newer login.',
   logout: 'Session was ended by a logout.',
   password_reset: 'Session was ended by a password reset.',
+  credential_change: 'Session was ended by a password or recovery passphrase change.',
 };
 
 /** The raw session token from a handshake Cookie header, or null if absent or the signature is wrong. */

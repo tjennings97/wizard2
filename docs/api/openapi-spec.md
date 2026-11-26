@@ -294,7 +294,7 @@ paths:
                   type: string
                   minLength: 8
                   format: password
-                  description: Used to reset password if forgotten. Stored hashed.
+                  description: Used to reset password if forgotten. Stored hashed. Must differ from password.
                 avatarConfig:
                   $ref: '#/components/schemas/AvatarConfig'
                 avatarSvg:
@@ -484,8 +484,25 @@ paths:
     patch:
       summary: Update the authenticated user's profile
       description: >
-        Updates one or more mutable profile fields.
-        Username is immutable and cannot be changed.
+        Updates one or more mutable profile fields: display name, password, recovery passphrase.
+        Username is immutable and cannot be changed. Send at least one of displayName, password
+        or recoveryPassphrase.
+
+
+        Changing the password or the recovery passphrase requires currentPassword, and each new
+        secret must differ from the current one. It rotates the session: every other session of
+        the user ends (their sockets get session_error SESSION_INVALIDATED with reason
+        "credential_change") and this response sets a new session cookie, so the device that
+        made the change stays signed in.
+
+
+        Allowed while requires_credential_change is true (it is how the forced change is made).
+        The flag clears once both the password and the recovery passphrase have been changed
+        since the admin reset, in one request or two; a user who changes only one stays flagged.
+
+
+        Avatar fields (avatarConfig, avatarSvg) are not accepted yet and return 400; they arrive
+        with the avatar system (docs/architecture/avatar-system.md).
       tags: [Users]
       security:
         - sessionCookie: []
@@ -500,40 +517,52 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 64
-                avatarConfig:
-                  $ref: '#/components/schemas/AvatarConfig'
-                avatarSvg:
-                  type: string
-                  description: Serialized SVG string of the composited avatar. Required when avatarConfig is provided.
+                  description: Trimmed before it is stored.
                 password:
                   type: string
                   minLength: 8
                   format: password
-                  description: New password. Requires currentPassword to be provided.
-                currentPassword:
-                  type: string
-                  format: password
-                  description: Required when changing password.
+                  description: New password (at most 72 bytes). Requires currentPassword; must differ from it.
                 recoveryPassphrase:
                   type: string
                   minLength: 8
                   format: password
-                  description: New recovery passphrase.
+                  description: New recovery passphrase (at most 72 bytes). Requires currentPassword; must differ from the current passphrase and from the password (the new one if this request sets it).
+                currentPassword:
+                  type: string
+                  format: password
+                  description: Required when changing password or recoveryPassphrase.
       responses:
         '200':
-          description: Profile updated.
+          description: >
+            Profile updated. When a secret changed, the response carries a new session cookie
+            (Set-Cookie) and requiresCredentialChange reflects whether the forced change is complete.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
         '400':
-          description: Validation error or currentPassword missing when changing password.
+          description: >
+            VALIDATION_ERROR: a field is invalid, nothing to update, currentPassword missing when
+            changing a secret, a new secret equal to the current one, or an avatar field sent.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '401':
-          description: Not authenticated or currentPassword incorrect.
+          description: >
+            Not authenticated (UNAUTHORIZED, SESSION_INVALIDATED, REAUTH_REQUIRED), or
+            INVALID_CURRENT_PASSWORD. INVALID_CURRENT_PASSWORD leaves the session and cookie as
+            they were; nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: >
+            RATE_LIMITED: too many wrong currentPassword attempts (10 401 responses per 15
+            minutes per IP; successes, 400 validation errors and requests without
+            currentPassword do not count).
           content:
             application/json:
               schema:
@@ -1659,8 +1688,9 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 400 | `SELF_DEMOTION_FORBIDDEN` | Admin attempted to remove their own admin role. |
 | 401 | `UNAUTHORIZED` | No valid session cookie present. |
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
+| 401 | `INVALID_CURRENT_PASSWORD` | `currentPassword` is wrong on `PATCH /users/me`. Not a session failure: the session stays valid. |
 | 401 | `INVALID_RECOVERY` | Username not found or recovery passphrase does not match on password reset (one response for both). |
-| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device or a password reset. |
+| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device, a logout, a password reset, or a password / passphrase change. `details.reason` says which (`displaced`, `logout`, `password_reset`, `credential_change`) when it was recorded. The session cookie is not cleared: a stale request must not wipe a cookie the browser has just replaced. |
 | 401 | `REAUTH_REQUIRED` | Session is within 24 hours of its 30-day cap. The user must log in again before doing anything except finishing a game in progress. The session is still valid and the cookie is not cleared. |
 | 403 | `FORBIDDEN` | Authenticated but not permitted (e.g. non-admin on admin route). |
 | 403 | `CREDENTIAL_CHANGE_REQUIRED` | An admin reset this user's credentials. Only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` are allowed until both the password and recovery passphrase are changed. |
@@ -1675,7 +1705,7 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 413 | `PAYLOAD_TOO_LARGE` | Request body is over the JSON body size limit (100 KB). |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Request body uses an unsupported content encoding or charset. |
 | 422 | `INVITE_INVALID` | Invite code not found, expired, or already redeemed. |
-| 429 | `RATE_LIMITED` | Too many requests. Applies to auth and bug report endpoints. |
+| 429 | `RATE_LIMITED` | Too many requests. Applies to auth endpoints, failed `currentPassword` attempts on `PATCH /users/me`, and bug report endpoints. |
 | 500 | `INTERNAL_ERROR` | Unexpected server error. Includes a `traceId` field in `details` for correlation with logs. |
 
 ### 500 Internal Error Shape

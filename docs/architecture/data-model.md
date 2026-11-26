@@ -20,7 +20,9 @@ Central entity. Every other table that tracks a person foreign-keys to this tabl
 | `role` | `varchar(16)` | No | NOT NULL, CHECK (`role` IN ('player','admin')), default `'player'` | Account role. `player` = standard user; `admin` = elevated privileges. |
 | `avatar_config` | `jsonb` | No | NULL | Structured avatar part selections. Schema: {"head": "round", "skin": "medium", "face": "smile-01", "hair": "curly-short-brown"}. Each value is a slug mapping to an SVG layer asset in the frontend. Null means no avatar set.. |
 | `avatar_svg` | `text` | Yes | — | Cached SVG string of the fully composited avatar. Written at registration and on each avatar update. Null until avatar is first set. Rendered directly in the browser — avoids recompositing layers on every load. |
-| `requires_credential_change` | `boolean` | No | NOT NULL, default `false` | Set to `true` by an admin when resetting a user's credentials. On next login the server includes this flag and the client forces a change-password flow before any other action. Reset to `false` once the user updates both password and recovery passphrase. While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly. |
+| `requires_credential_change` | `boolean` | No | NOT NULL, default `false` | Set to `true` by an admin when resetting a user's credentials. On next login the server includes this flag and the client forces a change-password flow before any other action. Reset to `false` by `PATCH /users/me` once the user has changed both the password and the recovery passphrase since the reset (both `password_changed_at` and `recovery_changed_at` set). While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly. |
+| `password_changed_at` | `timestamptz` | Yes | — | When the user last chose their password themselves: `PATCH /users/me` or `POST /auth/reset-password`. Null until then. An admin credential reset sets it back to null. |
+| `recovery_changed_at` | `timestamptz` | Yes | — | When the user last chose their recovery passphrase themselves (`PATCH /users/me`). Null until then. An admin credential reset sets it back to null. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Account creation timestamp (UTC). |
 
 ## Data Dictionary — sessions
@@ -35,7 +37,8 @@ One active session per user at any time. A new login invalidates the prior sessi
 | `trace_id` | `uuid` | No | NOT NULL, default `gen_random_uuid()` | Correlation ID for logs and bug reports. Unique per session. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Session creation time |
 | `expires_at` | `timestamptz` | No | NOT NULL | Sliding expiry: 24 hours after the session's last authenticated activity (HTTP request or socket event), so active players are not logged out mid-game. Moved forward at most once an hour. Never later than `created_at` + 30 days (hard cap). In the last 24 hours before the cap the user must log in again (`401 REAUTH_REQUIRED`) unless they are an active player in a game in progress. |
-| `invalidated_at` | `timestamptz` | Yes | — | Set on logout or when a new login displaces this session. Null = still valid (if not expired). |
+| `invalidated_at` | `timestamptz` | Yes | — | Set on logout, when a new login displaces this session, on a password reset, or when the user changes their password or recovery passphrase from another session (that session is replaced by a new one). Null = still valid (if not expired). |
+| `invalidated_reason` | `varchar(32)` | Yes | — | Why the session ended: `displaced`, `logout`, `password_reset` or `credential_change`. Returned as `details.reason` on `401 SESSION_INVALIDATED` and as `reason` on the socket `session_error`. Null while the session is valid, and for sessions ended before the column existed. |
 
 ## Data Dictionary — invites
 

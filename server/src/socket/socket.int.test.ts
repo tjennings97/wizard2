@@ -70,6 +70,15 @@ describe('connection authentication', () => {
     await expectRejected(user.cookie, 'SESSION_INVALIDATED');
   });
 
+  it('says why an already-ended session ended', async () => {
+    const user = await createUser('Ann');
+    await db('sessions').where({ user_id: user.id }).update({ invalidated_at: db.fn.now(), invalidated_reason: 'credential_change' });
+    const c = connect(server.url, user.cookie);
+    clients.push(c);
+    const err = await c.waitFor('session_error');
+    expect(err.payload).toEqual({ code: 'SESSION_INVALIDATED', message: expect.any(String), fatal: true, reason: 'credential_change' });
+  });
+
   it('rejects an expired session with UNAUTHORIZED', async () => {
     const user = await createUser('Ann');
     await db('sessions').where({ user_id: user.id }).update({ expires_at: new Date(Date.now() - 1000) });
@@ -119,7 +128,7 @@ describe('displaced sockets', () => {
     return username;
   }
 
-  async function expectDisplaced(c: TestClient, reason: 'displaced' | 'logout' | 'password_reset') {
+  async function expectDisplaced(c: TestClient, reason: 'displaced' | 'logout' | 'password_reset' | 'credential_change') {
     const err = await c.waitFor('session_error');
     expect(err.payload).toEqual({ code: 'SESSION_INVALIDATED', message: expect.any(String), fatal: true, reason });
     await c.waitForDisconnect();
@@ -163,6 +172,56 @@ describe('displaced sockets', () => {
       .send({ username, recoveryPassphrase: PASSPHRASE, newPassword: 'a brand new password' })
       .expect(204);
     await expectDisplaced(c, 'password_reset');
+  });
+
+  it('disconnects the old session\'s sockets on a password change; the new session connects', async () => {
+    const ann = await createUser('Ann');
+    await withCredentials(ann);
+    const c = await online(ann);
+    const res = await api()
+      .patch('/api/v1/users/me')
+      .set('Cookie', ann.cookie)
+      .send({ currentPassword: PASSWORD, password: 'a brand new password' })
+      .expect(200);
+    await expectDisplaced(c, 'credential_change');
+
+    const newCookie = (res.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
+    const fresh = await online({ ...ann, cookie: newCookie });
+    await sleep(100);
+    expect(fresh.socket.connected).toBe(true);
+    expect(fresh.events('session_error')).toHaveLength(0);
+  });
+
+  it('keeps sockets on a display name change and shows the new name in lobby presence', async () => {
+    const ann = await createUser('Ann');
+    const bob = await createUser('Bob');
+    const c = await online(ann);
+    const watcher = await online(bob);
+    const from = watcher.length;
+    await api().patch('/api/v1/users/me').set('Cookie', ann.cookie).send({ displayName: 'Annie' }).expect(200);
+    const update = await watcher.waitFor(
+      'presence_updated',
+      (p) => p.online_users.some((u: { userId: string; displayName: string }) => u.userId === ann.id && u.displayName === 'Annie'),
+      { from },
+    );
+    expect(update).toBeDefined();
+    expect(c.socket.connected).toBe(true);
+    expect(c.events('session_error')).toHaveLength(0);
+  });
+
+  it('re-sends room_snapshot with the new name to an open room', async () => {
+    const ann = await createUser('Ann');
+    const bob = await createUser('Bob');
+    await online(ann);
+    const bobSocket = await online(bob);
+    const roomId = await openRoom(ann);
+    await join(bob, roomId);
+    await bobSocket.waitFor('room_snapshot');
+    const from = bobSocket.length;
+    await api().patch('/api/v1/users/me').set('Cookie', ann.cookie).send({ displayName: 'Annie' }).expect(200);
+    const snap = await bobSocket.waitFor('room_snapshot', undefined, { from });
+    const annMember = snap.payload.members.find((m: { userId: string }) => m.userId === ann.id);
+    expect(annMember.displayName).toBe('Annie');
   });
 
   it('removes a displaced user from lobby presence', async () => {

@@ -46,7 +46,14 @@ export interface AuthSession {
 export type AuthResult =
   | { ok: true; user: PublicUser; session: AuthSession }
   /** userId and traceId are set when the session row exists, for logging the rejection. */
-  | { ok: false; code: 'UNAUTHORIZED' | 'SESSION_INVALIDATED'; userId?: string; traceId?: string };
+  | {
+      ok: false;
+      code: 'UNAUTHORIZED' | 'SESSION_INVALIDATED';
+      userId?: string;
+      traceId?: string;
+      /** SESSION_INVALIDATED only: why the session ended, when recorded. */
+      reason?: InvalidationReason;
+    };
 
 interface SessionJoinRow extends UserRow {
   session_id: string;
@@ -54,15 +61,21 @@ interface SessionJoinRow extends UserRow {
   session_created_at: Date;
   expires_at: Date;
   invalidated_at: Date | null;
+  invalidated_reason: InvalidationReason | null;
 }
 
 /**
  * Invalidates every still-active session for the user, deletes their sessions that ended
  * more than a day ago, then creates a new one. Must run inside a transaction that holds a lock
  * on the user's row, so two concurrent logins cannot both leave an active session behind.
+ * `reason` is what the ended sessions' sockets are told (a login displaces them by default).
  */
-export async function rotateSession(trx: Knex.Transaction, userId: string): Promise<IssuedSession> {
-  await invalidateUserSessions(trx, userId, 'displaced');
+export async function rotateSession(
+  trx: Knex.Transaction,
+  userId: string,
+  reason: InvalidationReason = 'displaced',
+): Promise<IssuedSession> {
+  await invalidateUserSessions(trx, userId, reason);
   await pruneEndedSessions(trx, userId);
   const token = generateSessionToken();
   const now = Date.now();
@@ -89,7 +102,7 @@ export async function invalidateUserSessions(
   const rows: { id: string }[] = await trx('sessions')
     .where({ user_id: userId })
     .whereNull('invalidated_at')
-    .update({ invalidated_at: trx.fn.now() })
+    .update({ invalidated_at: trx.fn.now(), invalidated_reason: reason })
     .returning('id');
   emitSessionsInvalidated(trx, rows.map((r) => r.id), reason);
 }
@@ -99,7 +112,7 @@ export async function invalidateSession(conn: Knex | Knex.Transaction, sessionId
   const rows: { id: string }[] = await conn('sessions')
     .where({ id: sessionId })
     .whereNull('invalidated_at')
-    .update({ invalidated_at: conn.fn.now() })
+    .update({ invalidated_at: conn.fn.now(), invalidated_reason: 'logout' })
     .returning('id');
   emitSessionsInvalidated(conn, rows.map((r) => r.id), 'logout');
 }
@@ -136,13 +149,16 @@ export async function authenticateToken(
       's.created_at as session_created_at',
       's.expires_at',
       's.invalidated_at',
+      's.invalidated_reason',
     );
 
   if (!row) return { ok: false, code: 'UNAUTHORIZED' };
   // Logout clears the cookie, so a client still holding an invalidated token has almost
   // always been displaced by a newer login (or a password reset).
   const ids = { userId: row.id, traceId: row.trace_id };
-  if (row.invalidated_at) return { ok: false, code: 'SESSION_INVALIDATED', ...ids };
+  if (row.invalidated_at) {
+    return { ok: false, code: 'SESSION_INVALIDATED', ...ids, ...(row.invalidated_reason ? { reason: row.invalidated_reason } : {}) };
+  }
 
   const now = Date.now();
   const createdAt = new Date(row.session_created_at);

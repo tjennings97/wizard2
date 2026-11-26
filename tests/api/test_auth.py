@@ -376,6 +376,12 @@ class TestRegister:
         assert_error(r, 400, "VALIDATION_ERROR")
         assert field in r.json()["details"]["fields"]
 
+    def test_passphrase_equal_to_password_is_400(self, api, make_invite):
+        body = registration_body(make_invite(), recoveryPassphrase=DEFAULT_PASSWORD)
+        r = api.post("/auth/register", json=body)
+        assert_error(r, 400, "VALIDATION_ERROR")
+        assert "recoveryPassphrase" in r.json()["details"]["fields"]
+
     def test_missing_fields_are_400(self, api):
         r = api.post("/auth/register", json={})
         assert_error(r, 400, "VALIDATION_ERROR")
@@ -451,7 +457,9 @@ class TestLogin:
         assert len(active_sessions(db, user_id)) == 1
 
         # The displaced client is told why; the new one still works.
-        assert_error(api.post("/auth/logout"), 401, "SESSION_INVALIDATED")
+        r = api.post("/auth/logout")
+        assert_error(r, 401, "SESSION_INVALIDATED")
+        assert r.json()["details"] == {"reason": "displaced"}
         assert second.post("/auth/logout").status_code == 204
 
     def test_rate_limited_after_10_per_15_minutes(self, api):

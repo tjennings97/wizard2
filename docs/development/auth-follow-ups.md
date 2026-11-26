@@ -78,6 +78,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 **Spec:** `docs/api/openapi-spec.md` (`/users/me` patch). `docs/architecture/security.md` says to rotate all tokens on a password or passphrase change.
 
+**Status: done.** `PATCH /users/me` in `server/src/routes/users.ts`; migration `009_credential_change_tracking.ts` adds `users.password_changed_at` / `recovery_changed_at`, and the flag clears once both are set. `currentPassword` is required for either secret (wrong → `401 INVALID_CURRENT_PASSWORD`, rate-limited on failures), new secrets must differ from the current ones, the passphrase must differ from the password, and the rotation ends other sessions with `reason: "credential_change"`. The migration also adds `sessions.invalidated_reason`, returned as `details.reason` on `401 SESSION_INVALIDATED` (which no longer clears the cookie). A display name change refreshes lobby presence and open-room snapshots (`server/src/auth/userEvents.ts`). Avatar fields are refused until the avatar work (§8). Tests: `tests/api/test_users.py`, socket cases in `server/src/socket/socket.int.test.ts`.
+
 **Build:**
 - Verify `currentPassword` with `verifySecret`; return `401` if it is wrong.
 - Hash new secrets with `hashSecret`, using the same length rules as registration (8 characters minimum, 72 bytes maximum, via `BodyValidator.newSecret`).
@@ -87,11 +89,11 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 ### 4b. Admin credential reset (`POST /admin/users/{userId}/reset-credentials`)
 
-**Build:** set `requires_credential_change = true`, set the temporary credentials as the spec describes, and call `invalidateUserSessions` so the user must log in again. Admin routes check `req.user.role === 'admin'`; `requireAuth` re-reads the role from the database on every request.
+**Build:** set `requires_credential_change = true`, set `password_changed_at` and `recovery_changed_at` to `NULL` (so the user must change both again, see §4a), set the temporary credentials as the spec describes, and call `invalidateUserSessions` so the user must log in again. Admin routes check `req.user.role === 'admin'`; `requireAuth` re-reads the role from the database on every request.
 
 **Already enforced:** the server enforces the forced change in `authenticate()`. While the flag is true, every route returns `403 CREDENTIAL_CHANGE_REQUIRED` unless it opts in with `allowDuringCredentialChange`; only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` should. Do not opt any other route in.
 
-**Done when:** pytest covers an admin reset followed by login (`requiresCredentialChange: true`), a blocked route returning `403 CREDENTIAL_CHANGE_REQUIRED`, `PATCH /users/me` changing only the password (still flagged), then the passphrase (flag cleared), and the blocked route then succeeding.
+**Done when:** (the `PATCH /users/me` half is covered in `tests/api/test_users.py` with a simulated reset; swap `simulate_admin_reset` for the real endpoint) pytest covers an admin reset followed by login (`requiresCredentialChange: true`), a blocked route returning `403 CREDENTIAL_CHANGE_REQUIRED`, `PATCH /users/me` changing only the password (still flagged), then the passphrase (flag cleared), and the blocked route then succeeding.
 
 ### 4c. Admin invites (`/admin/invites`)
 
@@ -106,6 +108,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 ## 5. Client auth flows
 
 **Spec:** `docs/product/ui-ux-flows.md`, `CLAUDE.md` (Frontend Notes, Forced credential change).
+
+**Status: done, except the avatar step.** Register, reset-password, forced change and `/profile` pages in `client/src/pages/`; the mapping below in `client/src/context/AuthContext.tsx`; the re-auth prompt is documented in `docs/product/ui-ux-flows.md` (Flow 1). Registration sends a placeholder `avatarConfig` and `avatarSvg: null` (`client/src/api/avatar.ts`) until the avatar picker lands with the §8 decision.
 
 **Build:**
 - `AuthContext`.
@@ -122,7 +126,7 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 - Socket `session_error` with `fatal: true`: tear down the socket and apply the same mapping.
 - Login response with `requiresCredentialChange: true`: force the change-password flow before any other navigation.
 
-**Also:** add the re-auth prompt to `docs/product/ui-ux-flows.md`, which doesn't mention it yet.
+**Also:** ~~add the re-auth prompt to `docs/product/ui-ux-flows.md`~~ (done).
 
 ## 6. CI
 
@@ -151,8 +155,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 - **HSTS:** send `Strict-Transport-Security: max-age=31536000; includeSubDomains` in production (`docs/architecture/security.md`, downgrade attack). Consider `helmet` for this and the other standard headers.
 - **CSRF conclusion:** `docs/architecture/security.md` lists "CSRF protection not explicitly confirmed" as a gap. The current controls are a `SameSite=Strict` cookie, CORS limited to one origin with credentials, and JSON-only request bodies. Write up whether that is sufficient (recommendation: yes, provided every state-changing route requires `Content-Type: application/json`, which should then be enforced) and update the gap table.
-- **Decision needed: client-supplied avatar SVG (stored XSS).** `POST /auth/register` stores the client's `avatarSvg` in `users.avatar_svg` with no checks beyond "string or null" (`v.nullableString('avatarSvg')` in `server/src/routes/auth.ts`). There is no length cap and no content check. Every other player receives it in the `User` object, and `docs/architecture/avatar-system.md` has `<AvatarImage>` render that string directly. Anyone with an invite code can register with markup such as `<svg><foreignObject><img src=x onerror=...></foreignObject></svg>`, and it runs in the session of every player whose client renders that avatar. Nothing renders avatars yet, so this is not exploitable today, but it must be fixed before `<AvatarImage>` ships or `PATCH /users/me` accepts `avatarSvg`. Also, `BodyValidator.avatarConfig()` accepts any non-empty string up to 64 characters as a slug, not just the app's real options.
-  - **Recommended:** the avatar options are app-provided layer files, so the player's whole choice is `avatarConfig`. Stop accepting `avatarSvg`, drop the `avatar_svg` column in a new migration, and have `<AvatarImage>` stack the four layer files from `avatarConfig` (as `CLAUDE.md` Frontend Notes describes). Validate each slug against the app's option list once the layer assets exist (until then, at least restrict slugs to `^[a-z0-9]+(-[a-z0-9]+)*$`). Update `avatar-system.md`, `data-model.md`, `openapi-spec.md`, `prd.md` and `system-architecture.md`, which all describe the cached SVG.
+- **Decided (2026-11-26): recommended option.** The server stops accepting and storing client SVG; avatars are built from `avatarConfig` slugs only. Built by remaining-work prompt 7. **Client-supplied avatar SVG (stored XSS).** `POST /auth/register` stores the client's `avatarSvg` in `users.avatar_svg` with no checks beyond "string or null" (`v.nullableString('avatarSvg')` in `server/src/routes/auth.ts`). There is no length cap and no content check. Every other player receives it in the `User` object, and `docs/architecture/avatar-system.md` has `<AvatarImage>` render that string directly. Anyone with an invite code can register with markup such as `<svg><foreignObject><img src=x onerror=...></foreignObject></svg>`, and it runs in the session of every player whose client renders that avatar. Nothing renders avatars yet, so this is not exploitable today, but it must be fixed before `<AvatarImage>` ships or `PATCH /users/me` accepts `avatarSvg`. Also, `BodyValidator.avatarConfig()` accepts any non-empty string up to 64 characters as a slug, not just the app's real options.
+  - **Recommended (chosen):** the avatar options are app-provided layer files, so the player's whole choice is `avatarConfig`. Stop accepting `avatarSvg`, drop the `avatar_svg` column in a new migration, and have `<AvatarImage>` stack the four layer files from `avatarConfig` (as `CLAUDE.md` Frontend Notes describes). Validate each slug against the app's option list once the layer assets exist (until then, at least restrict slugs to `^[a-z0-9]+(-[a-z0-9]+)*$`). Update `avatar-system.md`, `data-model.md`, `openapi-spec.md`, `prd.md` and `system-architecture.md`, which all describe the cached SVG.
   - **Alternatives:** have the server build the SVG from the validated slugs and never accept it from the client, or sanitize uploaded SVG on the server with an allowlist of elements and attributes plus a length cap. Sanitizing is the weakest option.
   - **Done when:** pytest shows that registering with markup in `avatarSvg` cannot store or return it, and that invalid slugs (`../x`, `<svg>`, `Round`) are rejected with `400 VALIDATION_ERROR`.
 - **Breached-password check: deferred by the project owner.** `docs/architecture/security.md` mentions rejecting passwords on known-breach lists. Do not build it now.

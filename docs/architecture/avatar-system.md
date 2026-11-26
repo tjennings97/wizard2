@@ -41,6 +41,8 @@ Avatar data is read and written via the existing user endpoints. All endpoints r
 
 `GET /users/me` — returns the full `User` object. The `avatarConfig` field contains `{ head, skin, face, hair }`, or `null` if not yet set. The `avatarSvg` field contains the cached SVG string, or `null` if not yet set.
 
+> **Status:** `PATCH /users/me` does not accept `avatarConfig` or `avatarSvg` yet (400 `VALIDATION_ERROR`); avatar changes ship with the avatar system, after the client-supplied SVG decision in `docs/development/auth-follow-ups.md` §8. Registration uses a placeholder `avatarConfig` until the picker exists.
+
 `PATCH /users/me` — body: `{ avatarConfig: { head, skin, face, hair }, avatarSvg: "<svg>...</svg>" }`. Both fields must be sent together. Returns the updated `User` object on 200. Returns 400 if any required key is missing, a slug is invalid, or avatarSvg is missing when avatarConfig is provided.
 
 The PATCH endpoint is idempotent for avatar updates. `avatarConfig` may be sent alone or alongside other mutable fields (`displayName`, `password`, etc.).

@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import { createRoom, joinRoom } from '../api/rooms';
 import type { MemberRole, RoomSummary } from '../api/types';
 import { useAuth } from '../context/AuthContext';
@@ -27,7 +28,9 @@ export function LobbyPage() {
     <main className="page">
       <header className="bar">
         <h1>Lobby</h1>
-        <span className="muted">{user?.displayName}</span>
+        <Link to="/profile" className="button" aria-label={`Profile: ${user?.displayName ?? ''}`}>
+          {user?.displayName ?? 'Profile'}
+        </Link>
         <button type="button" onClick={() => void logout()}>
           Log out
         </button>

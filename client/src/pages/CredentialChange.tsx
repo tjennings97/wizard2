@@ -1,36 +1,112 @@
 import { useState } from 'react';
+import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
+import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
 
 /**
  * Shown instead of the app while user.requiresCredentialChange is true (an admin reset the
- * account). The server allows only GET/PATCH /users/me and logout until the flag clears.
- *
- * TODO(auth-follow-ups §4a/§5): the change form (new password + recovery passphrase via
- * PATCH /users/me). That endpoint is not built yet, so for now this screen only blocks
- * navigation and offers logout.
+ * account). The server allows only GET/PATCH /users/me and logout until the flag clears, which
+ * happens once both the password and the recovery passphrase have been changed. Both are sent in
+ * one PATCH /users/me; when the response clears the flag, App shows the lobby.
  */
 export function CredentialChangePage() {
-  const { logout } = useAuth();
-  const [busy, setBusy] = useState(false);
+  const { user, updateProfile, logout } = useAuth();
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+  const [confirmPassphrase, setConfirmPassphrase] = useState('');
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const { busy, error, fields, onSubmit } = useSubmit(
+    () => updateProfile({ currentPassword, password, recoveryPassphrase: passphrase }),
+    () =>
+      errorsOf({
+        currentPassword: !currentPassword && 'Required.',
+        password: secretError(password) || (password === currentPassword && 'Must differ from the temporary password.'),
+        confirmPassword: confirmPassword !== password && 'Passwords do not match.',
+        recoveryPassphrase:
+          secretError(passphrase) || (passphrase === password && 'Must be different from your password.'),
+        confirmPassphrase: confirmPassphrase !== passphrase && 'Passphrases do not match.',
+      }),
+  );
 
   async function onLogout() {
-    setBusy(true);
+    setLoggingOut(true);
     try {
       await logout();
     } finally {
-      setBusy(false);
+      setLoggingOut(false);
     }
   }
 
   return (
     <main className="page narrow">
-      <h1>Change your credentials</h1>
+      <h1>Choose new credentials</h1>
       <p className="notice">
-        An admin reset your account. You need to set a new password and recovery passphrase before you can play.
+        An admin reset your account{user ? ` (${user.username})` : ''}. Choose a new password and recovery passphrase
+        to continue.
       </p>
-      <p className="muted">Changing them in the app isn’t available yet. Please contact an admin.</p>
-      <button type="button" onClick={onLogout} disabled={busy}>
-        {busy ? 'Logging out…' : 'Log out'}
+      <form onSubmit={onSubmit} className="stack" noValidate>
+        <Field
+          label="Temporary password"
+          type="password"
+          value={currentPassword}
+          onChange={setCurrentPassword}
+          error={fields.currentPassword}
+          hint="The password the admin gave you."
+          autoComplete="current-password"
+          required
+        />
+        <Field
+          label="New password"
+          type="password"
+          value={password}
+          onChange={setPassword}
+          error={fields.password}
+          hint="At least 8 characters."
+          autoComplete="new-password"
+          required
+        />
+        <Field
+          label="Confirm new password"
+          type="password"
+          value={confirmPassword}
+          onChange={setConfirmPassword}
+          error={fields.confirmPassword}
+          autoComplete="new-password"
+          required
+        />
+        <Field
+          label="New recovery passphrase"
+          type="password"
+          value={passphrase}
+          onChange={setPassphrase}
+          error={fields.recoveryPassphrase}
+          hint="You'll need this to reset your password yourself. Keep it somewhere safe."
+          autoComplete="off"
+          required
+        />
+        <Field
+          label="Confirm new recovery passphrase"
+          type="password"
+          value={confirmPassphrase}
+          onChange={setConfirmPassphrase}
+          error={fields.confirmPassphrase}
+          autoComplete="off"
+          required
+        />
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <button type="submit" className="primary" disabled={busy}>
+          {busy ? 'Saving…' : 'Save and continue'}
+        </button>
+      </form>
+      <button type="button" className="spaced" onClick={onLogout} disabled={loggingOut || busy}>
+        {loggingOut ? 'Logging out…' : 'Log out'}
       </button>
     </main>
   );
