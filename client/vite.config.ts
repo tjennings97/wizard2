@@ -7,6 +7,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Listen on all interfaces so phones on the LAN can reach the dev server.
+    host: true,
     strictPort: true,
     proxy: {
       '/api': API_TARGET,
