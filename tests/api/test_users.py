@@ -9,7 +9,7 @@ See conftest.py for required environment and server settings.
 """
 import pytest
 
-from conftest import DEFAULT_PASSPHRASE, DEFAULT_PASSWORD, raw_session_token, sha256_hex
+from conftest import DEFAULT_PASSPHRASE, DEFAULT_PASSWORD, SESSION_COOKIE, raw_session_token, sha256_hex
 from test_auth import active_sessions, assert_error, enter_reauth_window, login
 
 NEW_PASSWORD = "brand new password 1"
@@ -157,6 +157,43 @@ class TestSecretChange:
         )
         assert_error(r, 400, "VALIDATION_ERROR")
         assert set(r.json()["details"]["fields"]) == {"password", "recoveryPassphrase"}
+
+    def test_passphrase_must_differ_from_password(self, api, register):
+        register(api)
+        # Equal to the current password...
+        r = api.patch("/users/me", json={"currentPassword": DEFAULT_PASSWORD, "recoveryPassphrase": DEFAULT_PASSWORD})
+        assert_error(r, 400, "VALIDATION_ERROR")
+        assert "recoveryPassphrase" in r.json()["details"]["fields"]
+        # ...or to the new one set in the same request.
+        r = api.patch(
+            "/users/me",
+            json={"currentPassword": DEFAULT_PASSWORD, "password": NEW_PASSWORD, "recoveryPassphrase": NEW_PASSWORD},
+        )
+        assert_error(r, 400, "VALIDATION_ERROR")
+        assert set(r.json()["details"]["fields"]) == {"recoveryPassphrase"}
+
+    def test_old_session_gets_the_reason_and_keeps_its_cookie(self, api, new_api, register):
+        register(api)
+        # A request still carrying the pre-change cookie (another device, or a stale request
+        # from another tab of this browser).
+        stale = new_api()
+        stale.cookies.set(SESSION_COOKIE, api.cookies.get(SESSION_COOKIE))
+        r = api.patch("/users/me", json={"currentPassword": DEFAULT_PASSWORD, "password": NEW_PASSWORD})
+        assert r.status_code == 200, r.text
+
+        r = stale.get("/users/me")
+        assert_error(r, 401, "SESSION_INVALIDATED")
+        assert r.json()["details"] == {"reason": "credential_change"}
+        # Not cleared: a stale request must not wipe a cookie the browser has just replaced.
+        assert "Set-Cookie" not in r.headers
+
+    def test_validation_errors_do_not_use_up_the_rate_limit(self, api, register):
+        register(api)
+        bad = {"currentPassword": DEFAULT_PASSWORD, "password": "short"}
+        for _ in range(11):
+            assert_error(api.patch("/users/me", json=bad), 400, "VALIDATION_ERROR")
+        r = api.patch("/users/me", json={"currentPassword": DEFAULT_PASSWORD, "password": NEW_PASSWORD})
+        assert r.status_code == 200, r.text
 
     def test_wrong_current_password_is_rate_limited(self, api, register):
         register(api)

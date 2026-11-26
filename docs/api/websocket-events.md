@@ -121,8 +121,8 @@ The server broadcasts most events to all players in the session. Unicast events 
 | --- | --- | --- |
 | `lobby_snapshot` | **U** | `rooms: RoomSummary[]`, `online_users: UserSummary[]` — sent on entering the lobby |
 | `rooms_updated` | Lobby | `rooms: RoomSummary[]` |
-| `presence_updated` | Lobby | `online_users: UserSummary[]` |
-| `room_snapshot` | **U** | `room_id`, `config: RoomConfig`, `members: MemberSummary[]`, `host_id` — sent on entering a room |
+| `presence_updated` | Lobby | `online_users: UserSummary[]` — also sent when a lobby user changes their display name |
+| `room_snapshot` | **U** | `room_id`, `config: RoomConfig`, `members: MemberSummary[]`, `host_id` — sent on entering a room, and again to every member of an open room when one of them changes their display name (`PATCH /users/me`). A started game keeps the names it started with |
 | `host_changed` | Room | `room_id`, `host_id` |
 | `room_config_updated` | Room | `room_id`, `config: RoomConfig` — after the host changes config via REST |
 | `chat_message` | Room | `room_id`, `sender_id`, `display_name`, `text`, `sent_at: ISO-8601` |
@@ -178,7 +178,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `invalid_play_error` | **U** | `player_id`, `code: string`, `reason: string`, `legal_cards: Card[]` — `code` is `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND` (including anything that is not a card), `ILLEGAL_CARD` (follow-suit) or `INVALID_PHASE` (no trick in play). `legal_cards` is what the sender may play now: empty when it is not their turn |
 | `invalid_bid_error` | **U** | `player_id`, `code: string`, `reason: string`, `min_bid: integer`, `max_bid: integer`, `allowed_bids: integer[]` — `code` is `NOT_YOUR_TURN`, `INVALID_BID` (out of range, not an integer, or blocked by the uneven rule), `ALREADY_BID` or `INVALID_PHASE` (not bidding now). `allowed_bids` is empty when it is not the sender's turn |
 | `invalid_trump_error` | **U** | `player_id`, `code: string`, `reason: string` — a refused `select_trump`: `code` is `NOT_YOUR_TURN` (not the dealer), `INVALID_SUIT` or `INVALID_PHASE` (no declaration pending) |
-| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean`, `reason?: string` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset, a logout or a password / passphrase change (`PATCH /users/me`) has ended, with `reason` `"displaced"`, `"password_reset"`, `"logout"` or `"credential_change"` so the client can say which, and the socket is then disconnected (on connect with an already-ended session there is no `reason`); `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress; `code: "ACTION_FAILED"` (not fatal) when a game action could not be processed (see Game actions) |
+| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean`, `reason?: string` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset, a logout or a password / passphrase change (`PATCH /users/me`) has ended, with `reason` `"displaced"`, `"password_reset"`, `"logout"` or `"credential_change"` so the client can say which, and the socket is then disconnected (on connect with an already-ended session, `reason` is the recorded one, and absent for sessions ended before reasons were recorded); `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress; `code: "ACTION_FAILED"` (not fatal) when a game action could not be processed (see Game actions) |
 
 ## Event Sequencing & State Transitions
 

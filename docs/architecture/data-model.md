@@ -38,6 +38,7 @@ One active session per user at any time. A new login invalidates the prior sessi
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Session creation time |
 | `expires_at` | `timestamptz` | No | NOT NULL | Sliding expiry: 24 hours after the session's last authenticated activity (HTTP request or socket event), so active players are not logged out mid-game. Moved forward at most once an hour. Never later than `created_at` + 30 days (hard cap). In the last 24 hours before the cap the user must log in again (`401 REAUTH_REQUIRED`) unless they are an active player in a game in progress. |
 | `invalidated_at` | `timestamptz` | Yes | — | Set on logout, when a new login displaces this session, on a password reset, or when the user changes their password or recovery passphrase from another session (that session is replaced by a new one). Null = still valid (if not expired). |
+| `invalidated_reason` | `varchar(32)` | Yes | — | Why the session ended: `displaced`, `logout`, `password_reset` or `credential_change`. Returned as `details.reason` on `401 SESSION_INVALIDATED` and as `reason` on the socket `session_error`. Null while the session is valid, and for sessions ended before the column existed. |
 
 ## Data Dictionary — invites
 

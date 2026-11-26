@@ -6,6 +6,8 @@ export class ApiRequestError extends Error {
     message: string,
     /** Field errors from a 400 VALIDATION_ERROR (`details.fields`), keyed by request field. */
     readonly fields: Record<string, string> = {},
+    /** SESSION_INVALIDATED: why the session ended (details.reason), when the server knows. */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -15,10 +17,13 @@ export class ApiRequestError extends Error {
 /** 401 codes that mean the client must show the login screen. */
 export const SESSION_ENDED_CODES = ['UNAUTHORIZED', 'SESSION_INVALIDATED', 'REAUTH_REQUIRED'] as const;
 
-let onSessionEnded: ((code: string) => void) | null = null;
+/** `reason`: why a SESSION_INVALIDATED session ended (details.reason), when the server knows. */
+type SessionEndedHandler = (code: string, reason?: string) => void;
+
+let onSessionEnded: SessionEndedHandler | null = null;
 
 /** AuthContext registers this so any request that finds the session over shows the login screen. */
-export function setSessionEndedHandler(handler: ((code: string) => void) | null): void {
+export function setSessionEndedHandler(handler: SessionEndedHandler | null): void {
   onSessionEnded = handler;
 }
 
@@ -40,13 +45,14 @@ export async function apiFetch<T>(path: string, { method = 'GET', body, ignoreSe
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const code: string = data?.code ?? 'INTERNAL_ERROR';
+    const reason = typeof data?.details?.reason === 'string' ? data.details.reason : undefined;
     if (res.status === 401 && !ignoreSessionEnd && (SESSION_ENDED_CODES as readonly string[]).includes(code)) {
-      onSessionEnded?.(code);
+      onSessionEnded?.(code, reason);
     }
     // Every route but the credential-change ones refuses a flagged user: show the change screen.
     if (res.status === 403 && code === 'CREDENTIAL_CHANGE_REQUIRED') onSessionEnded?.(code);
     const fields = data?.details?.fields && typeof data.details.fields === 'object' ? data.details.fields : {};
-    throw new ApiRequestError(res.status, code, data?.message ?? `Request failed (${res.status}).`, fields);
+    throw new ApiRequestError(res.status, code, data?.message ?? `Request failed (${res.status}).`, fields, reason);
   }
   return data as T;
 }

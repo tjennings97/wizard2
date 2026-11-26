@@ -6,6 +6,7 @@ import { logger } from '../logger';
 import { hashSecret, verifySecret } from '../auth/credentials';
 import { authenticate } from '../auth/middleware';
 import { currentPasswordLimiter } from '../auth/rateLimits';
+import { userEvents } from '../auth/userEvents';
 import { rotateSession, setSessionCookie } from '../auth/sessions';
 import { toPublicUser, type UserRow } from '../auth/users';
 import { BodyValidator } from '../auth/validation';
@@ -85,7 +86,12 @@ usersRouter.patch(
       // change that keeps the old value is a no-op that would still sign out other devices.
       const same: Record<string, string> = {};
       if (password !== undefined && password === currentPassword) same.password = 'Must differ from your current password.';
-      if (recoveryPassphrase !== undefined && (await verifySecret(recoveryPassphrase, found.recovery_hash))) {
+      // The passphrase is a second secret: it must not equal the password it would reset
+      // (the new one if this request sets it, else the current one), as at registration.
+      const passwordAfter = password ?? currentPassword!;
+      if (recoveryPassphrase !== undefined && recoveryPassphrase === passwordAfter) {
+        same.recoveryPassphrase = 'Must be different from your password.';
+      } else if (recoveryPassphrase !== undefined && (await verifySecret(recoveryPassphrase, found.recovery_hash))) {
         same.recoveryPassphrase = 'Must differ from your current recovery passphrase.';
       }
       if (Object.keys(same).length > 0) {
@@ -139,6 +145,7 @@ usersRouter.patch(
     } else {
       logger.info({ userId, traceId }, 'profile updated');
     }
+    if (displayName !== undefined) userEvents.emit('displayNameChanged', userId, user.display_name);
     res.status(200).json(toPublicUser(user));
   }),
 );

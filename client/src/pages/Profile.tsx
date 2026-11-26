@@ -173,7 +173,8 @@ function PassphraseForm() {
     () =>
       errorsOf({
         currentPassword: !currentPassword && 'Required.',
-        recoveryPassphrase: secretError(passphrase),
+        recoveryPassphrase:
+          secretError(passphrase) || (passphrase === currentPassword && 'Must be different from your password.'),
         confirm: confirm !== passphrase && 'Passphrases do not match.',
       }),
   );

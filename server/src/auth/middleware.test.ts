@@ -10,11 +10,12 @@ jest.mock('./sessions', () => ({
 }));
 
 import { authenticate, requireSessionRunway } from './middleware';
-import { authenticateToken, isInActiveGame, slideSession } from './sessions';
+import { authenticateToken, clearSessionCookie, isInActiveGame, slideSession } from './sessions';
 
 const mockAuthenticateToken = authenticateToken as jest.MockedFunction<typeof authenticateToken>;
 const mockIsInActiveGame = isInActiveGame as jest.MockedFunction<typeof isInActiveGame>;
 const mockSlideSession = slideSession as jest.MockedFunction<typeof slideSession>;
+const mockClearSessionCookie = clearSessionCookie as jest.MockedFunction<typeof clearSessionCookie>;
 
 function okResult({ requiresCredentialChange = false, inReauthWindow = false } = {}) {
   return {
@@ -96,6 +97,21 @@ describe('authenticate: session checks', () => {
     const { res } = await run(authenticate());
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'SESSION_INVALIDATED' }));
+  });
+
+  it('sends the invalidation reason and keeps the cookie for SESSION_INVALIDATED', async () => {
+    mockAuthenticateToken.mockResolvedValue({ ok: false, code: 'SESSION_INVALIDATED', reason: 'credential_change' });
+    const { res } = await run(authenticate());
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'SESSION_INVALIDATED', details: { reason: 'credential_change' } }),
+    );
+    expect(mockClearSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('clears the cookie for UNAUTHORIZED', async () => {
+    mockAuthenticateToken.mockResolvedValue({ ok: false, code: 'UNAUTHORIZED' });
+    await run(authenticate());
+    expect(mockClearSessionCookie).toHaveBeenCalled();
   });
 
   it('lets an active player in the re-auth window through', async () => {

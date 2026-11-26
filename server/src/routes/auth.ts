@@ -66,6 +66,11 @@ authRouter.post(
     const avatarConfig = v.avatarConfig();
     const avatarSvg = v.nullableString('avatarSvg');
     v.done();
+    if (recoveryPassphrase === password) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request body: recoveryPassphrase.', {
+        fields: { recoveryPassphrase: 'Must be different from your password.' },
+      });
+    }
 
     const codeHash = sha256(inviteCode);
 

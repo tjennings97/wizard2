@@ -21,15 +21,16 @@ Three separate sub-flows share the landing page entry point: login, invite-code 
 | Trigger | Login screen shows |
 | --- | --- |
 | `401 UNAUTHORIZED` (no session, expired, bad cookie) | Login screen, no message |
-| `401 SESSION_INVALIDATED`, or socket `session_error` with `reason: "displaced"` | “You signed in on another device.” |
-| `session_error` with `reason: "logout"` | “You logged out in another tab.” |
-| `session_error` with `reason: "password_reset"` | “You were signed out because your password was reset.” |
-| `session_error` with `reason: "credential_change"` (changed on another device) | “You were signed out because your password or recovery passphrase was changed.” |
+| `401 SESSION_INVALIDATED` or socket `session_error` with `reason: "displaced"` | “You signed in on another device.” |
+| `SESSION_INVALIDATED` with no `reason` (session ended before reasons were recorded) | “You were signed out. Please sign in again.” |
+| `reason: "logout"` | “You logged out in another tab.” |
+| `reason: "password_reset"` | “You were signed out because your password was reset.” |
+| `reason: "credential_change"` (changed on another device) | “You were signed out because your password or recovery passphrase was changed.” |
 | `401 REAUTH_REQUIRED` (REST or socket `session_error`) — the **re-auth prompt** | “Please sign in again to continue.” with the username pre-filled and the password field focused |
 
-A fatal socket `session_error` tears down the socket and applies the same mapping. The re-auth prompt is shown when the session is within 24 hours of its 30-day cap: on app load (`GET /users/me`), on any request, or when the socket connects, unless the user is an active player in a game in progress, who finishes the game first. Signing in again issues a fresh 30-day session and returns the user to the URL they were on. On app load the client does not know who the user is, so the pre-filled username is the last one that signed in on this device (kept in browser storage; left empty if storage is unavailable).
+The `reason` comes from REST `details.reason` or the socket `session_error`. A fatal socket `session_error` tears down the socket and applies the same mapping. For `credential_change` the client first checks `GET /users/me` (immediately, then after 1 s and 3 s): another tab on the same browser may have made the change and its new cookie may still be landing. Only a `401` there signs the user out; a network or server error keeps them signed in and reconnects the socket, whose handshake decides. The re-auth prompt is shown when the session is within 24 hours of its 30-day cap: on app load (`GET /users/me`), on any request, or when the socket connects, unless the user is an active player in a game in progress, who finishes the game first. Signing in again issues a fresh 30-day session and returns the user to the URL they were on. On app load the client does not know who the user is, so the pre-filled username is the last one that signed in on this device (kept in browser storage; left empty if storage is unavailable).
 
-**Profile (`/profile`, from the lobby header):** Display name, password and recovery passphrase, each its own form. Changing the password or passphrase asks for the current password and signs out every other device (they see the `credential_change` notice above); this device stays signed in on a new session and its socket reconnects. Username is shown but cannot be changed. The avatar picker is added with the avatar system.
+**Profile (`/profile`, from the lobby header):** Display name, password and recovery passphrase, each its own form. Changing the password or passphrase asks for the current password and signs out every other device (they see the `credential_change` notice above); this device stays signed in on a new session and its socket reconnects. The recovery passphrase must differ from the password. A new display name shows up straight away in lobby presence and in an open room's member list; a game in progress keeps the name it started with. Username is shown but cannot be changed. The avatar picker is added with the avatar system.
 
 ## Flow 2 — Lobby
 

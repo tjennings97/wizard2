@@ -74,8 +74,16 @@ export function authenticate(options: AuthOptions = {}): RequestHandler {
           : ({ ok: false, code: 'UNAUTHORIZED' } as const);
 
       if (!result.ok) {
-        clearSessionCookie(res);
-        sendError(res, 401, { code: result.code, message: MESSAGES[result.code] });
+        // Do not clear the cookie for SESSION_INVALIDATED. A stale request that still carries
+        // the old cookie can finish after the same browser received a new one (a password
+        // change in another tab rotates the session), and clearing would wipe the new cookie.
+        // The dead cookie is harmless: it is rejected until it is replaced or pruned.
+        if (result.code !== 'SESSION_INVALIDATED') clearSessionCookie(res);
+        sendError(res, 401, {
+          code: result.code,
+          message: MESSAGES[result.code],
+          ...(result.code === 'SESSION_INVALIDATED' && result.reason ? { details: { reason: result.reason } } : {}),
+        });
         return;
       }
 

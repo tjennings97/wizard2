@@ -11,7 +11,7 @@ function authLimiter(
   limit: number,
   windowMs: number,
   message: string,
-  extra: Pick<Partial<Options>, 'skip' | 'skipSuccessfulRequests'> = {},
+  extra: Pick<Partial<Options>, 'skip' | 'skipSuccessfulRequests' | 'requestWasSuccessful'> = {},
 ) {
   return rateLimit({
     ...extra,
@@ -48,8 +48,9 @@ export const resetPasswordLimiter = authLimiter(
 );
 
 /**
- * PATCH /users/me requests that carry currentPassword. Only failed attempts count, so a
- * stolen session cannot be used to guess the password, while normal changes are never blocked.
+ * PATCH /users/me requests that carry currentPassword. Only wrong-password responses (401)
+ * count, so a stolen session cannot be used to guess the password, while typos in the new
+ * secrets (400) and normal changes never use up the budget.
  */
 export const currentPasswordLimiter = authLimiter(
   'users-me-current-password',
@@ -59,5 +60,6 @@ export const currentPasswordLimiter = authLimiter(
   {
     skip: (req) => !(req.body && typeof req.body === 'object' && 'currentPassword' in req.body),
     skipSuccessfulRequests: true,
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
   },
 );

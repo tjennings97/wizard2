@@ -10,7 +10,7 @@ export type SocketAuthFailure = 'UNAUTHORIZED' | 'SESSION_INVALIDATED' | 'REAUTH
 export type SocketAuthResult =
   | { ok: true; user: PublicUser; session: AuthSession }
   /** userId and traceId are set when the session was found, for logging the rejection. */
-  | { ok: false; code: SocketAuthFailure; userId?: string; traceId?: string };
+  | { ok: false; code: SocketAuthFailure; userId?: string; traceId?: string; reason?: InvalidationReason };
 
 export const SESSION_ERROR_MESSAGES: Record<SocketAuthFailure, string> = {
   UNAUTHORIZED: 'Session is invalid or expired.',

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as authApi from '../api/auth';
-import { setSessionEndedHandler } from '../api/http';
+import { ApiRequestError, setSessionEndedHandler } from '../api/http';
 import type { User } from '../api/types';
 
 type Status = 'loading' | 'anonymous' | 'authenticated';
@@ -36,7 +36,8 @@ const AuthContext = createContext<AuthValue | null>(null);
 // The 401 / session_error mapping in docs/development/auth-follow-ups.md §5.
 const NOTICES: Record<string, string | null> = {
   UNAUTHORIZED: null,
-  SESSION_INVALIDATED: 'You signed in on another device.',
+  // Only when the server could not say why (a session ended before reasons were recorded).
+  SESSION_INVALIDATED: 'You were signed out. Please sign in again.',
   REAUTH_REQUIRED: 'Please sign in again to continue.',
 };
 
@@ -52,6 +53,12 @@ function noticeFor(code: string, reason?: string): string | null {
   if (code === 'SESSION_INVALIDATED' && reason && INVALIDATED_NOTICES[reason]) return INVALIDATED_NOTICES[reason];
   return NOTICES[code] ?? null;
 }
+
+/** How long after this tab's own secret change a credential_change for it is still expected. */
+const OWN_ROTATION_GRACE_MS = 10_000;
+/** /users/me checks after another tab's change, while its new cookie may still be on the way. */
+const ROTATION_RETRY_DELAYS_MS = [0, 1000, 3000];
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // The last signed-in username, so a REAUTH_REQUIRED on app load (when /users/me says nothing
 // about who the user is) can still pre-fill it. A per-device convenience only.
@@ -81,9 +88,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Logging out ends the session server-side, which also sends this tab's socket a fatal
   // SESSION_INVALIDATED. That is our own doing, so it must not show the "signed in elsewhere" notice.
   const loggingOut = useRef(false);
-  // A secret change in flight from this tab. Its session rotation sends our own socket a
-  // SESSION_INVALIDATED (credential_change) that may arrive before the response sets the new cookie.
-  const rotating = useRef<Promise<unknown> | null>(null);
+  // The last secret change this tab made: in flight (settledAt null) or recently finished. Its
+  // session rotation sends our own socket a SESSION_INVALIDATED (credential_change) that may
+  // arrive before or just after the response that sets the new cookie.
+  const ownRotation = useRef<{ request: Promise<unknown>; settledAt: number | null } | null>(null);
   const userRef = useRef<User | null>(null);
   userRef.current = user;
 
@@ -103,6 +111,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setNotice(noticeFor(code, reason));
   }, []);
 
+  /**
+   * A password / passphrase change ended this session. Three cases:
+   * - this tab made the change: updateProfile already took the new session (nothing to do);
+   * - another tab on this device made it: the shared cookie is (or soon will be) the new one, so
+   *   check /users/me, retrying while the new cookie may not have landed yet, then reconnect;
+   * - another device made it: /users/me keeps answering 401, so sign out.
+   * Only a 401 means signed out. Any other failure (network, 5xx, 429) keeps the user signed in
+   * and reconnects the socket, whose handshake then decides.
+   */
+  const recoverFromRotation = useCallback(
+    async (code: string, reason: string) => {
+      const own = ownRotation.current;
+      if (own && (own.settledAt === null || Date.now() - own.settledAt < OWN_ROTATION_GRACE_MS)) {
+        const ok = await own.request.then(
+          () => true,
+          () => false,
+        );
+        if (ok) return;
+        // The response was lost (network) but the change may have committed: check below.
+      }
+      let lastError: unknown = null;
+      for (const delay of ROTATION_RETRY_DELAYS_MS) {
+        if (delay > 0) await sleep(delay);
+        try {
+          setUser(await authApi.fetchMe());
+          setSessionEpoch((n) => n + 1);
+          return;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      if (lastError instanceof ApiRequestError && lastError.status === 401) signOut(code, reason);
+      else setSessionEpoch((n) => n + 1);
+    },
+    [signOut],
+  );
+
   const endSession = useCallback(
     (code: string, reason?: string) => {
       if (loggingOut.current) return;
@@ -112,23 +157,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (code === 'SESSION_INVALIDATED' && reason === 'credential_change') {
-        // Either this tab (or another tab on this device, which shares the cookie) changed a
-        // secret and holds the new session, or another device did and we are signed out.
-        void (async () => {
-          await rotating.current?.catch(() => undefined);
-          try {
-            const me = await authApi.fetchMe();
-            setUser(me);
-            setSessionEpoch((n) => n + 1);
-          } catch {
-            signOut(code, reason);
-          }
-        })();
+        void recoverFromRotation(code, reason);
         return;
       }
       signOut(code, reason);
     },
-    [signOut],
+    [signOut, recoverFromRotation],
   );
 
   useEffect(() => {
@@ -141,7 +175,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     authApi
       .fetchMe()
       .then(signedIn)
-      .catch((err) => signOut(err?.code ?? 'UNAUTHORIZED'));
+      .catch((err) => signOut(err?.code ?? 'UNAUTHORIZED', err?.reason));
   }, [signedIn, signOut]);
 
   const login = useCallback(
@@ -173,7 +207,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const updateProfile = useCallback(async (body: authApi.ProfileUpdate) => {
     const secret = body.password !== undefined || body.recoveryPassphrase !== undefined;
     const request = authApi.updateMe(body);
-    if (secret) rotating.current = request;
+    const rotation = secret ? { request, settledAt: null as number | null } : null;
+    if (rotation) ownRotation.current = rotation;
     try {
       const me = await request;
       setUser(me);
@@ -181,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (secret) setSessionEpoch((n) => n + 1);
       return me;
     } finally {
-      if (rotating.current === request) rotating.current = null;
+      if (rotation) rotation.settledAt = Date.now();
     }
   }, []);
 

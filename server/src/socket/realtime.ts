@@ -1,6 +1,7 @@
 import type { Server, Socket } from 'socket.io';
 import { logger } from '../logger';
 import {
+  getRoomView,
   listLobbyRooms,
   toRoomDto,
   type PresenceSource,
@@ -133,6 +134,10 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
   /** Puts the socket in the room's channel (out of the lobby) and sends it room_snapshot. */
   enterRoom(socket: AppSocket, room: RoomView): void {
     this.joinRoomChannel(socket, room.id);
+    this.sendRoomSnapshot(socket, room);
+  }
+
+  private sendRoomSnapshot(socket: AppSocket, room: RoomView): void {
     this.send(socket, 'room_snapshot', {
       room_id: room.id,
       config: room.config,
@@ -227,6 +232,25 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
     if (sockets.length === 0) return;
     const rooms = await listLobbyRooms();
     for (const s of sockets) this.enterLobby(s, rooms);
+  }
+
+  /**
+   * A user renamed themselves (PATCH /users/me). Their sockets carry the new name from now on;
+   * the lobby gets presence_updated and an open room they are in gets room_snapshot again.
+   * A started game keeps the names it started with (seats are fixed for the game).
+   */
+  async displayNameChanged(userId: string, displayName: string): Promise<void> {
+    const sockets = this.socketsIn(userChannel(userId));
+    if (sockets.length === 0) return;
+    for (const s of sockets) s.data.user = { ...s.data.user, displayName };
+    if (this.isInLobby(userId)) this.broadcastPresence();
+    const roomIds = new Set(sockets.map((s) => s.data.roomId).filter((id): id is string => id !== null));
+    for (const roomId of roomIds) {
+      if (this.games.isLive(roomId)) continue;
+      const room = await getRoomView(roomId);
+      if (!room || room.state !== 'open') continue;
+      for (const s of this.socketsIn(roomChannel(roomId))) this.sendRoomSnapshot(s, room);
+    }
   }
 
   async lobbyChanged(): Promise<void> {

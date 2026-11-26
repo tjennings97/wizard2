@@ -294,7 +294,7 @@ paths:
                   type: string
                   minLength: 8
                   format: password
-                  description: Used to reset password if forgotten. Stored hashed.
+                  description: Used to reset password if forgotten. Stored hashed. Must differ from password.
                 avatarConfig:
                   $ref: '#/components/schemas/AvatarConfig'
                 avatarSvg:
@@ -527,7 +527,7 @@ paths:
                   type: string
                   minLength: 8
                   format: password
-                  description: New recovery passphrase (at most 72 bytes). Requires currentPassword; must differ from the current passphrase.
+                  description: New recovery passphrase (at most 72 bytes). Requires currentPassword; must differ from the current passphrase and from the password (the new one if this request sets it).
                 currentPassword:
                   type: string
                   format: password
@@ -560,8 +560,9 @@ paths:
                 $ref: '#/components/schemas/Error'
         '429':
           description: >
-            RATE_LIMITED: too many failed requests carrying currentPassword (10 per 15 minutes
-            per IP; successful requests and requests without currentPassword do not count).
+            RATE_LIMITED: too many wrong currentPassword attempts (10 401 responses per 15
+            minutes per IP; successes, 400 validation errors and requests without
+            currentPassword do not count).
           content:
             application/json:
               schema:
@@ -1689,7 +1690,7 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
 | 401 | `INVALID_CURRENT_PASSWORD` | `currentPassword` is wrong on `PATCH /users/me`. Not a session failure: the session stays valid. |
 | 401 | `INVALID_RECOVERY` | Username not found or recovery passphrase does not match on password reset (one response for both). |
-| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device, a password reset, or a password / passphrase change on another device. |
+| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device, a logout, a password reset, or a password / passphrase change. `details.reason` says which (`displaced`, `logout`, `password_reset`, `credential_change`) when it was recorded. The session cookie is not cleared: a stale request must not wipe a cookie the browser has just replaced. |
 | 401 | `REAUTH_REQUIRED` | Session is within 24 hours of its 30-day cap. The user must log in again before doing anything except finishing a game in progress. The session is still valid and the cookie is not cleared. |
 | 403 | `FORBIDDEN` | Authenticated but not permitted (e.g. non-admin on admin route). |
 | 403 | `CREDENTIAL_CHANGE_REQUIRED` | An admin reset this user's credentials. Only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` are allowed until both the password and recovery passphrase are changed. |
