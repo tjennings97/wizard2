@@ -144,14 +144,59 @@ def seat_in_room(db, cleanup):
     return _seat
 
 
-class TestLeaveAfterGame:
-    """POST /rooms/{roomId}/leave: a game in progress cannot be left yet (player drop comes later),
-    but once it is over (room COMPLETING) anyone may leave, and the last one out closes the room."""
+class TestLeaveGame:
+    """POST /rooms/{roomId}/leave during a game is a quit: the player is out for good (they may come
+    back only as a spectator) and the player-drop rules apply. The socket side (user_left, the
+    re-deal, continue_or_end_request) is covered by server/src/games/drops.int.test.ts."""
 
-    def test_player_cannot_leave_a_game_in_progress(self, api, register, seat_in_room):
+    def test_quitting_a_game_in_progress(self, new_api, register, open_room, db):
+        clients = [new_api() for _ in range(3)]
+        users = [register(c)["user"] for c in clients]
+        room_id = open_room(clients[0])
+        for c in clients[1:]:
+            assert c.post("/rooms/{}/join".format(room_id), json={"role": "player"}).status_code == 200
+        assert clients[0].post("/rooms/{}/start".format(room_id)).status_code == 200
+
+        quitter = clients[2]
+        assert quitter.post("/rooms/{}/leave".format(room_id)).status_code == 204
+        left_at = db.execute(
+            "SELECT left_at FROM room_members WHERE room_id = %s AND user_id = %s", (room_id, users[2]["id"])
+        ).fetchone()[0]
+        assert left_at is not None
+        # Two players left: they are asked whether to continue, so the game goes on for now.
+        assert db.execute("SELECT status FROM games WHERE room_id = %s", (room_id,)).fetchone()[0] == "in_progress"
+
+        # Not back as a player; as a spectator, yes.
+        assert_error(quitter.post("/rooms/{}/join".format(room_id), json={"role": "player"}), 403, "ROOM_NOT_JOINABLE")
+        assert quitter.post("/rooms/{}/join".format(room_id), json={"role": "spectator"}).status_code == 200
+
+        # A second quit leaves one player: the game ends incomplete and the room is COMPLETING.
+        assert clients[1].post("/rooms/{}/leave".format(room_id)).status_code == 204
+        status, drop_reason, count = db.execute(
+            "SELECT status, drop_reason, player_count_at_drop FROM games WHERE room_id = %s", (room_id,)
+        ).fetchone()
+        assert (status, drop_reason, count) == ("incomplete", "player_quit", 1)
+        outcomes = db.execute(
+            "SELECT r.outcome, r.drop_reason FROM game_results r JOIN games g ON g.id = r.game_id WHERE g.room_id = %s",
+            (room_id,),
+        ).fetchall()
+        assert sorted(outcomes) == [("incomplete", "player_quit")] * 3
+        assert db.execute("SELECT state FROM rooms WHERE id = %s", (room_id,)).fetchone()[0] == "completing"
+
+    def test_leaving_a_game_not_running_in_this_server(self, api, register, seat_in_room, db):
+        # A seeded in_progress game has no live game in memory: the player is still marked left.
         user = register(api)["user"]
         room_id = seat_in_room([user["id"]], "in_progress", "in_progress")
-        assert_error(api.post("/rooms/{}/leave".format(room_id)), 403, "GAME_ALREADY_STARTED")
+        assert api.post("/rooms/{}/leave".format(room_id)).status_code == 204
+        left_at = db.execute(
+            "SELECT left_at FROM room_members WHERE room_id = %s AND user_id = %s", (room_id, user["id"])
+        ).fetchone()[0]
+        assert left_at is not None
+
+
+class TestLeaveAfterGame:
+    """POST /rooms/{roomId}/leave once the game is over (room COMPLETING): anyone may leave, it is
+    not a quit, and the last one out closes the room."""
 
     def test_players_leave_a_completing_room_and_the_last_closes_it(self, new_api, register, seat_in_room, db, cleanup):
         a, b = new_api(), new_api()

@@ -131,6 +131,8 @@ export interface PlayerStateView {
   bid: number | null;
   tricksWon: number;
   cumulativeScore: number;
+  /** False while the player's seat is held for them to reconnect. */
+  connected: boolean;
 }
 
 /** The fields of GameStateView (game.toPlayerView / toSpectatorView) the client reads. */

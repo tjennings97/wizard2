@@ -10,7 +10,7 @@ import {
   type UserSummary,
 } from '../rooms/queries';
 import type { MemberRole, RoomClosedReason, RoomConfig } from '../rooms/rules';
-import type { RoomNotifier } from '../rooms/service';
+import type { RoomNotifier, UserLeftReason } from '../rooms/service';
 import type { InvalidationReason } from '../auth/sessionEvents';
 import type { GameNotifier, GameService } from '../games/service';
 
@@ -35,6 +35,11 @@ export interface SocketData {
   moves: number;
   /** True once connect handling has placed the socket (see placeSocket in socket/index.ts). */
   placed: boolean;
+  /**
+   * Disconnects the socket if no `ping` arrives in time. Armed by the client's first ping; a
+   * client that never pings relies on Socket.io's own heartbeat.
+   */
+  pingWatchdog: NodeJS.Timeout | null;
 }
 
 /** Client→server events carry the same envelope; only `payload` is read. */
@@ -167,18 +172,42 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
     }
   }
 
+  /** Whether the user has a socket in the room's channel. */
+  isInRoom(roomId: string, userId: string): boolean {
+    return this.socketsIn(userChannel(userId)).some((s) => s.data.roomId === roomId);
+  }
+
   /**
    * Puts the socket in the channel of a room whose game has started and, if that game is live,
    * sends it state_snapshot (the player's own view, or the spectator view with no hands), then
-   * the bid or trump request the player still owes, if it is their turn.
+   * the bid or trump request the player still owes, if it is their turn. A player whose seat was
+   * being held is back: player_reconnected follows.
    */
   async enterGame(socket: AppSocket, roomId: string): Promise<void> {
     this.joinRoomChannel(socket, roomId);
-    await this.games.withView(roomId, socket.data.userId, (view, seq, prompt) => {
-      if (!socket.connected || socket.data.roomId !== roomId) return;
-      this.sendStamped(socket, 'state_snapshot', { game_state: view, seq }, seq);
-      if (prompt) this.sendStamped(socket, prompt.event, prompt.payload, seq);
-    });
+    await this.resyncGame(socket, roomId, null);
+  }
+
+  /**
+   * state_snapshot for the socket's game, then (with `lastSeqSeen`) the logged broadcasts it
+   * missed, each with its own seq, then its pending prompt. join_game and sync_request. Returns
+   * false if the room has no live game.
+   */
+  async resyncGame(socket: AppSocket, roomId: string, lastSeqSeen: number | null): Promise<boolean> {
+    const userId = socket.data.userId;
+    const live = await this.games.withView(
+      roomId,
+      userId,
+      (view, seq, prompt, replay) => {
+        if (!socket.connected || socket.data.roomId !== roomId) return;
+        this.sendStamped(socket, 'state_snapshot', { game_state: view, seq }, seq);
+        for (const e of replay) this.sendStamped(socket, e.event, e.payload, e.seq);
+        if (prompt) this.sendStamped(socket, prompt.event, prompt.payload, seq);
+      },
+      lastSeqSeen,
+    );
+    if (live && socket.connected && socket.data.roomId === roomId) await this.games.playerReconnected(roomId, userId);
+    return live;
   }
 
   // --- RoomNotifier -----------------------------------------------------------------------
@@ -203,8 +232,11 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
     });
   }
 
-  async userLeftRoom(userId: string, role: MemberRole, room: RoomView): Promise<void> {
-    await this.roomBroadcast(room.id, 'user_left', userId, { user_id: userId, role, reason: 'voluntary', ...counts(room) });
+  async userLeftRoom(userId: string, role: MemberRole, room: RoomView, reason: UserLeftReason = 'voluntary'): Promise<void> {
+    const payload = { user_id: userId, role, reason, ...counts(room) };
+    // In a room with a live game, user_left is part of the game's sequence, and a player leaving
+    // it is a drop: the game service broadcasts it and applies the player-drop rules.
+    if (!(await this.games.userLeft(room.id, userId, reason, payload))) this.broadcast(roomChannel(room.id), 'user_left', payload);
     const sockets = this.socketsIn(userChannel(userId));
     if (sockets.length === 0) return;
     const rooms = await listLobbyRooms();
@@ -212,7 +244,7 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
   }
 
   /** A membership broadcast: part of the game's numbered, logged sequence if the room's game is live. */
-  private async roomBroadcast(roomId: string, event: 'user_joined' | 'user_left', userId: string, payload: unknown): Promise<void> {
+  private async roomBroadcast(roomId: string, event: 'user_joined', userId: string, payload: unknown): Promise<void> {
     if (await this.games.publishRoomEvent(roomId, event, userId, payload)) return;
     this.broadcast(roomChannel(roomId), event, payload);
   }

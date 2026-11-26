@@ -148,12 +148,39 @@ export function roundCompletePayload(game: Game, r: RoundCompleted) {
   };
 }
 
-export function gameOverPayload(game: Game, result: GameResult, closesAt: Date, countdownMs: number) {
+/**
+ * game_over. `status` is `complete` after the final round, or `incomplete` when the game ended
+ * early (a drop left one player, or the last two chose to end): then nobody wins.
+ */
+export function gameOverPayload(
+  game: Game,
+  result: GameResult,
+  closesAt: Date,
+  countdownMs: number,
+  status: 'complete' | 'incomplete' = 'complete',
+) {
   return {
     game_id: game.gameId,
+    status,
     final_scores: scoreEntries(game, result.scores),
     winner_ids: result.winnerIds,
     closes_at: closesAt.toISOString(),
     countdown_seconds: Math.ceil(countdownMs / 1000),
   };
+}
+
+export function playerDisconnectedPayload(userId: string, deadline: Date) {
+  return { player_id: userId, reconnect_deadline: deadline.toISOString() };
+}
+
+export function continueOrEndRequestPayload(game: Game, deadline: Date) {
+  return { remaining_player_ids: game.activePlayers.map((p) => p.id), decision_deadline: deadline.toISOString() };
+}
+
+export function gameTimeWarningPayload(game: Game, endsAt: Date, minutesRemaining: number) {
+  return { game_id: game.gameId, ends_at: endsAt.toISOString(), minutes_remaining: minutesRemaining };
+}
+
+export function gameAbandonedPayload(gameId: string, reason: 'server_restart' | 'time_limit') {
+  return { reason, game_id: gameId };
 }

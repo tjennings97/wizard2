@@ -103,6 +103,13 @@ def cleanup(db: psycopg.Connection) -> Iterator[Cleanup]:
     # (game_events is append-only for the app; test cleanup is the exception.)
     games = "SELECT id FROM games WHERE id = ANY(%s::uuid[]) OR room_id = ANY(%s::uuid[])"
     db.execute("DELETE FROM game_events WHERE game_id IN ({})".format(games), (c.game_ids, c.room_ids))
+    # A game that ended (or was dropped) has results and scored rounds.
+    db.execute("DELETE FROM game_results WHERE game_id IN ({})".format(games), (c.game_ids, c.room_ids))
+    db.execute(
+        "DELETE FROM round_players WHERE round_id IN (SELECT id FROM rounds WHERE game_id IN ({}))".format(games),
+        (c.game_ids, c.room_ids),
+    )
+    db.execute("DELETE FROM rounds WHERE game_id IN ({})".format(games), (c.game_ids, c.room_ids))
     db.execute("DELETE FROM games WHERE id = ANY(%s::uuid[]) OR room_id = ANY(%s::uuid[])", (c.game_ids, c.room_ids))
     db.execute("DELETE FROM room_members WHERE room_id = ANY(%s::uuid[])", (c.room_ids,))
     db.execute("DELETE FROM rooms WHERE id = ANY(%s::uuid[])", (c.room_ids,))

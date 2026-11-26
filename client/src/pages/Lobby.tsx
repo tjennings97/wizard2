@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import { createRoom, joinRoom } from '../api/rooms';
 import type { MemberRole, RoomSummary } from '../api/types';
 import { useAuth } from '../context/AuthContext';
+import { useGame } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
 import { useAction } from '../hooks/useAction';
 
@@ -16,6 +17,8 @@ export function LobbyPage() {
   const { user, logout } = useAuth();
   const { rooms, onlineUsers, connected, location, notice, clearNotice } = useRealtime();
   const { busy, error, run } = useAction();
+  // Why the last game this client showed was stopped (e.g. a server restart).
+  const { lobbyNotice, clearLobbyNotice } = useGame();
 
   // Navigation to the room happens when room_snapshot arrives (useLocationSync).
   const open = () => run(createRoom);
@@ -38,6 +41,14 @@ export function LobbyPage() {
         <p className="notice">
           {notice}{' '}
           <button type="button" className="link" onClick={clearNotice}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {lobbyNotice && (
+        <p className="notice" role="status">
+          {lobbyNotice}{' '}
+          <button type="button" className="link" onClick={clearLobbyNotice}>
             Dismiss
           </button>
         </p>

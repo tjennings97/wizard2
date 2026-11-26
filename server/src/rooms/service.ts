@@ -32,8 +32,12 @@ export interface RoomNotifier {
   isConnected(userId: string): boolean;
   /** Move the user's sockets from the lobby into the room, send room_snapshot, broadcast user_joined. */
   userEnteredRoom(userId: string, room: RoomView): Promise<void>;
-  /** Broadcast user_left to the room, then return the user's sockets to the lobby. */
-  userLeftRoom(userId: string, role: MemberRole, room: RoomView): Promise<void>;
+  /**
+   * Broadcast user_left to the room, then return the user's sockets to the lobby. `reason` is
+   * `voluntary` (they left, or quit a game) or `timeout` (a player whose reconnection window ran
+   * out). A player leaving a game in progress is a drop: the game service applies the rules.
+   */
+  userLeftRoom(userId: string, role: MemberRole, room: RoomView, reason?: UserLeftReason): Promise<void>;
   hostChanged(roomId: string, hostUserId: string): Promise<void>;
   configUpdated(roomId: string, config: RoomConfig): Promise<void>;
   /** Broadcast room_closed to the room, then return every socket still in it to the lobby. */
@@ -51,6 +55,8 @@ export const noopNotifier: RoomNotifier = {
   roomClosed: async () => {},
   lobbyChanged: async () => {},
 };
+
+export type UserLeftReason = 'voluntary' | 'timeout';
 
 export interface ConfigPatch {
   roundCount?: number;
@@ -343,11 +349,10 @@ export class RoomService implements GameLifecycle {
         .whereNull('left_at')
         .first('role');
       if (!member || row.state === 'closed') throw new ApiError(404, 'NOT_FOUND', 'You are not in this room.');
-      if (member.role === 'player' && row.state === 'in_progress') {
-        // Quitting a started game applies the player-drop rules, which need the game engine.
-        throw new ApiError(403, 'GAME_ALREADY_STARTED', 'Leaving a game in progress is not supported yet.');
-      }
 
+      // A player leaving a game in progress has quit: they stay out (joining again as a player is
+      // refused once the game has started; as a spectator it is allowed), and the game service
+      // applies the player-drop rules when user_left goes out below.
       await trx('room_members').where({ room_id: roomId, user_id: userId }).update({ left_at: trx.fn.now() });
 
       let newHostId: string | null = null;
@@ -393,6 +398,33 @@ export class RoomService implements GameLifecycle {
         if (outcome.completing) this.games.forget(roomId);
         await this.notifier.roomClosed(roomId, outcome.completing ? 'game_finished' : 'empty');
       }
+      await this.notifier.lobbyChanged();
+    });
+  }
+
+  /**
+   * A disconnected player's reconnection window ran out (GameLifecycle): they are treated as having
+   * quit. Marks them left and broadcasts user_left with reason "timeout"; the game service then
+   * applies the player-drop rules. Does nothing if they are no longer a player in the room's game
+   * in progress (they quit meanwhile, or the game ended).
+   */
+  async playerTimedOut(roomId: string, userId: string): Promise<void> {
+    const room = await db.transaction(async (trx) => {
+      await lockUser(trx, userId);
+      const row = await lockRoom(trx, roomId);
+      if (!row || row.state !== 'in_progress') return null;
+      const left = await trx('room_members')
+        .where({ room_id: roomId, user_id: userId, role: 'player' })
+        .whereNull('left_at')
+        .update({ left_at: trx.fn.now() });
+      if (left === 0) return null;
+      return (await getRoomView(roomId, trx))!;
+    });
+    if (!room) return;
+
+    logger.info({ userId, roomId }, 'player timed out of the game');
+    await this.notify(async () => {
+      await this.notifier.userLeftRoom(userId, 'player', room, 'timeout');
       await this.notifier.lobbyChanged();
     });
   }

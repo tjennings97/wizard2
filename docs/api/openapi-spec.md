@@ -970,12 +970,12 @@ paths:
       description: >
         If leaving before game starts, removes the user from the room.
         If the host leaves before game starts, host transfers to next player.
-        If leaving during a game (as a player), the player is permanently
-        removed and cannot rejoin as a player (they may rejoin as a spectator).
-        Current round is voided and re-dealt. Host transfer skips spectators;
-        if no players remain, the room closes.
-        Not built yet: leaving a game in progress (room `in_progress`) as a player returns
-        `403 GAME_ALREADY_STARTED` until the player-drop rules are wired.
+        If leaving during a game (as a player), the player has quit: they are permanently
+        removed and cannot rejoin as a player (they may rejoin as a spectator), and the
+        player-drop rules apply: with 3 or more players left the current round is voided and
+        re-dealt; with 2 the remaining players are asked whether to continue; with 1 the game
+        ends incomplete (see the WebSocket Event Taxonomy, `user_left`). Host transfer skips
+        spectators; if no players remain, the room closes.
         Once the game is over (room `completing`, the game-over countdown) anyone may leave;
         it is not a quit. The last member to leave closes the room at once.
       tags: [Rooms]

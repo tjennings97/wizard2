@@ -736,3 +736,31 @@ section + section {
     height: 92px;
   }
 }
+
+/* --- Connection, drops and the time limit (game page) ------------------------------------ */
+
+.banner {
+  background: var(--notice-bg);
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  margin: 0;
+}
+.banner.warn {
+  border-left: 4px solid var(--turn);
+}
+.banner .link {
+  min-height: 44px;
+}
+.seat.away {
+  border-style: dashed;
+  opacity: 0.75;
+}
+.badge.away {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.game-bar .link {
+  margin-left: auto;
+  min-height: 44px;
+}

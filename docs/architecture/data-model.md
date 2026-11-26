@@ -103,7 +103,7 @@ One game per room per lifecycle. The `state` column holds the latest `GameState`
 | `started_at` | `timestamptz` | No | NOT NULL, default `now()` | When the game started |
 | `ended_at` | `timestamptz` | Yes | — | When the game ended (all rounds complete or early termination). Null while in progress. |
 | `status` | `varchar(16)` | No | NOT NULL, CHECK (`status` IN ('in\_progress','complete','incomplete')), default `'in_progress'` | Game completion status |
-| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end','server\_restart','time\_limit')) | Populated only when `status = 'incomplete'`. Records why the game ended early. |
+| `drop_reason` | `varchar(32)` | Yes | CHECK (`drop_reason` IN ('player\_quit','player\_timeout','mutual\_end','server\_restart','time\_limit')) | Populated only when `status = 'incomplete'`. Records why the game ended early: `player_quit` / `player_timeout` when a drop left one player; `mutual_end` when one of the last two chose end or neither answered in time; `time_limit` at the 3-hour limit; `server_restart` by the startup cleanup. |
 | `player_count_at_drop` | `smallint` | Yes | — | Player count when the game ended early. Null for complete games. |
 
 ## Data Dictionary — rounds
@@ -151,7 +151,7 @@ Composite PK: `(round_id, user_id)`.
 
 ## Data Dictionary — game\_results
 
-Per-player outcome record for each game. Written at game end (complete or incomplete).
+Per-player outcome record for each game. Written at game end (complete or incomplete), for every player who was seated, including those who quit or timed out: they get `outcome = incomplete` with their own `drop_reason` (`player_quit` / `player_timeout`), their score when they left and the rounds scored before they left. The startup cleanup writes rows only for the players still seated.
 
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -177,7 +177,7 @@ Append-only event log. Never updated or deleted. Primary source for bot training
 | `event` | `varchar(32)` | No | NOT NULL | The socket event name that was broadcast (for example `trump_revealed` for a row whose `event_type` is `trump_declared`) |
 | `round_number` | `smallint` | No | NOT NULL | Round in which the event occurred. `0` for events before round 1 (`game_starting`, `game_started`) |
 | `trick_number` | `smallint` | Yes | — | Trick within the round. Null for round-level and game-level events. |
-| `event_type` | `varchar(32)` | No | NOT NULL, CHECK (`event_type` IN ('bid\_placed','card\_played','trump\_declared','trick\_completed','round\_completed','game\_completed','game\_starting','game\_started','round\_started','trump\_revealed','all\_bids\_placed','user\_joined','user\_left')) | Event classification. A Wizard-flip declaration is `trump_declared`; trump settled any other way is `trump_revealed` |
+| `event_type` | `varchar(32)` | No | NOT NULL, CHECK (`event_type` IN ('bid\_placed','card\_played','trump\_declared','trick\_completed','round\_completed','game\_completed','game\_starting','game\_started','round\_started','trump\_revealed','all\_bids\_placed','user\_joined','user\_left','player\_disconnected','player\_reconnected','continue\_or\_end\_request','game\_time\_warning','game\_abandoned')) | Event classification. A Wizard-flip declaration is `trump_declared`; trump settled any other way is `trump_revealed` |
 | `actor_user_id` | `uuid` | Yes | FK → `users.id` | Player who caused the event. Null for system events (round/game completion). |
 | `payload` | `jsonb` | No | NOT NULL | Full context snapshot for this event. Schema defined per `event_type`. Server-side only: may contain hands. |
 | `sent_payload` | `jsonb` | No | NOT NULL | The payload exactly as broadcast. A reconnect replays this, never `payload`. Never contains hands, since hands are never broadcast. |
@@ -294,7 +294,7 @@ The `hand` array is included in `GameState` for server-side use only. Clients ne
 
 ### game\_events payload examples
 
-Rows whose `event_type` is not listed below (`user_joined`, `user_left`, and `trump_revealed`) store the sent payload as `payload`.
+Rows whose `event_type` is not listed below (`user_joined`, `user_left`, `trump_revealed`, `player_disconnected`, `player_reconnected`, `continue_or_end_request` and `game_time_warning`) store the sent payload as `payload`. A `game_abandoned` row adds the phase, round number and scores at the time to the sent payload. An incomplete game's `game_over` is logged as `game_completed` with `status: "incomplete"`, `winners: []` and its `dropReason`.
 
 Where the broadcast name differs from the `event_type`: `trump_revealed` after a Wizard flip is `trump_declared`; `trick_complete` is `trick_completed`; `round_complete` is `round_completed`; `game_over` is `game_completed`. `card_played` and `trick_completed` rows carry `trick_number`; every other row's is null.
 
