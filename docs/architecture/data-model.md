@@ -244,7 +244,7 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
 }
 ```
 
-`bid_rule`: `"open"` (no restriction) or `"uneven"` (total must differ from trick count by ≥1). `deck_type`: `"standard"` (60 cards). `"camelot"` (Wizard Camelot Edition, also 60 cards) is planned for a future version.
+`bid_rule`: `"open"` (no restriction) or `"uneven"` (total must differ from trick count by ≥1, from round 2; round 1 is unrestricted). `deck_type`: `"standard"` (60 cards). `"camelot"` (Wizard Camelot Edition, also 60 cards) is planned for a future version.
 
 ### games.state (GameState snapshot)
 

@@ -161,7 +161,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 **Bid total rule:** The host selects one of two modes before starting:
 
 - **Open bidding (default):** No restriction on the sum of bids
-- **Uneven bidding:** Sum of all bids must differ from trick count by at least 1; enforced on the dealer's bid
+- **Uneven bidding:** Sum of all bids must differ from trick count by at least 1; enforced on the dealer's bid in every round except round 1
 
 **Game start:** Only the host can start the game. The start button is enabled when at least 3 players are in the room. Starting the game transitions the room to In Progress and is irreversible.
 

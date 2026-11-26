@@ -48,7 +48,7 @@ describe('game payloads', () => {
     g.placeBid('b', 1);
     expect(bidsSoFar(g)).toEqual([{ player_id: 'b', bid: 1 }]);
     g.placeBid('c', 0);
-    // Uneven: the dealer may not bring the total to 1.
+    // Uneven, but round 1 is exempt: the dealer may bring the total to 1.
     expect(bidRequestPayload(g, 'a')).toEqual({
       player_id: 'a',
       round_number: 1,
@@ -57,7 +57,7 @@ describe('game payloads', () => {
         { player_id: 'c', bid: 0 },
       ],
       hand_size: 1,
-      allowed_bids: [1],
+      allowed_bids: [0, 1],
     });
   });
 

@@ -363,19 +363,26 @@ describe('bidding', () => {
     expect(rows[3].payload).toMatchObject({ bidTotal: 2, trickCount: 1 });
   });
 
-  it('uneven rule: the dealer cannot make the total equal the trick count', async () => {
-    const t = await startTable({ config: { bidRule: 'uneven' } });
-    const [dealer, p2, p3] = t.pc;
-    await p2.waitFor('bid_request');
-    emit(p2, 'place_bid', { bid: 0 });
-    await p3.waitFor('bid_request');
-    emit(p3, 'place_bid', { bid: 0 });
-    expect((await dealer.waitFor('bid_request')).payload.allowed_bids).toEqual([0]);
+  it('uneven rule: round 1 is exempt; from round 2 the dealer cannot make the total equal the trick count', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2, bidRule: 'uneven' } });
+    const [p1, p2, p3] = t.pc;
+    // Round 1 (P1 deals): P2 0, P3 1, then P1 may still bid 0 and make the total 1.
+    await playRound1(t);
+    expect(p1.events('bid_request')[0].payload.allowed_bids).toEqual([0, 1]);
 
-    emit(dealer, 'place_bid', { bid: 1 });
-    expect((await dealer.waitFor('invalid_bid_error')).payload).toMatchObject({ code: 'INVALID_BID', allowed_bids: [0] });
-    emit(dealer, 'place_bid', { bid: 0 });
-    await p2.waitFor('all_bids_placed');
+    // Round 2 (P2 deals): P3 0, P1 1, so P2 may not bid 1 (total 2 = trick count).
+    const from = (await p1.waitFor('round_started', (p) => p.round_number === 2)).index;
+    await bidAll(t, [2, 0], [0, 1], from);
+    const req = await p2.waitFor('bid_request', () => true, { from: p2.events('round_started').at(-1)!.index });
+    expect(req.payload.allowed_bids).toEqual([0, 2]);
+    emit(p2, 'place_bid', { bid: 1 });
+    expect((await p2.waitFor('invalid_bid_error', () => true, { from: req.index })).payload).toMatchObject({
+      code: 'INVALID_BID',
+      allowed_bids: [0, 2],
+    });
+    emit(p2, 'place_bid', { bid: 0 });
+    await p3.waitFor('all_bids_placed', () => true, { from: p3.events('round_started').at(-1)!.index });
   });
 
   it('ignores a repeated idempotency key within the window', async () => {

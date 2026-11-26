@@ -51,7 +51,7 @@ This flow covers the waiting room from entry through game start. Host and non-ho
 | Control | Options | Notes |
 | --- | --- | --- |
 | Round count | 1 – floor(60 / playerCount) | Selector updates live as players join/leave |
-| Bid rule | Open bidding (default) / Uneven | Uneven: dealer’s bid cannot make sum equal trick count |
+| Bid rule | Open bidding (default) / Uneven | Uneven: dealer’s bid cannot make sum equal trick count (from round 2; round 1 is unrestricted) |
 | Start game | Button enabled when ≥ 3 players | Disabled below 3 players; grayed with count shown |
 
 **Host transfer:** If the host leaves before the game starts, or is disconnected for 2 minutes, the role passes automatically to the next player by join order (for a disconnect, the next connected player; the old host stays as a player). The new host is notified via `host_changed`; no page reload required.
@@ -91,7 +91,7 @@ Bidding proceeds in seat order starting left of the dealer. Each player bids 0 t
 
 &#91;embedded content: bidding phase · bid order, last-bidder constraint, trick phase entry\]
 
-**Uneven rule:** When the host chose Uneven bidding, the last bidder’s UI blocks any bid that would make the total equal the trick count. The forbidden bid is shown greyed-out. All other bids remain valid.
+**Uneven rule:** When the host chose Uneven bidding, from round 2 onward the last bidder’s UI blocks any bid that would make the total equal the trick count. The forbidden bid is shown greyed-out. All other bids remain valid. Round 1 has no forbidden bid.
 
 **Scoreboard during bidding: **Running totals update live. Each player’s row shows their bid once placed; the current bidder is highlighted.
 

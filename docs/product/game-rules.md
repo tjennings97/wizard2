@@ -70,7 +70,7 @@ After trump is determined, players bid the number of tricks they expect to win t
 **Bid total rule (host-configurable):** The host selects one of two modes before the game begins:
 
 - **Open bidding (default):** No restriction on the sum of all bids. The total may equal, exceed, or fall short of the available trick count.
-- **Uneven bidding:** The sum of all bids must differ from the number of available tricks by at least 1. The last player to bid (the dealer) is subject to this constraint and will be blocked from placing a bid that would make the total equal the trick count. All other players bid freely.
+- **Uneven bidding:** In every round except the first, the sum of all bids must differ from the number of available tricks by at least 1. Round 1 (one trick) is exempt: bids there are unrestricted, as under open bidding. A round re-dealt after a player drop keeps its round number, so a re-dealt round 1 is still exempt. The last player to bid (the dealer) is subject to this constraint and will be blocked from placing a bid that would make the total equal the trick count. All other players bid freely.
 
 The selected mode is visible to all players in the room before and during the game.
 
