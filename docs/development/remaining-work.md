@@ -216,7 +216,7 @@ players.
 
 ## 5. Client auth flows and profile
 
-**Depends on:** 0. Settle the avatar decision (prompt 7) first, or do registration without the avatar picker and add it in prompt 7.
+**Depends on:** 0. Registration ships without the avatar picker; prompt 7 adds it (avatar decision settled: recommended option).
 
 ```
 Follow the preamble in docs/development/remaining-work.md.
@@ -267,7 +267,7 @@ the full invite → register flow.
 
 ## 7. Avatar system
 
-**Depends on:** 5. **Decision needed first:** auth-follow-ups §8, "client-supplied avatar SVG". The recommended option is assumed below; change the prompt if you choose otherwise.
+**Depends on:** 5. **Decided:** auth-follow-ups §8, "client-supplied avatar SVG": the owner chose the recommended option (2026-11-26), as the prompt below assumes.
 
 ```
 Follow the preamble in docs/development/remaining-work.md.
