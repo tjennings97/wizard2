@@ -149,8 +149,8 @@ export function createRoomsRouter(rooms: RoomService): Router {
     requireAuth,
     requireSessionRunway,
     asyncHandler(async (req, res) => {
-      await rooms.startGame(req.user!.id, roomIdParam(req.params.roomId));
-      res.status(200).end();
+      const room = await rooms.startGame(req.user!.id, roomIdParam(req.params.roomId));
+      res.status(200).json(toRoomDto(room, isConnected));
     }),
   );
 

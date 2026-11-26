@@ -14,6 +14,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   server.rooms.stop();
+  server.games.stop();
   await resetDb();
 });
 
@@ -494,16 +495,24 @@ describe('POST /rooms/{roomId}/start', () => {
     expect((await start(host, 'not-a-uuid')).status).toBe(404);
   });
 
-  it('with 3+ players, passes every guard but returns 501 and leaves the room open (engine not wired)', async () => {
-    const [host, p2, p3] = await users(3);
+  it('with 3+ players, starts the game: room in_progress, games row, inactivity timer cancelled', async () => {
+    const [host, p2, p3, s1] = await users(4);
     const room = await openRoom(host);
     await join(p2, room.id);
     await join(p3, room.id);
+    await join(s1, room.id, 'spectator');
     const res = await start(host, room.id);
-    expect(res.status).toBe(501);
-    expect(res.body.code).toBe('NOT_IMPLEMENTED');
-    expect((await db('rooms').where({ id: room.id }).first()).state).toBe('open');
-    expect(await db('games').where({ room_id: room.id })).toHaveLength(0);
-    expect(server.rooms.hasTimeout(room.id)).toBe(true);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: room.id, state: 'in_progress' });
+    expect((await db('rooms').where({ id: room.id }).first()).state).toBe('in_progress');
+    const games = await db('games').where({ room_id: room.id });
+    expect(games).toHaveLength(1);
+    expect(games[0]).toMatchObject({ status: 'in_progress', state: null });
+    expect(server.games.gameIdFor(room.id)).toBe(games[0].id);
+    expect(server.rooms.hasTimeout(room.id)).toBe(false);
+    // Once started, no new players, and a second start is refused.
+    expect((await start(host, room.id)).body.code).toBe('GAME_ALREADY_STARTED');
+    const [late] = await users(1, 'L');
+    expect((await join(late, room.id)).body.code).toBe('ROOM_NOT_JOINABLE');
   });
 });

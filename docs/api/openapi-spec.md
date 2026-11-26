@@ -976,9 +976,11 @@ paths:
       summary: Start the game (host only)
       description: >
         Transitions the room from open to in_progress and starts the game.
-        Requires at least 3 players. Once started, no new players can join.
-        Not yet wired to the game engine: the server applies every check below,
-        then returns 501 NOT_IMPLEMENTED and changes nothing.
+        Requires at least 3 players. Once started, no new players can join
+        (spectators still can). Creates the games row; the players are seated
+        in join order and seat 1 deals round 1. The game itself arrives over the
+        socket: game_starting, game_started, round_started, then each player's
+        hand_dealt (see the WebSocket Event Taxonomy).
       tags: [Rooms]
       security:
         - sessionCookie: []
@@ -991,7 +993,7 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Game started. Returns the initial game state.
+          description: Game started. Returns the room, now in_progress.
           content:
             application/json:
               schema:
@@ -1028,17 +1030,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '501':
-          description: >
-            Temporary: every check passed, but starting a game is not wired to the
-            game engine yet. Nothing is changed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              example:
-                code: NOT_IMPLEMENTED
-                message: Starting a game is not available yet.
 ```
 
 ## Game Endpoints
@@ -1674,7 +1665,6 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 422 | `INVITE_INVALID` | Invite code not found, expired, or already redeemed. |
 | 429 | `RATE_LIMITED` | Too many requests. Applies to auth and bug report endpoints. |
 | 500 | `INTERNAL_ERROR` | Unexpected server error. Includes a `traceId` field in `details` for correlation with logs. |
-| 501 | `NOT_IMPLEMENTED` | Temporary: `POST /rooms/{roomId}/start` until the game engine is wired. |
 
 ### 500 Internal Error Shape
 

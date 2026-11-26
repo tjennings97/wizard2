@@ -58,3 +58,16 @@ export async function authenticateSocket(cookieHeader: string | undefined): Prom
 
   return { ok: true, user: result.user, session: await slideSession(result.session) };
 }
+
+/**
+ * Re-validates a connected socket's session on a game action, sliding its expiry. Returns null if
+ * the session is still the one the socket connected with and valid, else the session_error code.
+ * The re-auth window does not apply: the user is playing a game in progress.
+ */
+export async function recheckSocketSession(cookieHeader: string | undefined, sessionId: string): Promise<SocketAuthFailure | null> {
+  const token = sessionTokenFromCookieHeader(cookieHeader);
+  if (!token) return 'UNAUTHORIZED';
+  const result = await authenticateToken(token);
+  if (!result.ok) return result.code;
+  return result.session.id === sessionId ? null : 'SESSION_INVALIDATED';
+}

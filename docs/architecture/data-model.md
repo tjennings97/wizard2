@@ -164,17 +164,20 @@ Composite UNIQUE: `(game_id, user_id)` — one result row per player per game.
 
 ## Data Dictionary — game\_events
 
-Append-only event log. Never updated or deleted. Primary source for bot training data and audit. The `payload` JSONB schema varies by `event_type` — see JSONB Payload Schemas.
+Append-only event log. Never updated or deleted. Primary source for bot training data and audit, and the log a reconnecting client is replayed from. Every event broadcast to a game's room is one row, numbered by the game's `seq` (the envelope `seq` the clients received; see the WebSocket Event Taxonomy). Unicast events (`hand_dealt`, `bid_request`, errors) are not logged. The `payload` JSONB schema varies by `event_type` — see JSONB Payload Schemas.
 
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | No | PK, default `gen_random_uuid()` | Surrogate primary key |
 | `game_id` | `uuid` | No | FK → `games.id`, NOT NULL | The parent game |
-| `round_number` | `smallint` | No | NOT NULL | Round in which the event occurred |
+| `seq` | `integer` | No | NOT NULL, UNIQUE (`game_id`, `seq`) | The game's sequence number for this event, from 1. Equals the envelope `seq` the event was broadcast with |
+| `event` | `varchar(32)` | No | NOT NULL | The socket event name that was broadcast (for example `trump_revealed` for a row whose `event_type` is `trump_declared`) |
+| `round_number` | `smallint` | No | NOT NULL | Round in which the event occurred. `0` for events before round 1 (`game_starting`, `game_started`) |
 | `trick_number` | `smallint` | Yes | — | Trick within the round. Null for round-level and game-level events. |
-| `event_type` | `varchar(32)` | No | NOT NULL, CHECK (`event_type` IN ('bid\_placed','card\_played','trump\_declared','trick\_completed','round\_completed','game\_completed')) | Event classification |
+| `event_type` | `varchar(32)` | No | NOT NULL, CHECK (`event_type` IN ('bid\_placed','card\_played','trump\_declared','trick\_completed','round\_completed','game\_completed','game\_starting','game\_started','round\_started','trump\_revealed','all\_bids\_placed','user\_joined','user\_left')) | Event classification. A Wizard-flip declaration is `trump_declared`; trump settled any other way is `trump_revealed` |
 | `actor_user_id` | `uuid` | Yes | FK → `users.id` | Player who caused the event. Null for system events (round/game completion). |
-| `payload` | `jsonb` | No | NOT NULL | Full context snapshot for this event. Schema defined per `event_type`. |
+| `payload` | `jsonb` | No | NOT NULL | Full context snapshot for this event. Schema defined per `event_type`. Server-side only: may contain hands. |
+| `sent_payload` | `jsonb` | No | NOT NULL | The payload exactly as broadcast. A reconnect replays this, never `payload`. Never contains hands, since hands are never broadcast. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Server timestamp when event was recorded |
 
 ## Data Dictionary — bug\_reports
@@ -220,6 +223,7 @@ Stores user-submitted bug reports with automatic context capture. The `trace_id`
 | `game_events` | PK | `id` | B-tree (auto) | — |
 | `game_events` | `game_events_game_id_idx` | `game_id` | B-tree | Fetch all events for a game (bot training, audit) |
 | `game_events` | `game_events_game_round_idx` | `(game_id, round_number)` | B-tree | Fetch events for a specific round |
+| `game_events` | `game_events_game_seq_idx` | `(game_id, seq)` | Unique B-tree | One row per game seq; replay events after `last_seq_seen` |
 | `bug_reports` | PK | `id` | B-tree (auto) | — |
 | `bug_reports` | `bug_reports_trace_id_idx` | `trace_id` | B-tree | Correlate a bug report to server logs |
 
@@ -286,6 +290,43 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
 The `hand` array is included in `GameState` for server-side use only. Clients never receive the raw snapshot: `game.toPlayerView(userId)` keeps only that player's hand (others become `hand: null` plus `handCount`), and `game.toSpectatorView()` keeps no hands. The snapshot is a record only: no game is rebuilt from it, and a server restart abandons in-progress games.
 
 ### game\_events payload examples
+
+Rows whose `event_type` is not listed below (`user_joined`, `user_left`, and `trump_revealed`) store the sent payload as `payload`.
+
+**game\_starting**, **game\_started** (`round_number` 0)
+
+```json
+{
+  "config": { "roundCount": 10, "bidRule": "open", "deckType": "standard", "deckSize": 60 },
+  "players": [{ "userId": "uuid", "displayName": "Jake", "seatOrder": 1 }]
+}
+```
+
+**round\_started**
+
+```json
+{
+  "roundNumber": 4,
+  "dealerUserId": "uuid",
+  "trumpCard": { "suit": null, "rank": null, "type": "wizard" },
+  "trumpSuit": null,
+  "trumpSource": null,
+  "requiresDeclaration": true,
+  "dealtHands": { "uuid": [{ "suit": "hearts", "rank": 10, "type": "suited" }] },
+  "scoresBeforeRound": { "uuid": 85 }
+}
+```
+
+**all\_bids\_placed**
+
+```json
+{
+  "roundNumber": 4,
+  "bids": { "uuid": 2 },
+  "bidTotal": 5,
+  "trickCount": 4
+}
+```
 
 **bid\_placed**
 

@@ -15,6 +15,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   server.rooms.stop();
+  server.games.stop();
   await resetDb();
 });
 afterEach(() => {

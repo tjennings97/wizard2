@@ -1,13 +1,16 @@
 import http from 'http';
 import { createApp } from './app';
+import { GameService, type GameServiceOptions } from './games/service';
 import { RoomService, type RoomServiceOptions } from './rooms/service';
-import { attachSocket } from './socket';
+import { attachSocket, type SocketOptions } from './socket';
 
 /**
  * Wires the HTTP app, Socket.io and the room service onto one HTTP server. Shared by index.ts
  * and the integration tests. Call `rooms.restoreTimeouts()` before accepting traffic.
  */
-export function buildServer(options: Pick<RoomServiceOptions, 'timeoutMs' | 'hostAwayMs'> = {}) {
+export type BuildServerOptions = Pick<RoomServiceOptions, 'timeoutMs' | 'hostAwayMs'> & GameServiceOptions & SocketOptions;
+
+export function buildServer(options: BuildServerOptions = {}) {
   // The request handler must be on the server before Socket.io attaches: Socket.io wraps the
   // listeners present at attach time so that /socket.io/ requests never reach them. A listener
   // added afterwards also sees those requests, and Express answering a pending long-poll with a
@@ -15,8 +18,9 @@ export function buildServer(options: Pick<RoomServiceOptions, 'timeoutMs' | 'hos
   // (presence), so the handler forwards to it once it exists.
   let app: ReturnType<typeof createApp> | null = null;
   const httpServer = http.createServer((req, res) => app!(req, res));
-  const rooms = new RoomService(options);
-  const { io, realtime, detach } = attachSocket(httpServer, rooms);
+  const games = new GameService({ deckFactory: options.deckFactory, random: options.random });
+  const rooms = new RoomService({ timeoutMs: options.timeoutMs, hostAwayMs: options.hostAwayMs, games });
+  const { io, realtime, detach } = attachSocket(httpServer, rooms, { sessionRecheckMs: options.sessionRecheckMs });
   app = createApp({ rooms, presence: realtime });
-  return { httpServer, io, realtime, rooms, app, detachSocket: detach };
+  return { httpServer, io, realtime, rooms, games, app, detachSocket: detach };
 }

@@ -90,7 +90,7 @@ Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/
 
 **Game:** `game_started`, `round_started`, `trump_revealed`, `bid_placed`, `all_bids_placed`, `card_played`, `trick_complete`, `round_complete`, `continue_or_end_request`, `game_time_warning`, `game_over`, `game_abandoned`
 
-**Player-specific (individual socket only):** `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_play_error`, `pong`
+**Player-specific (individual socket only):** `hand_dealt`, `trump_selection_request`, `bid_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, `invalid_play_error`, `pong`
 
 **Connection:** `player_disconnected`, `player_reconnected`, `user_left` (`reason: "voluntary"` = quit, `"timeout"` = did not reconnect in time), `session_error` (`code: "SESSION_INVALIDATED"` for a displaced socket)
 

@@ -22,6 +22,7 @@ async function main() {
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'shutting down');
     rooms.stop();
+    rooms.games.stop();
     detachSocket();
     io.close();
     httpServer.close(() => {
