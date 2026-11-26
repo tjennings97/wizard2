@@ -2,19 +2,28 @@ import { parse as parseCookies } from 'cookie';
 import { signedCookie } from 'cookie-parser';
 import { config } from '../config';
 import { authenticateToken, isInActiveGame, SESSION_COOKIE, slideSession, type AuthSession } from '../auth/sessions';
+import type { InvalidationReason } from '../auth/sessionEvents';
 import type { PublicUser } from '../auth/users';
 
 export type SocketAuthFailure = 'UNAUTHORIZED' | 'SESSION_INVALIDATED' | 'REAUTH_REQUIRED' | 'CREDENTIAL_CHANGE_REQUIRED';
 
 export type SocketAuthResult =
   | { ok: true; user: PublicUser; session: AuthSession }
-  | { ok: false; code: SocketAuthFailure };
+  /** userId and traceId are set when the session was found, for logging the rejection. */
+  | { ok: false; code: SocketAuthFailure; userId?: string; traceId?: string };
 
 export const SESSION_ERROR_MESSAGES: Record<SocketAuthFailure, string> = {
   UNAUTHORIZED: 'Session is invalid or expired.',
-  SESSION_INVALIDATED: 'Session was ended by a newer login.',
+  SESSION_INVALIDATED: 'Session has ended.',
   REAUTH_REQUIRED: 'Your session is about to expire. Please log in again.',
   CREDENTIAL_CHANGE_REQUIRED: 'You must change your password before continuing.',
+};
+
+/** session_error message for a socket whose session another request just ended. */
+export const INVALIDATION_MESSAGES: Record<InvalidationReason, string> = {
+  displaced: 'Session was ended by a newer login.',
+  logout: 'Session was ended by a logout.',
+  password_reset: 'Session was ended by a password reset.',
 };
 
 /** The raw session token from a handshake Cookie header, or null if absent or the signature is wrong. */
@@ -41,10 +50,11 @@ export async function authenticateSocket(cookieHeader: string | undefined): Prom
   const result = await authenticateToken(token, { slide: false });
   if (!result.ok) return result;
 
+  const ids = { userId: result.user.id, traceId: result.session.traceId };
   if (result.session.inReauthWindow && !(await isInActiveGame(result.user.id))) {
-    return { ok: false, code: 'REAUTH_REQUIRED' };
+    return { ok: false, code: 'REAUTH_REQUIRED', ...ids };
   }
-  if (result.user.requiresCredentialChange) return { ok: false, code: 'CREDENTIAL_CHANGE_REQUIRED' };
+  if (result.user.requiresCredentialChange) return { ok: false, code: 'CREDENTIAL_CHANGE_REQUIRED', ...ids };
 
   return { ok: true, user: result.user, session: await slideSession(result.session) };
 }

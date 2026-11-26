@@ -197,7 +197,7 @@ authRouter.post(
     await db.transaction(async (trx) => {
       await trx('users').where({ id: user.id }).update({ password_hash: passwordHash });
       // A reset ends every existing session (docs/architecture/security.md, reset flow).
-      await invalidateUserSessions(trx, user.id);
+      await invalidateUserSessions(trx, user.id, 'password_reset');
     });
 
     logger.info(

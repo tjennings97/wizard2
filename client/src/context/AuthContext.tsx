@@ -12,8 +12,12 @@ interface AuthValue {
   notice: string | null;
   login(username: string, password: string): Promise<void>;
   logout(): Promise<void>;
-  /** The server ended the session (401 or a fatal session_error): show the login screen. */
-  endSession(code: string): void;
+  /**
+   * The server ended the session (401 or a fatal session_error): show the login screen.
+   * `reason` is the session_error reason for SESSION_INVALIDATED (displaced, logout, password_reset).
+   * CREDENTIAL_CHANGE_REQUIRED keeps the user signed in and shows the forced change screen instead.
+   */
+  endSession(code: string, reason?: string): void;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -22,8 +26,19 @@ const NOTICES: Record<string, string> = {
   SESSION_INVALIDATED: 'You were signed out because you logged in somewhere else.',
   REAUTH_REQUIRED: 'Your session is about to expire. Please log in again.',
   UNAUTHORIZED: 'Your session has ended. Please log in again.',
-  CREDENTIAL_CHANGE_REQUIRED: 'An admin reset your account. You must change your password before playing.',
 };
+
+/** SESSION_INVALIDATED notices by session_error reason. */
+const INVALIDATED_NOTICES: Record<string, string> = {
+  displaced: 'You were signed out because you logged in somewhere else.',
+  logout: 'You were signed out because you logged out in another tab.',
+  password_reset: 'You were signed out because your password was reset.',
+};
+
+function noticeFor(code: string, reason?: string): string {
+  if (code === 'SESSION_INVALIDATED' && reason && INVALIDATED_NOTICES[reason]) return INVALIDATED_NOTICES[reason];
+  return NOTICES[code] ?? NOTICES.UNAUTHORIZED;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('loading');
@@ -34,11 +49,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // SESSION_INVALIDATED. That is our own doing, so it must not show the "signed in elsewhere" notice.
   const loggingOut = useRef(false);
 
-  const endSession = useCallback((code: string) => {
+  const endSession = useCallback((code: string, reason?: string) => {
     if (loggingOut.current) return;
+    if (code === 'CREDENTIAL_CHANGE_REQUIRED') {
+      // The session is still valid; App shows the forced change screen instead of the game.
+      setUser((u) => (u ? { ...u, requiresCredentialChange: true } : u));
+      return;
+    }
     setUser(null);
     setStatus('anonymous');
-    setNotice(NOTICES[code] ?? NOTICES.UNAUTHORIZED);
+    setNotice(noticeFor(code, reason));
   }, []);
 
   useEffect(() => {

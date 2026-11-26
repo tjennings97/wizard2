@@ -10,6 +10,7 @@ import {
 } from '../rooms/queries';
 import type { MemberRole, RoomClosedReason, RoomConfig } from '../rooms/rules';
 import type { RoomNotifier } from '../rooms/service';
+import type { InvalidationReason } from '../auth/sessionEvents';
 
 export interface SocketData {
   userId: string;
@@ -21,6 +22,10 @@ export interface SocketData {
   roomId: string | null;
   /** Outbound sequence number of the last event sent on this socket. */
   seq: number;
+  /** Bumped every time the socket is put in the lobby or a room, so a reader can tell it moved. */
+  moves: number;
+  /** True once connect handling has placed the socket (see placeSocket in socket/index.ts). */
+  placed: boolean;
 }
 
 export type AppServer = Server<Record<string, never>, Record<string, (envelope: Envelope) => void>, Record<string, never>, SocketData>;
@@ -97,6 +102,7 @@ export class Realtime implements RoomNotifier, PresenceSource {
   enterLobby(socket: AppSocket, rooms: RoomSummary[]): void {
     if (socket.data.roomId) socket.leave(roomChannel(socket.data.roomId));
     socket.data.roomId = null;
+    socket.data.moves += 1;
     socket.join(LOBBY);
     this.send(socket, 'lobby_snapshot', { rooms, online_users: this.lobbyUsers() });
   }
@@ -117,6 +123,7 @@ export class Realtime implements RoomNotifier, PresenceSource {
     socket.leave(LOBBY);
     if (socket.data.roomId && socket.data.roomId !== roomId) socket.leave(roomChannel(socket.data.roomId));
     socket.data.roomId = roomId;
+    socket.data.moves += 1;
     socket.join(roomChannel(roomId));
   }
 
@@ -170,18 +177,24 @@ export class Realtime implements RoomNotifier, PresenceSource {
 
   // --- connection lifecycle ---------------------------------------------------------------
 
-  /** Sends session_error and disconnects. Emitted packets are flushed before the close. */
-  rejectSocket(socket: AppSocket, code: string, message: string): void {
-    this.send(socket, 'session_error', { code, message, fatal: true });
+  /**
+   * Sends session_error and disconnects. Emitted packets are flushed before the close.
+   * `extra` adds payload fields (the invalidation `reason`).
+   */
+  rejectSocket(socket: AppSocket, code: string, message: string, extra: Record<string, unknown> = {}): void {
+    this.send(socket, 'session_error', { code, message, fatal: true, ...extra });
     socket.disconnect(true);
   }
 
-  /** Disconnects every socket using one of these sessions with session_error SESSION_INVALIDATED. */
-  sessionsInvalidated(sessionIds: string[], message: string): void {
+  /**
+   * Disconnects every socket using one of these sessions with session_error SESSION_INVALIDATED,
+   * carrying the reason so the client can say what happened.
+   */
+  sessionsInvalidated(sessionIds: string[], reason: InvalidationReason, message: string): void {
     for (const id of sessionIds) {
       for (const s of this.socketsIn(sessionChannel(id))) {
-        logger.info(this.logContext(s), 'socket displaced: session invalidated');
-        this.rejectSocket(s, 'SESSION_INVALIDATED', message);
+        logger.info({ ...this.logContext(s), reason }, 'socket displaced: session invalidated');
+        this.rejectSocket(s, 'SESSION_INVALIDATED', message, { reason });
       }
     }
   }

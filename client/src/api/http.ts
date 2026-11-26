@@ -41,6 +41,8 @@ export async function apiFetch<T>(path: string, { method = 'GET', body, ignoreSe
     if (res.status === 401 && !ignoreSessionEnd && (SESSION_ENDED_CODES as readonly string[]).includes(code)) {
       onSessionEnded?.(code);
     }
+    // Every route but the credential-change ones refuses a flagged user: show the change screen.
+    if (res.status === 403 && code === 'CREDENTIAL_CHANGE_REQUIRED') onSessionEnded?.(code);
     throw new ApiRequestError(res.status, code, data?.message ?? `Request failed (${res.status}).`);
   }
   return data as T;

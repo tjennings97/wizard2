@@ -118,9 +118,9 @@ describe('displaced sockets', () => {
     return username;
   }
 
-  async function expectDisplaced(c: TestClient) {
+  async function expectDisplaced(c: TestClient, reason: 'displaced' | 'logout' | 'password_reset') {
     const err = await c.waitFor('session_error');
-    expect(err.payload).toEqual({ code: 'SESSION_INVALIDATED', message: expect.any(String), fatal: true });
+    expect(err.payload).toEqual({ code: 'SESSION_INVALIDATED', message: expect.any(String), fatal: true, reason });
     await c.waitForDisconnect();
     expect(c.socket.connected).toBe(false);
   }
@@ -134,8 +134,8 @@ describe('displaced sockets', () => {
     const other = await online(bob);
 
     const login = await api().post('/api/v1/auth/login').send({ username, password: PASSWORD }).expect(200);
-    await expectDisplaced(tab1);
-    await expectDisplaced(tab2);
+    await expectDisplaced(tab1, 'displaced');
+    await expectDisplaced(tab2, 'displaced');
 
     // The new session connects normally; another user's socket is untouched.
     const newCookie = (login.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
@@ -150,7 +150,7 @@ describe('displaced sockets', () => {
     const ann = await createUser('Ann');
     const c = await online(ann);
     await api().post('/api/v1/auth/logout').set('Cookie', ann.cookie).expect(204);
-    await expectDisplaced(c);
+    await expectDisplaced(c, 'logout');
   });
 
   it('disconnects the user\'s sockets on a password reset', async () => {
@@ -161,7 +161,7 @@ describe('displaced sockets', () => {
       .post('/api/v1/auth/reset-password')
       .send({ username, recoveryPassphrase: PASSPHRASE, newPassword: 'a brand new password' })
       .expect(204);
-    await expectDisplaced(c);
+    await expectDisplaced(c, 'password_reset');
   });
 
   it('removes a displaced user from lobby presence', async () => {
@@ -468,8 +468,14 @@ describe('host disconnects from an open room', () => {
   afterAll(async () => {
     await fast.close();
   });
+  beforeEach(() => fast.rooms.stop());
 
   const fastApi = () => request(fast.app);
+  /** The client has its snapshot slightly before the server finishes placing the socket. */
+  async function awayTimerCleared(userId: string): Promise<boolean> {
+    for (let i = 0; i < 50 && fast.rooms.hasAwayTimer(userId); i++) await sleep(10);
+    return !fast.rooms.hasAwayTimer(userId);
+  }
   async function room(host: TestUser, ...players: TestUser[]): Promise<string> {
     const res = await fastApi().post('/api/v1/rooms').set('Cookie', host.cookie).expect(201);
     for (const p of players) {
@@ -518,7 +524,7 @@ describe('host disconnects from an open room', () => {
     await sleep(AWAY_MS * 2);
     expect(b.events('host_changed')).toHaveLength(0);
     expect(await hostOf(roomId)).toBe(ann.id);
-    expect(fast.rooms.hasAwayTimer(ann.id)).toBe(false);
+    expect(await awayTimerCleared(ann.id)).toBe(true);
   });
 
   it('keeps the host while another of their tabs is still connected', async () => {
@@ -551,5 +557,101 @@ describe('host disconnects from an open room', () => {
     await sleep(AWAY_MS * 2);
     expect(a.events('host_changed')).toHaveLength(0);
     expect(await hostOf(roomId)).toBe(ann.id);
+  });
+
+  it('when the host leaves, passes the role to the next connected player, skipping a disconnected one', async () => {
+    const [ann, bob, cat] = await Promise.all(['Ann', 'Bob', 'Cat'].map((n) => createUser(n)));
+    const roomId = await room(ann, bob, cat);
+    await on(ann);
+    const c = await on(cat);
+    await fastApi().post(`/api/v1/rooms/${roomId}/leave`).set('Cookie', ann.cookie).expect(204);
+    const changed = await c.waitFor('host_changed');
+    expect(changed.payload).toEqual({ room_id: roomId, host_id: cat.id });
+    expect(await awayTimerCleared(cat.id)).toBe(true);
+  });
+
+  it('when the host leaves and nobody is connected, the first player becomes host with the grace period running', async () => {
+    const [ann, bob, cat] = await Promise.all(['Ann', 'Bob', 'Cat'].map((n) => createUser(n)));
+    const roomId = await room(ann, bob, cat);
+    await fastApi().post(`/api/v1/rooms/${roomId}/leave`).set('Cookie', ann.cookie).expect(204);
+    expect(await hostOf(roomId)).toBe(bob.id);
+    expect(fast.rooms.hasAwayTimer(bob.id)).toBe(true);
+    // Cat comes online; Bob never does, so the role moves on to Cat.
+    const c = await on(cat);
+    const changed = await c.waitFor('host_changed', () => true, { timeoutMs: 3000 });
+    expect(changed.payload).toEqual({ room_id: roomId, host_id: cat.id });
+  });
+
+  it('starts the grace period for a host who created the room with no socket open', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    expect(fast.rooms.hasAwayTimer(ann.id)).toBe(true);
+    const b = await on(bob);
+    const changed = await b.waitFor('host_changed', () => true, { timeoutMs: 3000 });
+    expect(changed.payload).toEqual({ room_id: roomId, host_id: bob.id });
+  });
+
+  it('after a restart, passes the role on from a host who never reconnects', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    fast.rooms.stop(); // the restart loses every in-memory timer
+    expect(fast.rooms.hasAwayTimer(ann.id)).toBe(false);
+    await fast.rooms.restoreTimeouts();
+    expect(fast.rooms.hasAwayTimer(ann.id)).toBe(true);
+    const b = await on(bob);
+    const changed = await b.waitFor('host_changed', () => true, { timeoutMs: 3000 });
+    expect(changed.payload).toEqual({ room_id: roomId, host_id: bob.id });
+  });
+
+  it('after a restart, keeps the host who reconnects', async () => {
+    const [ann, bob] = await Promise.all([createUser('Ann'), createUser('Bob')]);
+    const roomId = await room(ann, bob);
+    fast.rooms.stop();
+    await fast.rooms.restoreTimeouts();
+    await on(ann);
+    expect(await awayTimerCleared(ann.id)).toBe(true);
+    const b = await on(bob);
+    await sleep(AWAY_MS * 2);
+    expect(b.events('host_changed')).toHaveLength(0);
+    expect(await hostOf(roomId)).toBe(ann.id);
+  });
+});
+
+describe('connect racing a room change in another tab', () => {
+  it('ends in the room when the user creates one while a tab is connecting', async () => {
+    for (let i = 0; i < 10; i++) {
+      await resetDb();
+      const ann = await createUser('Ann');
+      const tab = connect(server.url, ann.cookie);
+      clients.push(tab);
+      const res = await api().post('/api/v1/rooms').set('Cookie', ann.cookie).expect(201);
+      await tab.waitFor('room_snapshot', (p) => p.room_id === res.body.id);
+      await sleep(100);
+      const snapshots = tab.log.filter((e) => e.event === 'room_snapshot' || e.event === 'lobby_snapshot');
+      expect(snapshots.at(-1)!.event).toBe('room_snapshot');
+      const serverSocket = [...server.io.sockets.sockets.values()].find((s) => s.data.userId === ann.id)!;
+      expect(serverSocket.data.roomId).toBe(res.body.id);
+      expect(serverSocket.rooms.has(`room:${res.body.id}`)).toBe(true);
+      tab.close();
+    }
+  });
+
+  it('ends in the lobby when the user leaves their room while a tab is connecting', async () => {
+    for (let i = 0; i < 10; i++) {
+      await resetDb();
+      const ann = await createUser('Ann');
+      const roomId = await openRoom(ann);
+      const tab = connect(server.url, ann.cookie);
+      clients.push(tab);
+      await leave(ann, roomId);
+      await tab.waitFor('lobby_snapshot');
+      await sleep(100);
+      const snapshots = tab.log.filter((e) => e.event === 'room_snapshot' || e.event === 'lobby_snapshot');
+      expect(snapshots.at(-1)!.event).toBe('lobby_snapshot');
+      const serverSocket = [...server.io.sockets.sockets.values()].find((s) => s.data.userId === ann.id)!;
+      expect(serverSocket.data.roomId).toBeNull();
+      expect(serverSocket.rooms.has('lobby')).toBe(true);
+      tab.close();
+    }
   });
 });

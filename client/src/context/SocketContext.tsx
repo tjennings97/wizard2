@@ -113,7 +113,7 @@ type Payloads = {
   host_changed: { room_id: string; host_id: string };
   room_config_updated: { room_id: string; config: RoomConfig };
   room_closed: { room_id: string; reason: string };
-  session_error: { code: string; message: string; fatal: boolean };
+  session_error: { code: string; message: string; fatal: boolean; reason?: string };
 };
 
 /**
@@ -151,7 +151,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     on('session_error', (p) => {
       if (!p.fatal) return;
       s.disconnect();
-      endSession(p.code);
+      endSession(p.code, p.reason);
     });
 
     setSocket(s);

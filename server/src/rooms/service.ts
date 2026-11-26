@@ -169,6 +169,11 @@ export class RoomService {
     return newHostId;
   }
 
+  /** Starts the host-away grace period for `userId` in `roomId` if they have no socket. */
+  private armIfAway(userId: string, roomId: string): void {
+    if (!this.notifier.isConnected(userId)) this.userDisconnected(userId, roomId);
+  }
+
   private cancelAway(userId: string): void {
     const timer = this.awayTimers.get(userId);
     if (timer) clearTimeout(timer);
@@ -201,6 +206,8 @@ export class RoomService {
 
     logger.info({ userId, roomId: room.id }, 'room created');
     this.scheduleTimeout(room.id, room.createdAt);
+    // Created over REST with no socket open: the host is already away.
+    this.armIfAway(userId, room.id);
     await this.notify(async () => {
       await this.notifier.userEnteredRoom(userId, room);
       await this.notifier.lobbyChanged();
@@ -286,15 +293,18 @@ export class RoomService {
       let newHostId: string | null = null;
       let closed = false;
       if (row.state === 'open' && member.role === 'player') {
-        const next: { user_id: string } | undefined = await trx('room_members')
+        const remaining: { user_id: string }[] = await trx('room_members')
           .where({ room_id: roomId, role: 'player' })
           .whereNull('left_at')
           .orderBy('join_order', 'asc')
-          .first('user_id');
-        if (!next) {
+          .select('user_id');
+        if (remaining.length === 0) {
           await closeRoomTx(trx, roomId);
           closed = true;
         } else if (row.host_user_id === userId) {
+          // The next connected player by join order; if nobody is connected, the first player,
+          // whose own grace period then starts (below).
+          const next = remaining.find((m) => this.notifier.isConnected(m.user_id)) ?? remaining[0];
           await trx('rooms').where({ id: roomId }).update({ host_user_id: next.user_id });
           newHostId = next.user_id;
         }
@@ -304,6 +314,7 @@ export class RoomService {
 
     logger.info({ userId, roomId, role: outcome.role, newHostId: outcome.newHostId, closed: outcome.closed }, 'user left room');
     if (outcome.closed) this.cancelTimeout(roomId);
+    if (outcome.newHostId) this.armIfAway(outcome.newHostId, roomId);
     await this.notify(async () => {
       await this.notifier.userLeftRoom(userId, outcome.role, outcome.room);
       if (outcome.newHostId) await this.notifier.hostChanged(roomId, outcome.newHostId);
@@ -380,12 +391,19 @@ export class RoomService {
   }
 
   /**
-   * Timers live in memory, so after a restart the open rooms have none. Re-arm them from
-   * created_at; rooms already past the timeout close straight away.
+   * Timers live in memory, so after a restart the open rooms have none. Re-arm the inactivity
+   * timers from created_at (rooms already past the timeout close straight away), and start the
+   * host-away grace period for every host without a socket, which right after a restart is all
+   * of them; a host who reconnects in time keeps the role.
    */
   async restoreTimeouts(): Promise<void> {
-    const rows: { id: string; created_at: Date }[] = await db('rooms').where({ state: 'open' }).select('id', 'created_at');
-    for (const r of rows) this.scheduleTimeout(r.id, new Date(r.created_at));
+    const rows: { id: string; created_at: Date; host_user_id: string }[] = await db('rooms')
+      .where({ state: 'open' })
+      .select('id', 'created_at', 'host_user_id');
+    for (const r of rows) {
+      this.scheduleTimeout(r.id, new Date(r.created_at));
+      this.armIfAway(r.host_user_id, r.id);
+    }
   }
 
   /** Clears every pending timer (shutdown and tests). */
