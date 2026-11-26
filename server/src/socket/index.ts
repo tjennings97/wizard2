@@ -6,7 +6,8 @@ import { sessionEvents, type InvalidationReason } from '../auth/sessionEvents';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, listLobbyRooms, type RoomSummary, type RoomView } from '../rooms/queries';
 import type { RoomService } from '../rooms/service';
-import { authenticateSocket, INVALIDATION_MESSAGES, SESSION_ERROR_MESSAGES } from './auth';
+import { authenticateSocket, INVALIDATION_MESSAGES, recheckSocketSession, SESSION_ERROR_MESSAGES } from './auth';
+import { NotAPlayerError, type GameService } from '../games/service';
 import { Realtime, sessionChannel, userChannel, type AppServer, type AppSocket } from './realtime';
 
 export interface AttachedSocket {
@@ -24,12 +25,19 @@ export interface AttachedSocket {
  * channel of a started game, or in the lobby (lobby_snapshot, and presence_updated to everyone
  * else there).
  */
-export function attachSocket(httpServer: HttpServer, rooms: RoomService): AttachedSocket {
+export interface SocketOptions {
+  /** Minimum time between session re-checks on game actions, per socket. Tests lower it. */
+  sessionRecheckMs?: number;
+}
+
+export function attachSocket(httpServer: HttpServer, rooms: RoomService, options: SocketOptions = {}): AttachedSocket {
   const io: AppServer = new Server(httpServer, {
     cors: { origin: config.corsOrigin, credentials: true },
   });
-  const realtime = new Realtime(io);
+  const realtime = new Realtime(io, rooms.games);
   rooms.setNotifier(realtime);
+  rooms.games.setNotifier(realtime);
+  const recheckMs = options.sessionRecheckMs ?? SESSION_RECHECK_MS;
 
   // A newer login, a password reset or a logout ended these sessions: drop their sockets.
   const onInvalidated = (sessionIds: string[], reason: InvalidationReason) =>
@@ -41,7 +49,9 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService): Attach
     socket.data.roomId = null;
     socket.data.moves = 0;
     socket.data.placed = false;
-    void onConnection(realtime, rooms, socket).catch((err) => {
+    socket.data.authCheckedAt = Date.now();
+    socket.data.inbox = Promise.resolve();
+    void onConnection(realtime, rooms, socket, recheckMs).catch((err) => {
       realtime.logError(socket, err, 'socket connect handling failed');
       socket.disconnect(true);
     });
@@ -50,7 +60,7 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService): Attach
   return { io, realtime, detach: () => sessionEvents.off('invalidated', onInvalidated) };
 }
 
-async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppSocket): Promise<void> {
+async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppSocket, recheckMs: number): Promise<void> {
   const auth = await authenticateSocket(socket.handshake.headers.cookie);
   if (!auth.ok) {
     logger.info(
@@ -95,6 +105,7 @@ async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppS
   }
   if (!socket.connected) return;
 
+  registerGameActions(realtime, rooms.games, socket, recheckMs);
   if (!(await placeSocket(realtime, socket))) return;
   socket.data.placed = true;
   // Only now is the user back where they belong: they keep the host role.
@@ -128,8 +139,9 @@ function applyPlacement(realtime: Realtime, socket: AppSocket, target: Placement
       realtime.enterRoom(socket, target.room);
       break;
     case 'game':
-      // A game has started in this room. Game events and state_snapshot come with the engine wiring.
-      realtime.joinRoomChannel(socket, target.roomId);
+      // A game has started in this room: state_snapshot if it is live in this process. A game
+      // lost to a restart has nothing to send yet (startup cleanup comes with player drops).
+      void realtime.enterGame(socket, target.roomId).catch((err) => realtime.logError(socket, err, 'game snapshot failed'));
       break;
     case 'lobby':
       realtime.enterLobby(socket, target.rooms);
@@ -169,4 +181,92 @@ async function placeSocket(realtime: Realtime, socket: AppSocket): Promise<boole
   }
   logger.warn(realtime.logContext(socket), 'socket placement did not settle; keeping the last one');
   return true;
+}
+
+/** Game actions re-check the session (and slide it) at most this often per socket. */
+export const SESSION_RECHECK_MS = 5 * 60 * 1000;
+
+function payloadOf(envelope: unknown): Record<string, unknown> {
+  const payload = (envelope as { payload?: unknown } | null)?.payload;
+  return payload !== null && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+}
+
+/**
+ * select_trump and place_bid. Each is handled after the previous event from this socket, so a
+ * socket's actions reach the game in the order sent. The session is re-validated first, at most
+ * once per `recheckMs`, which also slides it: a player who only uses the socket stays logged in.
+ * The acting player is always the socket's user; a payload player_id is ignored.
+ */
+function registerGameActions(realtime: Realtime, games: GameService, socket: AppSocket, recheckMs: number): void {
+  const actions: Record<string, (roomId: string, p: Record<string, unknown>) => Promise<void>> = {
+    select_trump: (roomId, p) => games.selectTrump(roomId, actor(socket), p.suit, p.idempotency_key),
+    place_bid: (roomId, p) => games.placeBid(roomId, actor(socket), p.bid, p.idempotency_key),
+  };
+  for (const [event, act] of Object.entries(actions)) {
+    socket.on(event, (envelope: unknown) => {
+      socket.data.inbox = socket.data.inbox
+        .then(() => handleGameAction(realtime, games, socket, recheckMs, event, () => {
+          const roomId = socket.data.roomId;
+          return roomId ? act(roomId, payloadOf(envelope)) : Promise.resolve();
+        }))
+        .catch((err) => realtime.logError(socket, err, `${event} failed`));
+    });
+  }
+}
+
+function actor(socket: AppSocket) {
+  return { userId: socket.data.userId, traceId: socket.data.traceId };
+}
+
+/** Non-fatal reply when an action could not be processed; the client may retry it. */
+function actionFailed(realtime: Realtime, socket: AppSocket, event: string): void {
+  realtime.send(socket, 'session_error', {
+    code: 'ACTION_FAILED',
+    message: `The server could not process ${event}. Try again.`,
+    fatal: false,
+  });
+}
+
+async function handleGameAction(
+  realtime: Realtime,
+  games: GameService,
+  socket: AppSocket,
+  recheckMs: number,
+  event: string,
+  act: () => Promise<void>,
+): Promise<void> {
+  if (!socket.connected) return;
+  const roomId = socket.data.roomId;
+  if (!roomId || !games.isLive(roomId)) {
+    logger.debug({ ...realtime.logContext(socket), event }, 'game action outside a live game ignored');
+    return;
+  }
+  if (Date.now() - socket.data.authCheckedAt >= recheckMs) {
+    let code;
+    try {
+      code = await recheckSocketSession(socket.handshake.headers.cookie, socket.data.sessionId);
+    } catch (err) {
+      // The check did not run (e.g. a database error): do not apply the action, tell the client,
+      // and leave authCheckedAt alone so the next action checks again.
+      realtime.logError(socket, err, `${event} session check failed`);
+      actionFailed(realtime, socket, event);
+      return;
+    }
+    if (code) {
+      logger.info({ ...realtime.logContext(socket), code, event }, 'socket rejected on game action');
+      realtime.rejectSocket(socket, code, SESSION_ERROR_MESSAGES[code]);
+      return;
+    }
+    socket.data.authCheckedAt = Date.now();
+  }
+  try {
+    await act();
+  } catch (err) {
+    if (err instanceof NotAPlayerError) {
+      realtime.send(socket, 'session_error', { code: 'SPECTATOR_ACTION_FORBIDDEN', message: err.message, fatal: false });
+      return;
+    }
+    realtime.logError(socket, err, `${event} failed`);
+    if (socket.connected) actionFailed(realtime, socket, event);
+  }
 }

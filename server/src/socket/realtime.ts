@@ -11,6 +11,7 @@ import {
 import type { MemberRole, RoomClosedReason, RoomConfig } from '../rooms/rules';
 import type { RoomNotifier } from '../rooms/service';
 import type { InvalidationReason } from '../auth/sessionEvents';
+import type { GameNotifier, GameService } from '../games/service';
 
 export interface SocketData {
   userId: string;
@@ -20,16 +21,26 @@ export interface SocketData {
   traceId: string;
   /** The room this socket is in, or null in the lobby. */
   roomId: string | null;
-  /** Outbound sequence number of the last event sent on this socket. */
+  /**
+   * Envelope seq of the last event sent on this socket. Counted per socket in the lobby and an
+   * open room; in a room with a game, it is the game's seq (see deliverToRoom).
+   */
   seq: number;
+  /** When the session was last validated (connect or a game action), in ms. Throttles re-checks. */
+  authCheckedAt: number;
+  /** Client events from this socket are handled one at a time, in arrival order. */
+  inbox: Promise<void>;
   /** Bumped every time the socket is put in the lobby or a room, so a reader can tell it moved. */
   moves: number;
   /** True once connect handling has placed the socket (see placeSocket in socket/index.ts). */
   placed: boolean;
 }
 
-export type AppServer = Server<Record<string, never>, Record<string, (envelope: Envelope) => void>, Record<string, never>, SocketData>;
-export type AppSocket = Socket<Record<string, never>, Record<string, (envelope: Envelope) => void>, Record<string, never>, SocketData>;
+/** Client→server events carry the same envelope; only `payload` is read. */
+type ClientEvents = Record<string, (envelope: unknown) => void>;
+type ServerEvents = Record<string, (envelope: Envelope) => void>;
+export type AppServer = Server<ClientEvents, ServerEvents, Record<string, never>, SocketData>;
+export type AppSocket = Socket<ClientEvents, ServerEvents, Record<string, never>, SocketData>;
 
 /** The message envelope from docs/api/websocket-events.md (Envelope Schema). */
 export interface Envelope {
@@ -54,10 +65,16 @@ function counts(room: RoomView) {
  * The real-time side of the lobby and rooms. All membership lives in Socket.io rooms on this
  * single instance: `lobby`, `room:<roomId>`, and `user:<userId>`.
  *
- * Events go out one socket at a time (not via io.to(room).emit) because `seq` is per socket.
+ * Events go out one socket at a time (not via io.to(room).emit) because `seq` is per socket
+ * outside a game. In a room whose game is live, every socket gets the game's seq instead: room
+ * broadcasts go through the game service, which numbers and logs them, and unicasts carry the
+ * current game seq without advancing it.
  */
-export class Realtime implements RoomNotifier, PresenceSource {
-  constructor(private readonly io: AppServer) {}
+export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
+  constructor(
+    private readonly io: AppServer,
+    private readonly games: GameService,
+  ) {}
 
   // --- delivery ---------------------------------------------------------------------------
 
@@ -67,9 +84,15 @@ export class Realtime implements RoomNotifier, PresenceSource {
     return [...ids].map((id) => this.io.sockets.sockets.get(id)).filter((s): s is AppSocket => !!s);
   }
 
+  /** A unicast. In a live game's room it carries the game's current seq; elsewhere the socket's next. */
   send(socket: AppSocket, event: string, payload: unknown): void {
-    socket.data.seq = (socket.data.seq ?? 0) + 1;
-    socket.emit(event, { event, seq: socket.data.seq, timestamp: new Date().toISOString(), payload });
+    const gameSeq = socket.data.roomId ? this.games.currentSeq(socket.data.roomId) : null;
+    this.sendStamped(socket, event, payload, gameSeq ?? (socket.data.seq ?? 0) + 1);
+  }
+
+  sendStamped(socket: AppSocket, event: string, payload: unknown, seq: number): void {
+    socket.data.seq = seq;
+    socket.emit(event, { event, seq, timestamp: new Date().toISOString(), payload });
   }
 
   private broadcast(channel: string, event: string, payload: unknown): void {
@@ -127,15 +150,46 @@ export class Realtime implements RoomNotifier, PresenceSource {
     socket.join(roomChannel(roomId));
   }
 
+  // --- GameNotifier -----------------------------------------------------------------------
+
+  deliverToRoom(roomId: string, event: string, payload: unknown, seq: number): void {
+    for (const s of this.socketsIn(roomChannel(roomId))) this.sendStamped(s, event, payload, seq);
+  }
+
+  deliverToUser(roomId: string, userId: string, event: string, payload: unknown, seq: number): void {
+    for (const s of this.socketsIn(userChannel(userId))) {
+      if (s.data.roomId === roomId) this.sendStamped(s, event, payload, seq);
+    }
+  }
+
+  /**
+   * Puts the socket in the channel of a room whose game has started and, if that game is live,
+   * sends it state_snapshot (the player's own view, or the spectator view with no hands), then
+   * the bid or trump request the player still owes, if it is their turn.
+   */
+  async enterGame(socket: AppSocket, roomId: string): Promise<void> {
+    this.joinRoomChannel(socket, roomId);
+    await this.games.withView(roomId, socket.data.userId, (view, seq, prompt) => {
+      if (!socket.connected || socket.data.roomId !== roomId) return;
+      this.sendStamped(socket, 'state_snapshot', { game_state: view, seq }, seq);
+      if (prompt) this.sendStamped(socket, prompt.event, prompt.payload, seq);
+    });
+  }
+
   // --- RoomNotifier -----------------------------------------------------------------------
 
   async userEnteredRoom(userId: string, room: RoomView): Promise<void> {
-    for (const s of this.socketsIn(userChannel(userId))) this.enterRoom(s, room);
+    // A spectator joining a game in progress gets the game, not the room.
+    const live = this.games.isLive(room.id);
+    for (const s of this.socketsIn(userChannel(userId))) {
+      if (live) await this.enterGame(s, room.id);
+      else this.enterRoom(s, room);
+    }
     const member = room.members.find((m) => m.userId === userId);
     if (!member) return;
     const seatIndex =
       member.role === 'player' ? room.members.filter((m) => m.role === 'player').findIndex((m) => m.userId === userId) : null;
-    this.broadcast(roomChannel(room.id), 'user_joined', {
+    await this.roomBroadcast(room.id, 'user_joined', userId, {
       user_id: userId,
       display_name: member.displayName,
       role: member.role,
@@ -145,11 +199,17 @@ export class Realtime implements RoomNotifier, PresenceSource {
   }
 
   async userLeftRoom(userId: string, role: MemberRole, room: RoomView): Promise<void> {
-    this.broadcast(roomChannel(room.id), 'user_left', { user_id: userId, role, reason: 'voluntary', ...counts(room) });
+    await this.roomBroadcast(room.id, 'user_left', userId, { user_id: userId, role, reason: 'voluntary', ...counts(room) });
     const sockets = this.socketsIn(userChannel(userId));
     if (sockets.length === 0) return;
     const rooms = await listLobbyRooms();
     for (const s of sockets) this.enterLobby(s, rooms);
+  }
+
+  /** A membership broadcast: part of the game's numbered, logged sequence if the room's game is live. */
+  private async roomBroadcast(roomId: string, event: 'user_joined' | 'user_left', userId: string, payload: unknown): Promise<void> {
+    if (await this.games.publishRoomEvent(roomId, event, userId, payload)) return;
+    this.broadcast(roomChannel(roomId), event, payload);
   }
 
   async hostChanged(roomId: string, hostUserId: string): Promise<void> {

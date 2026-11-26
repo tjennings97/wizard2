@@ -13,5 +13,5 @@ export const updateRoomConfig = (roomId: string, patch: { roundCount?: number; b
 
 export const closeRoom = (roomId: string) => apiFetch<void>(`/rooms/${roomId}`, { method: 'DELETE' });
 
-/** Applies the start checks server-side; returns 501 NOT_IMPLEMENTED until the game engine is wired. */
+/** Starts the game (host only). The game arrives over the socket (game_starting, game_started, ...). */
 export const startGame = (roomId: string) => apiFetch<void>(`/rooms/${roomId}/start`, { method: 'POST' });

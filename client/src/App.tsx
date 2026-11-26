@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router';
 import { useAuth } from './context/AuthContext';
+import { GameProvider } from './context/GameContext';
 import { SocketProvider } from './context/SocketContext';
 import { useLocationSync } from './hooks/useLocationSync';
 import { CredentialChangePage } from './pages/CredentialChange';
@@ -29,7 +30,9 @@ export function App() {
   if (user?.requiresCredentialChange) return <CredentialChangePage />;
   return (
     <SocketProvider>
-      <AuthenticatedRoutes />
+      <GameProvider>
+        <AuthenticatedRoutes />
+      </GameProvider>
     </SocketProvider>
   );
 }

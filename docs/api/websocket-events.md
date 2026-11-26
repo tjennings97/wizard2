@@ -33,7 +33,12 @@ Every message, in both directions, is a JSON object with this top-level envelope
 }
 ```
 
-`seq` increments per-session, per direction. Clients detect gaps and emit `sync_request` if `seq` jumps by more than 1.
+`seq` is assigned by the server; clients send `0`. How it counts depends on where the socket is:
+
+- **Lobby and open rooms:** per socket. Each event sent on the socket takes the next number.
+- **A room whose game has started (players and spectators):** per game. Every event broadcast to the game's room takes the game's next `seq`, and every socket in the room receives it with the same number. Each one is logged in `game_events` with that `seq` (see the data model), which is what a reconnect replays from. A unicast (`hand_dealt`, `bid_request`, `trump_selection_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, a non-fatal `session_error`) carries the game's current `seq` without advancing it, so it has the same number as the broadcast before it. Unicasts are not logged; `state_snapshot` restores what they carried.
+
+Clients detect gaps and emit `sync_request` if `seq` jumps by more than 1. A repeated `seq` (a unicast after a broadcast) is not a gap. On entering a game, the client takes the `seq` of `state_snapshot` (or of `game_starting`, which is `1`) as its starting point.
 
 ### Delivery Guarantees
 
@@ -68,13 +73,13 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `select_trump` | Dealer picks trump suit (only when trump card is a Wizard) | `player_id: string`, `suit: "hearts"\|"diamonds"\|"clubs"\|"spades"`, `idempotency_key?: string` |
+| `select_trump` | Dealer picks trump suit (only when trump card is a Wizard) | `player_id: string`, `suit: "hearts"\|"diamonds"\|"clubs"\|"spades"`, `idempotency_key?: string` — answered with `invalid_trump_error` if the sender is not the dealer, trump is not awaiting a declaration, or `suit` is not a suit |
 
 ### Bidding Phase
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `place_bid` | Player submits bid | `player_id: string`, `bid: integer (0–round_number)`, `idempotency_key?: string` |
+| `place_bid` | Player submits bid | `player_id: string`, `bid: integer (0–round_number)`, `idempotency_key?: string` — answered with `invalid_bid_error` if it is not the sender's turn, bidding is not open, or the bid is not allowed |
 
 ### Trick-Playing Phase
 
@@ -94,6 +99,17 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 | --- | --- | --- |
 | `sync_request` | Client detects a `seq` gap | `player_id: string`, `last_seq_seen: number` |
 | `ping` | Client keepalive (every 15 s) | `client_time: ISO-8601` |
+
+### Game actions: who acts, ordering and session refresh
+
+These rules apply to every game action (`select_trump`, `place_bid`, and later `play_card` and `choose_continue_or_end`):
+
+- **The acting player is the socket's user.** The `player_id` in the payload is informational and is ignored; a socket cannot act for someone else.
+- **Ordering:** events from one socket are handled one at a time, in the order sent, and actions on one game are applied one at a time across all its players.
+- **Session refresh:** before an action, the server validates the socket's session cookie again with `authenticateToken`, which also slides the session's 24-hour idle expiry, so a player who only uses the socket stays logged in. This is throttled per socket: at most once every 5 minutes (connecting counts as a check). If the session has ended or expired, the server sends `session_error` (`fatal: true`, with the failure `code`) and disconnects, and the action is not applied.
+- **Could not process:** if the session check cannot run (for example a database error) or the action fails unexpectedly on the server, the action is not applied and the socket gets `session_error` `{ code: "ACTION_FAILED", fatal: false }`; the socket stays connected. The client may resend the action with the same `idempotency_key`: a key is recorded only once its action has been processed.
+- **Not a player:** an action from a spectator (or anyone not seated in the game) gets `session_error` `{ code: "SPECTATOR_ACTION_FORBIDDEN", fatal: false }`; the socket stays connected.
+- **Outside a game:** an action from a socket that is not in a room with a game in progress is ignored.
 
 ## Server → Client Events
 
@@ -118,8 +134,8 @@ The server broadcasts most events to all players in the session. Unicast events 
 | --- | --- | --- |
 | `user_joined` | All | `user_id`, `display_name`, `role: "player"\|"spectator"`, `seat_index: integer\|null` (null for spectators), `player_count`, `spectator_count` — sent for players and spectators |
 | `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress |
-| `game_starting` | All | `countdown_seconds: integer`, `player_order: string[]` |
-| `game_started` | All | `round_count: integer`, `players: PlayerSummary[]` |
+| `game_starting` | All | `game_id: string`, `countdown_seconds: integer`, `player_order: string[]` — the host started the game (`POST /rooms/{roomId}/start`). `countdown_seconds` is `0`: the game starts at once. `player_order` is the seat order (join order); seat 1 deals round 1 |
+| `game_started` | All | `game_id: string`, `room_id: string`, `round_count: integer`, `bid_rule: "open"\|"uneven"`, `players: PlayerSummary[]` — `PlayerSummary` is `{ user_id, display_name, seat_index }` (0-based, as in `user_joined`). Clients go to the game screen (`/game/{game_id}`) |
 | `game_over` | All | `final_scores: ScoreEntry[]`, `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners |
 | `game_time_warning` | All | `game_id: string`, `ends_at: ISO-8601`, `minutes_remaining: 15`: sent once, 15 minutes before the 3-hour game time limit |
 | `game_abandoned` | All | `reason: "server_restart"\|"time_limit"`, `game_id: string` |
@@ -131,18 +147,18 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `round_started` | All | `round_number: integer`, `trump_suit: string\|null`, `trump_card?: Card` |
-| `hand_dealt` | **U** | `hand: Card[]`, `round_number: integer` |
-| `trump_revealed` | All | `trump_suit: string`, `trump_card: Card` — broadcast after dealer's select\_trump (Wizard up-card) or immediately for any other rank |
-| `trump_selection_request` | **U** | `player_id` (the dealer), `round_number: integer` — sent only when the turned-up trump card is a Wizard; dealer must respond with `select_trump` |
+| `round_started` | All | `round_number: integer`, `dealer_id: string`, `trump_suit: string\|null`, `trump_card: Card\|null` — `trump_card` is the flipped card, `null` when every card was dealt and nothing is flipped. `trump_suit` is `null` for a Jester, a Wizard (until the dealer declares) and no flip. `Card` is `{ suit: string\|null, rank: integer\|null, type: "suited"\|"wizard"\|"jester" }` (rank 2–14, Ace = 14; Wizards and Jesters have no suit or rank) |
+| `hand_dealt` | **U** | `hand: Card[]`, `round_number: integer` — each player gets only their own hand, after `round_started`; never sent to spectators |
+| `trump_revealed` | All | `round_number: integer`, `trump_suit: string\|null`, `trump_card: Card\|null`, `trump_source: "flip"\|"declaration"\|null` — trump is settled for the round and bidding starts. Sent right after the `hand_dealt` events for a suited card (`flip`), a Jester (`trump_suit: null`, `trump_source: null`) and no flip (`trump_card: null`); after the dealer's `select_trump` for a Wizard (`declaration`) |
+| `trump_selection_request` | **U** | `player_id` (the dealer), `round_number: integer` — sent only when the turned-up trump card is a Wizard; dealer must respond with `select_trump`. Other players learn of it from `round_started` (`trump_card` is a Wizard, `trump_suit` is `null`) |
 
 ### Bidding Phase
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `bid_request` | **U** | `player_id`, `round_number`, `bids_so_far: BidEntry[]`, `hand_size: integer` |
+| `bid_request` | **U** | `player_id`, `round_number`, `bids_so_far: BidEntry[]`, `hand_size: integer`, `allowed_bids: integer[]` — to the next bidder only, starting left of the dealer; the dealer bids last. `BidEntry` is `{ player_id, bid }`, in bidding order. `allowed_bids` is `0…round_number`, minus the one bid that would make the total equal the trick count when the dealer bids under the uneven rule |
 | `bid_placed` | All | `player_id`, `bid: integer` |
-| `all_bids_placed` | All | `bids: BidEntry[]` |
+| `all_bids_placed` | All | `bids: BidEntry[]` — every player has bid, in bidding order; trick play begins |
 
 ### Trick-Playing Phase
 
@@ -157,11 +173,12 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState` |
+| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState`. `seq` is the game seq the view reflects. Sent when a socket connects while its user is in a room with a game in progress, and to a spectator who joins a game in progress (instead of `room_snapshot`). If it is the recipient's turn to bid or declare trump, the matching `bid_request` or `trump_selection_request` follows it |
 | `pong` | **U** | `server_time: ISO-8601` |
 | `invalid_play_error` | **U** | `player_id`, `reason: string`, `legal_cards: Card[]` |
-| `invalid_bid_error` | **U** | `player_id`, `reason: string`, `min_bid: integer`, `max_bid: integer` |
-| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean`, `reason?: string` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset or a logout has ended, with `reason` `"displaced"`, `"password_reset"` or `"logout"` so the client can say which, and the socket is then disconnected (on connect with an already-ended session there is no `reason`); `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress |
+| `invalid_bid_error` | **U** | `player_id`, `code: string`, `reason: string`, `min_bid: integer`, `max_bid: integer`, `allowed_bids: integer[]` — `code` is `NOT_YOUR_TURN`, `INVALID_BID` (out of range, not an integer, or blocked by the uneven rule), `ALREADY_BID` or `INVALID_PHASE` (not bidding now). `allowed_bids` is empty when it is not the sender's turn |
+| `invalid_trump_error` | **U** | `player_id`, `code: string`, `reason: string` — a refused `select_trump`: `code` is `NOT_YOUR_TURN` (not the dealer), `INVALID_SUIT` or `INVALID_PHASE` (no declaration pending) |
+| `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean`, `reason?: string` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset or a logout has ended, with `reason` `"displaced"`, `"password_reset"` or `"logout"` so the client can say which, and the socket is then disconnected (on connect with an already-ended session there is no `reason`); `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress; `code: "ACTION_FAILED"` (not fatal) when a game action could not be processed (see Game actions) |
 
 ## Event Sequencing & State Transitions
 
@@ -209,13 +226,13 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 ### Spectator Mode
 
-Spectators connect with `join_game` and a `role: "spectator"` payload field. The server:
+Spectators join a room with `POST /rooms/{roomId}/join` (`role: "spectator"`), before or during the game; their socket is then moved into the room (`room_snapshot` before the game, `state_snapshot` with the spectator view during it). `join_game` with `role: "spectator"` is the socket equivalent. The server:
 
 - Sends them all broadcast events.
 - Never sends `bid_request`, `play_request`, or `hand_dealt` to them.
-- Rejects any action events (`place_bid`, `play_card`) with `session_error` code `SPECTATOR_ACTION_FORBIDDEN`.
+- Rejects any action events (`select_trump`, `place_bid`, `play_card`) with `session_error` code `SPECTATOR_ACTION_FORBIDDEN` (`fatal: false`).
 
-Spectator joins and leaves are broadcast to the room like players': `user_joined` / `user_left` with `role: "spectator"`. A spectator leaving never triggers player-drop rules.
+Spectator joins and leaves are broadcast to the room like players': `user_joined` / `user_left` with `role: "spectator"`. During a game they are part of the game's `seq` and event log like any other broadcast. A spectator leaving never triggers player-drop rules.
 
 ### Idle & Timeout Policy
 

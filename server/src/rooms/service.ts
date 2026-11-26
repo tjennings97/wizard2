@@ -1,6 +1,9 @@
+import { randomUUID } from 'crypto';
 import type { Knex } from 'knex';
 import { db } from '../db/knex';
 import { ApiError } from '../http/errors';
+import { GameService } from '../games/service';
+import { seatedPlayers } from '../games/queries';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, type RoomRow, type RoomView } from './queries';
 import {
@@ -96,6 +99,8 @@ export interface RoomServiceOptions {
   timeoutMs?: number;
   /** How long a disconnected host of an open room keeps the role. Tests shorten it. */
   hostAwayMs?: number;
+  /** Runs started games. */
+  games?: GameService;
 }
 
 export class RoomService {
@@ -105,9 +110,16 @@ export class RoomService {
   private readonly hostAwayMs: number;
   /** Host-away grace timers, keyed by the disconnected user's id. */
   private readonly awayTimers = new Map<string, NodeJS.Timeout>();
+  readonly games: GameService;
 
-  constructor({ notifier = noopNotifier, timeoutMs = ROOM_TIMEOUT_MS, hostAwayMs = HOST_AWAY_MS }: RoomServiceOptions = {}) {
+  constructor({
+    notifier = noopNotifier,
+    timeoutMs = ROOM_TIMEOUT_MS,
+    hostAwayMs = HOST_AWAY_MS,
+    games = new GameService(),
+  }: RoomServiceOptions = {}) {
     this.notifier = notifier;
+    this.games = games;
     this.timeoutMs = timeoutMs;
     this.hostAwayMs = hostAwayMs;
   }
@@ -346,22 +358,45 @@ export class RoomService {
   }
 
   /**
-   * POST /rooms/{roomId}/start. Applies every start guard, then refuses with 501: starting needs
-   * the game engine wiring (docs/development/remaining-work.md), and an in_progress room with no
-   * game behind it would trap its players. Nothing is changed.
+   * POST /rooms/{roomId}/start. Applies every start guard, creates the engine game from the room
+   * config and the players in join order (seat order), inserts the games row and moves the room
+   * to in_progress, all in one transaction. Round 1 is dealt in the engine inside that transaction
+   * too (the engine is pure), so an engine failure rolls the whole start back and the room stays
+   * open. Once committed, the game service registers the game and announces it (game_starting,
+   * game_started, round_started, hand_dealt, ...). The host
+   * role is dissolved: the inactivity timer and host-away timers no longer apply.
    */
-  async startGame(userId: string, roomId: string): Promise<never> {
-    await db.transaction(async (trx) => {
+  async startGame(userId: string, roomId: string, traceId: string | null = null): Promise<RoomView> {
+    const { room, game, started } = await db.transaction(async (trx) => {
       const row = await lockRoom(trx, roomId);
       if (!row || row.state === 'closed') throw notFound();
       if (row.state !== 'open') throw gameStarted();
       if (row.host_user_id !== userId) throw notHost();
-      const { players } = await countActive(trx, roomId);
-      if (players < MIN_PLAYERS_TO_START) {
+      const players = await seatedPlayers(trx, roomId);
+      if (players.length < MIN_PLAYERS_TO_START) {
         throw new ApiError(400, 'NOT_ENOUGH_PLAYERS', `At least ${MIN_PLAYERS_TO_START} players are required to start.`);
       }
+      // Pure: throws before anything is written if the config does not fit the players.
+      const game = this.games.create({
+        gameId: randomUUID(),
+        roomId,
+        players,
+        config: configFromStored(row.config, players.length),
+      });
+      const started = game.startRound();
+      await trx('games').insert({ id: game.gameId, room_id: roomId, status: 'in_progress' });
+      await trx('rooms').where({ id: roomId }).update({ state: 'in_progress' });
+      return { room: (await getRoomView(roomId, trx))!, game, started };
     });
-    throw new ApiError(501, 'NOT_IMPLEMENTED', 'Starting a game is not available yet.');
+
+    logger.info({ userId, traceId, roomId, gameId: game.gameId }, 'game started');
+    this.cancelTimeout(roomId);
+    for (const m of room.members) this.cancelAway(m.userId);
+    await this.notify(async () => {
+      await this.games.launch(game, started, { userId, traceId });
+      await this.notifier.lobbyChanged();
+    });
+    return room;
   }
 
   async closeByHost(userId: string, roomId: string): Promise<void> {

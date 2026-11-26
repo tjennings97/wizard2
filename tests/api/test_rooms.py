@@ -95,12 +95,19 @@ class TestJoinRoomRunway:
 
 
 class TestStartGameRunway:
-    def test_fresh_session_passes_the_guard(self, host_with_players):
+    def test_fresh_session_starts_the_game(self, host_with_players, db):
         host, _, room_id = host_with_players()
         r = host.post("/rooms/{}/start".format(room_id))
-        # Past the runway guard. Starting itself is not wired to the game engine yet (501).
-        assert r.status_code != 401, r.text
-        assert_error(r, 501, "NOT_IMPLEMENTED")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == room_id
+        assert body["state"] == "in_progress"
+        assert len([m for m in body["members"] if m["role"] == "player"]) == 3
+        assert db.execute("SELECT state FROM rooms WHERE id = %s", (room_id,)).fetchone()[0] == "in_progress"
+        games = db.execute("SELECT status, state FROM games WHERE room_id = %s", (room_id,)).fetchall()
+        assert games == [("in_progress", None)]
+        # Started once only.
+        assert_error(host.post("/rooms/{}/start".format(room_id)), 403, "GAME_ALREADY_STARTED")
 
     def test_session_in_window_gets_reauth_required(self, host_with_players, db):
         host, host_user, room_id = host_with_players()

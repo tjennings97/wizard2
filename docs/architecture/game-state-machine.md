@@ -29,7 +29,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
 | — | Host opens room | User not already in a room or game | **OPEN** | Insert `rooms` row; join Socket.io room; broadcast `rooms_updated`; start 10-minute inactivity timer |
-| **OPEN** | Host starts game | ≥ 3 players in room; room is OPEN | **IN PROGRESS** | Cancel inactivity timer; create `games` row; deal round 1; broadcast `game_starting`, `round_started`; emit `hand_dealt` to each player |
+| **OPEN** | Host starts game | ≥ 3 players in room; room is OPEN | **IN PROGRESS** | Cancel inactivity timer; dissolve the host role; create `games` row; deal round 1; broadcast `game_starting`, `game_started`, `round_started`; emit `hand_dealt` to each player |
 | **OPEN** | 10-minute inactivity timer fires | Game not yet started | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed`; all members returned to lobby |
 | **OPEN** | Host leaves | Room is OPEN; at least one other player remains | **OPEN** | Set host's `room_members.left_at`; promote the remaining player with the lowest `join_order` (`role = 'player'`, `left_at IS NULL`; spectators are never promoted); update `rooms.host_user_id`; broadcast `user_left`, then `host_changed`; broadcast `rooms_updated` |
 | **OPEN** | Host has no connected socket for 120 s | Room is OPEN; host still has no socket; another player is connected | **OPEN** | Promote the connected player with the lowest `join_order` (`role = 'player'`, `left_at IS NULL`); the old host stays a member; update `rooms.host_user_id`; broadcast `host_changed`; broadcast `rooms_updated`. Reconnecting within 120 s cancels the timer |
@@ -150,6 +150,7 @@ No timeout on trump declaration. If the dealer disconnects mid-declaration, the 
 | Card played | Partial | `game_events` row only |
 | Trick completed | Partial | `game_events` row only |
 | Trump declared | Partial | `game_events` row only |
+| Any other event broadcast to the game's room (`game_starting`, `game_started`, `round_started`, `trump_revealed`, `all_bids_placed`, spectator `user_joined` / `user_left`) | Partial | `game_events` row only, numbered by the game's `seq` for reconnect replay |
 
 **Reconnection restore sequence:** On reconnect within 30s: session validated → `clearTimeout` → `game.toPlayerView(userId)` called (snapshot with only the reconnecting player's own hand; other players show a card count) → `state_snapshot` emitted → `player_reconnected` broadcast to room. Player resumes from current state with no round rewind.
 

@@ -6,7 +6,7 @@ import { config } from '../config';
 import { db } from '../db/knex';
 import { rotateSession, SESSION_COOKIE } from '../auth/sessions';
 import { SESSION_MAX_LIFETIME_MS } from '../auth/sessionPolicy';
-import { buildServer } from '../server';
+import { buildServer, type BuildServerOptions } from '../server';
 
 /** Empties every table except Knex's migration bookkeeping. */
 export async function resetDb(): Promise<void> {
@@ -48,13 +48,14 @@ export async function createUser(
   return { id, displayName, cookie: cookieFor(session.token) };
 }
 
-export async function startServer(options: { timeoutMs?: number; hostAwayMs?: number } = {}) {
+export async function startServer(options: BuildServerOptions = {}) {
   const built = buildServer(options);
   await new Promise<void>((resolve) => built.httpServer.listen(0, '127.0.0.1', resolve));
   const { port } = built.httpServer.address() as AddressInfo;
   const url = `http://127.0.0.1:${port}`;
   const close = async () => {
     built.rooms.stop();
+    built.games.stop();
     built.detachSocket();
     await new Promise<void>((resolve) => built.io.close(() => resolve()));
   };

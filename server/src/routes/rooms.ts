@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth, requireSessionRunway } from '../auth/middleware';
 import { asyncHandler } from '../http/asyncHandler';
 import { ApiError } from '../http/errors';
+import { requestTraceId } from '../http/trace';
 import { getRoomView, isRoomId, toRoomDto } from '../rooms/queries';
 import { BID_RULES, DECK_TYPES, MEMBER_ROLES, type MemberRole, type RoomConfig } from '../rooms/rules';
 import type { ConfigPatch, RoomService } from '../rooms/service';
@@ -149,8 +150,8 @@ export function createRoomsRouter(rooms: RoomService): Router {
     requireAuth,
     requireSessionRunway,
     asyncHandler(async (req, res) => {
-      await rooms.startGame(req.user!.id, roomIdParam(req.params.roomId));
-      res.status(200).end();
+      const room = await rooms.startGame(req.user!.id, roomIdParam(req.params.roomId), requestTraceId(req));
+      res.status(200).json(toRoomDto(room, isConnected));
     }),
   );
 

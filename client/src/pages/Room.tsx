@@ -32,7 +32,7 @@ export function RoomPage() {
   // The server answers with lobby_snapshot, which takes us back to the lobby (useLocationSync).
   const leave = () => run(() => leaveRoom(room.roomId));
   const close = () => run(() => closeRoom(room.roomId));
-  // Until the game engine is wired the server answers 501 after its checks; the message is shown.
+  // The game arrives over the socket (game_started), which takes everyone to the game page.
   const start = () => run(() => startGame(room.roomId));
 
   const memberRow = (m: RoomMember, label: string) => (

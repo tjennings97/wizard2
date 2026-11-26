@@ -243,3 +243,225 @@ label {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* --- Game board ---------------------------------------------------------------------------
+ * Mobile: one column, opponents on top, the table in the middle, your hand at the bottom.
+ * Desktop: the opponents sit around a table surface. */
+:root {
+  --felt: #2f6b4f;
+  --felt-text: #f3f1ea;
+  --card-bg: #ffffff;
+  --card-text: #1d1c1a;
+  --card-red: #c0262d;
+  --turn: #f0b429;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --felt: #1f4a37;
+    --card-bg: #f4f2ec;
+    --turn: #f0b429;
+  }
+}
+
+.game {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 12px 16px 24px;
+  display: grid;
+  grid-template-areas: 'bar' 'opponents' 'table' 'me';
+  gap: 12px;
+}
+.game-bar {
+  grid-area: bar;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+  font-size: 0.95rem;
+}
+
+.opponents {
+  grid-area: opponents;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+}
+.seat {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  min-width: 0;
+}
+.seat.turn {
+  border-color: var(--turn);
+  box-shadow: 0 0 0 2px var(--turn);
+}
+.seat-name {
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.seat-bid {
+  font-variant-numeric: tabular-nums;
+}
+.seat-meta {
+  font-size: 0.8rem;
+}
+
+.table {
+  grid-area: table;
+  background: var(--felt);
+  color: var(--felt-text);
+  border-radius: 16px;
+  padding: 16px;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+}
+.trump {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+}
+.trump .muted {
+  color: inherit;
+  opacity: 0.8;
+}
+.status {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.me {
+  grid-area: me;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.me-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.action-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.action-title {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+.action-panel .muted,
+.action-panel .error {
+  margin: 8px 0 0;
+}
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 8px;
+}
+.choice-grid.suits {
+  grid-template-columns: repeat(2, 1fr);
+}
+.suit-btn.hearts,
+.suit-btn.diamonds {
+  color: var(--card-red);
+}
+.me > .error {
+  margin: 0;
+}
+
+.hand {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.playing-card {
+  width: 52px;
+  height: 74px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--card-text);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.playing-card.small {
+  width: 40px;
+  height: 56px;
+  font-size: 0.85rem;
+}
+.playing-card.red {
+  color: var(--card-red);
+}
+.playing-card.wizard {
+  background: #3b2f7a;
+  color: #fff;
+  border-color: #3b2f7a;
+}
+.playing-card.jester {
+  background: #e9e3d3;
+  color: #6b5b2e;
+}
+.playing-card.empty {
+  background: transparent;
+  border-style: dashed;
+  border-color: currentColor;
+  opacity: 0.6;
+}
+.pc-rank {
+  font-size: 1.2em;
+}
+.pc-suit {
+  font-size: 1.3em;
+}
+.pc-special {
+  font-size: 1.4em;
+}
+
+@media (min-width: 900px) {
+  .game {
+    grid-template-columns: 220px 1fr;
+    grid-template-areas:
+      'bar bar'
+      'opponents table'
+      'me me';
+  }
+  .opponents {
+    grid-template-columns: 1fr;
+    align-content: start;
+  }
+  .table {
+    min-height: 320px;
+    border-radius: 999px / 60%;
+  }
+  .playing-card {
+    width: 64px;
+    height: 92px;
+  }
+}

@@ -200,6 +200,11 @@ Build:
    server accepts traffic; a client reconnecting to such a game gets
    game_abandoned and returns to the lobby (auth-follow-ups §7,
    docs/operations/backup-recovery.md).
+8. Game actions outside a live game: today select_trump / place_bid from a
+   socket whose room has no live game are ignored (debug log only), so a
+   client left showing a bid panel after a restart hangs. Answer them so
+   the client can recover (game_abandoned if the game was abandoned), and
+   update "Outside a game" in websocket-events.md (Game actions).
 
 Frontend: "reconnecting…" state, disconnected badges on opponents, the
 continue/end prompt, time warning banner, abandoned-game message.

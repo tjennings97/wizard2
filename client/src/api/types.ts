@@ -69,3 +69,65 @@ export const MIN_PLAYERS_TO_START = 3;
 export const MAX_PLAYERS = 10;
 export const MAX_SPECTATORS = 5;
 export const maxRounds = (playerCount: number) => Math.floor(DECK_SIZE / Math.max(1, playerCount));
+
+// --- Game (docs/api/websocket-events.md) -------------------------------------------------
+
+export type Suit = 'hearts' | 'diamonds' | 'spades' | 'clubs';
+export const SUITS: readonly Suit[] = ['hearts', 'diamonds', 'spades', 'clubs'];
+export type TrumpSource = 'flip' | 'declaration' | null;
+
+/** Wizards and Jesters have no suit or rank. Rank 2–14 (Ace = 14). */
+export interface Card {
+  suit: Suit | null;
+  rank: number | null;
+  type: 'suited' | 'wizard' | 'jester';
+}
+
+export interface PlayerSummary {
+  user_id: string;
+  display_name: string;
+  seat_index: number;
+}
+
+export interface BidEntry {
+  player_id: string;
+  bid: number;
+}
+
+export type GamePhase =
+  | 'not_started'
+  | 'trump_declaration'
+  | 'bidding'
+  | 'trick'
+  | 'round_end'
+  | 'awaiting_continue_decision'
+  | 'completed'
+  | 'incomplete';
+
+/** One player in a state_snapshot: only the viewer's own entry has `hand`. */
+export interface PlayerStateView {
+  userId: string;
+  displayName: string;
+  seatOrder: number;
+  hand: Card[] | null;
+  handCount: number;
+  bid: number | null;
+  tricksWon: number;
+  cumulativeScore: number;
+}
+
+/** The fields of GameStateView (game.toPlayerView / toSpectatorView) the client reads. */
+export interface GameStateView {
+  gameId: string;
+  roomId: string;
+  viewerUserId: string | null;
+  config: { roundCount: number; bidRule: BidRule };
+  phase: GamePhase;
+  currentRound: number;
+  dealerUserId: string | null;
+  trumpCard: Card | null;
+  trumpSuit: Suit | null;
+  trumpSource: TrumpSource;
+  currentTurnUserId: string | null;
+  players: PlayerStateView[];
+}
