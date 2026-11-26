@@ -199,8 +199,8 @@ function payloadOf(envelope: unknown): Record<string, unknown> {
  */
 function registerGameActions(realtime: Realtime, games: GameService, socket: AppSocket, recheckMs: number): void {
   const actions: Record<string, (roomId: string, p: Record<string, unknown>) => Promise<void>> = {
-    select_trump: (roomId, p) => games.selectTrump(roomId, socket.data.userId, p.suit, p.idempotency_key),
-    place_bid: (roomId, p) => games.placeBid(roomId, socket.data.userId, p.bid, p.idempotency_key),
+    select_trump: (roomId, p) => games.selectTrump(roomId, actor(socket), p.suit, p.idempotency_key),
+    place_bid: (roomId, p) => games.placeBid(roomId, actor(socket), p.bid, p.idempotency_key),
   };
   for (const [event, act] of Object.entries(actions)) {
     socket.on(event, (envelope: unknown) => {
@@ -212,6 +212,19 @@ function registerGameActions(realtime: Realtime, games: GameService, socket: App
         .catch((err) => realtime.logError(socket, err, `${event} failed`));
     });
   }
+}
+
+function actor(socket: AppSocket) {
+  return { userId: socket.data.userId, traceId: socket.data.traceId };
+}
+
+/** Non-fatal reply when an action could not be processed; the client may retry it. */
+function actionFailed(realtime: Realtime, socket: AppSocket, event: string): void {
+  realtime.send(socket, 'session_error', {
+    code: 'ACTION_FAILED',
+    message: `The server could not process ${event}. Try again.`,
+    fatal: false,
+  });
 }
 
 async function handleGameAction(
@@ -229,18 +242,31 @@ async function handleGameAction(
     return;
   }
   if (Date.now() - socket.data.authCheckedAt >= recheckMs) {
-    socket.data.authCheckedAt = Date.now();
-    const code = await recheckSocketSession(socket.handshake.headers.cookie, socket.data.sessionId);
+    let code;
+    try {
+      code = await recheckSocketSession(socket.handshake.headers.cookie, socket.data.sessionId);
+    } catch (err) {
+      // The check did not run (e.g. a database error): do not apply the action, tell the client,
+      // and leave authCheckedAt alone so the next action checks again.
+      realtime.logError(socket, err, `${event} session check failed`);
+      actionFailed(realtime, socket, event);
+      return;
+    }
     if (code) {
       logger.info({ ...realtime.logContext(socket), code, event }, 'socket rejected on game action');
       realtime.rejectSocket(socket, code, SESSION_ERROR_MESSAGES[code]);
       return;
     }
+    socket.data.authCheckedAt = Date.now();
   }
   try {
     await act();
   } catch (err) {
-    if (!(err instanceof NotAPlayerError)) throw err;
-    realtime.send(socket, 'session_error', { code: 'SPECTATOR_ACTION_FORBIDDEN', message: err.message, fatal: false });
+    if (err instanceof NotAPlayerError) {
+      realtime.send(socket, 'session_error', { code: 'SPECTATOR_ACTION_FORBIDDEN', message: err.message, fatal: false });
+      return;
+    }
+    realtime.logError(socket, err, `${event} failed`);
+    if (socket.connected) actionFailed(realtime, socket, event);
   }
 }

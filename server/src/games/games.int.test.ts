@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { db } from '../db/knex';
-import { Card, Deck, type DeckFactory } from '../engine';
+import { Card, Deck, Game, type DeckFactory } from '../engine';
+import * as socketAuth from '../socket/auth';
 import { connect, connectReady, createUser, resetDb, sleep, startServer, type TestClient, type TestUser } from '../test/helpers';
 
 /**
@@ -8,7 +9,12 @@ import { connect, connectReady, createUser, resetDb, sleep, startServer, type Te
  * card: a shuffled deck turns up a Wizard 1 time in 15, and the round then waits for the dealer.
  */
 let decks: Record<number, Deck> = {};
-const deckFactory: DeckFactory = (_ruleset, round) => decks[round] ?? new Deck();
+/** Makes the next deal throw, as an engine or deck failure would. */
+let failDeal = false;
+const deckFactory: DeckFactory = (_ruleset, round) => {
+  if (failDeal) throw new Error('deck failure');
+  return decks[round] ?? new Deck();
+};
 
 let server: Awaited<ReturnType<typeof startServer>>;
 let clients: TestClient[] = [];
@@ -25,9 +31,11 @@ beforeEach(async () => {
   server.rooms.stop();
   server.games.stop();
   decks = {};
+  failDeal = false;
   await resetDb();
 });
 afterEach(() => {
+  jest.restoreAllMocks();
   for (const c of clients) c.close();
   clients = [];
 });
@@ -194,6 +202,23 @@ describe('starting a game', () => {
     // games.state is a per-round record (written at round end), not written per event.
     expect((await db('games').where({ id: t.gameId }).first()).state).toBeNull();
   });
+
+  it('a failed deal rolls the start back: no game, the room stays open, nobody is stuck', async () => {
+    const ps = await Promise.all([createUser('A'), createUser('B'), createUser('C')]);
+    const { body } = await api().post('/api/v1/rooms').set('Cookie', ps[0].cookie).send({}).expect(201);
+    for (const p of ps.slice(1)) await api().post(`/api/v1/rooms/${body.id}/join`).set('Cookie', p.cookie).send({ role: 'player' }).expect(200);
+    failDeal = true;
+
+    await api().post(`/api/v1/rooms/${body.id}/start`).set('Cookie', ps[0].cookie).expect(500);
+    expect(server.games.isLive(body.id)).toBe(false);
+    expect(await db('games').where({ room_id: body.id })).toHaveLength(0);
+    expect((await db('rooms').where({ id: body.id }).first()).state).toBe('open');
+
+    // The host can try again once the fault is gone, and players can still leave.
+    failDeal = false;
+    await api().post(`/api/v1/rooms/${body.id}/start`).set('Cookie', ps[0].cookie).expect(200);
+    expect(server.games.isLive(body.id)).toBe(true);
+  });
 });
 
 describe('trump', () => {
@@ -355,6 +380,22 @@ describe('bidding', () => {
     expect(p2.events('bid_placed')).toHaveLength(1);
   });
 
+  it('a failed action answers ACTION_FAILED and does not use up its idempotency key', async () => {
+    const t = await startTable();
+    const [host, p2] = t.pc;
+    await p2.waitFor('bid_request');
+    jest.spyOn(Game.prototype, 'placeBid').mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    emit(p2, 'place_bid', { bid: 1, idempotency_key: 'k-retry' });
+    expect((await p2.waitFor('session_error')).payload).toEqual({ code: 'ACTION_FAILED', message: expect.any(String), fatal: false });
+    expect(p2.socket.connected).toBe(true);
+
+    emit(p2, 'place_bid', { bid: 1, idempotency_key: 'k-retry' });
+    expect((await host.waitFor('bid_placed')).payload).toEqual({ player_id: t.players[1].id, bid: 1 });
+  });
+
   it('refuses actions from spectators with a non-fatal SPECTATOR_ACTION_FORBIDDEN', async () => {
     const t = await startTable({ spectators: 1 });
     await t.pc[1].waitFor('bid_request');
@@ -395,6 +436,21 @@ describe('session refresh on game actions', () => {
     await t.pc[1].waitForDisconnect();
     await sleep(100);
     expect(t.pc[0].events('bid_placed')).toHaveLength(0);
+  });
+
+  it('a session check that fails to run is answered with ACTION_FAILED and the action is not applied', async () => {
+    const t = await startTable();
+    await t.pc[1].waitFor('bid_request');
+    jest.spyOn(socketAuth, 'recheckSocketSession').mockRejectedValueOnce(new Error('db down'));
+
+    emit(t.pc[1], 'place_bid', { bid: 0 });
+    expect((await t.pc[1].waitFor('session_error')).payload).toMatchObject({ code: 'ACTION_FAILED', fatal: false });
+    await sleep(100);
+    expect(t.pc[0].events('bid_placed')).toHaveLength(0);
+    expect(t.pc[1].socket.connected).toBe(true);
+
+    emit(t.pc[1], 'place_bid', { bid: 0 });
+    await t.pc[0].waitFor('bid_placed');
   });
 
   it('a repeat action within the re-check interval does not query the session again', async () => {

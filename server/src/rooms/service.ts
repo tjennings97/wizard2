@@ -360,12 +360,14 @@ export class RoomService {
   /**
    * POST /rooms/{roomId}/start. Applies every start guard, creates the engine game from the room
    * config and the players in join order (seat order), inserts the games row and moves the room
-   * to in_progress, all in one transaction. Once committed, the game service announces the game
-   * and deals round 1 (game_starting, game_started, round_started, hand_dealt, ...). The host
+   * to in_progress, all in one transaction. Round 1 is dealt in the engine inside that transaction
+   * too (the engine is pure), so an engine failure rolls the whole start back and the room stays
+   * open. Once committed, the game service registers the game and announces it (game_starting,
+   * game_started, round_started, hand_dealt, ...). The host
    * role is dissolved: the inactivity timer and host-away timers no longer apply.
    */
-  async startGame(userId: string, roomId: string): Promise<RoomView> {
-    const { room, game } = await db.transaction(async (trx) => {
+  async startGame(userId: string, roomId: string, traceId: string | null = null): Promise<RoomView> {
+    const { room, game, started } = await db.transaction(async (trx) => {
       const row = await lockRoom(trx, roomId);
       if (!row || row.state === 'closed') throw notFound();
       if (row.state !== 'open') throw gameStarted();
@@ -381,16 +383,17 @@ export class RoomService {
         players,
         config: configFromStored(row.config, players.length),
       });
+      const started = game.startRound();
       await trx('games').insert({ id: game.gameId, room_id: roomId, status: 'in_progress' });
       await trx('rooms').where({ id: roomId }).update({ state: 'in_progress' });
-      return { room: (await getRoomView(roomId, trx))!, game };
+      return { room: (await getRoomView(roomId, trx))!, game, started };
     });
 
-    logger.info({ userId, roomId, gameId: game.gameId }, 'game started');
+    logger.info({ userId, traceId, roomId, gameId: game.gameId }, 'game started');
     this.cancelTimeout(roomId);
     for (const m of room.members) this.cancelAway(m.userId);
     await this.notify(async () => {
-      await this.games.launch(game);
+      await this.games.launch(game, started, { userId, traceId });
       await this.notifier.lobbyChanged();
     });
     return room;

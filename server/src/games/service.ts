@@ -80,6 +80,14 @@ export interface GameServiceOptions {
   random?: RandomSource;
 }
 
+/** Who caused an action, for log lines. Null for server-initiated work. */
+export interface ActionContext {
+  userId: string | null;
+  traceId: string | null;
+}
+
+const SERVER_CONTEXT: ActionContext = { userId: null, traceId: null };
+
 export interface NewGame {
   gameId: string;
   roomId: string;
@@ -124,13 +132,16 @@ export class GameService {
   }
 
   /**
-   * Registers a created game (its games row is committed), announces it and deals round 1:
-   * game_starting, game_started, then the round opening (see openRound).
+   * Registers a created game whose round 1 is already dealt (`started`, from game.startRound()
+   * inside the start transaction, so an engine failure rolls the start back) and announces it:
+   * game_starting, game_started, then the round opening (see openRound). Nothing here can leave
+   * the game half-started: the event log write and each delivery are guarded in publish, and the
+   * game is playable (state_snapshot, bids) from the moment it is registered.
    */
-  async launch(game: Game): Promise<void> {
+  async launch(game: Game, started: RoundStarted, ctx: ActionContext = SERVER_CONTEXT): Promise<void> {
     const live = new LiveGame(game);
     this.byRoom.set(game.roomId, live);
-    await this.run(live, async () => {
+    await this.run(live, ctx, async () => {
       const context = {
         config: game.config,
         players: game.activePlayers.map((p, i) => ({ userId: p.id, displayName: p.displayName, seatOrder: i + 1 })),
@@ -139,8 +150,7 @@ export class GameService {
         { to: 'room', event: 'game_starting', payload: gameStartingPayload(game), log: { eventType: 'game_starting', actorUserId: null, context, roundNumber: 0 } },
         { to: 'room', event: 'game_started', payload: gameStartedPayload(game), log: { eventType: 'game_started', actorUserId: null, context, roundNumber: 0 } },
       ];
-      const started = game.startRound();
-      await this.publish(live, [...announce, ...this.openRound(game, started)]);
+      await this.publish(live, ctx, [...announce, ...this.openRound(game, started)]);
     });
   }
 
@@ -165,7 +175,7 @@ export class GameService {
   ): Promise<boolean> {
     const live = this.byRoom.get(roomId);
     if (!live) return false;
-    await this.run(live, async () => fn(this.viewFor(live.game, userId), live.seq, this.pendingPrompt(live.game, userId)));
+    await this.run(live, SERVER_CONTEXT, async () => fn(this.viewFor(live.game, userId), live.seq, this.pendingPrompt(live.game, userId)));
     return true;
   }
 
@@ -181,15 +191,16 @@ export class GameService {
   async publishRoomEvent(roomId: string, event: 'user_joined' | 'user_left', actorUserId: string, payload: unknown): Promise<boolean> {
     const live = this.byRoom.get(roomId);
     if (!live) return false;
-    await this.run(live, () => this.publish(live, [{ to: 'room', event, payload, log: { eventType: event, actorUserId } }]));
+    const ctx: ActionContext = { userId: actorUserId, traceId: null };
+    await this.run(live, ctx, () => this.publish(live, ctx, [{ to: 'room', event, payload, log: { eventType: event, actorUserId } }]));
     return true;
   }
 
   /** The dealer declares trump after a Wizard flip. */
-  async selectTrump(roomId: string, userId: string, suit: unknown, idempotencyKey?: unknown): Promise<void> {
+  async selectTrump(roomId: string, ctx: ActionContext & { userId: string }, suit: unknown, idempotencyKey?: unknown): Promise<void> {
+    const { userId } = ctx;
     const live = this.liveFor(roomId, userId);
-    await this.run(live, async () => {
-      if (this.isDuplicate(live, userId, idempotencyKey)) return;
+    await this.run(live, ctx, () => this.once(live, userId, idempotencyKey, async () => {
       const game = live.game;
       const dealerHand = game.getPlayer(userId).hand.map((c) => c.toData());
       const scoresBeforeRound = game.scores;
@@ -197,13 +208,13 @@ export class GameService {
         game.declareTrump(userId, suit as Suit);
       } catch (err) {
         if (!(err instanceof EngineError)) throw err;
-        await this.publish(live, [
+        await this.publish(live, ctx, [
           { to: 'user', userId, event: 'invalid_trump_error', payload: invalidTrumpPayload(userId, err.code, err.message) },
         ]);
         return;
       }
       const round = game.currentRound!;
-      await this.publish(live, [
+      await this.publish(live, ctx, [
         {
           to: 'room',
           event: 'trump_revealed',
@@ -216,13 +227,13 @@ export class GameService {
         },
         this.bidRequest(game),
       ]);
-    });
+    }));
   }
 
-  async placeBid(roomId: string, userId: string, bid: unknown, idempotencyKey?: unknown): Promise<void> {
+  async placeBid(roomId: string, ctx: ActionContext & { userId: string }, bid: unknown, idempotencyKey?: unknown): Promise<void> {
+    const { userId } = ctx;
     const live = this.liveFor(roomId, userId);
-    await this.run(live, async () => {
-      if (this.isDuplicate(live, userId, idempotencyKey)) return;
+    await this.run(live, ctx, () => this.once(live, userId, idempotencyKey, async () => {
       const game = live.game;
       const priorBids = bidsSoFar(game).map((b) => ({ playerId: b.player_id, bid: b.bid }));
       const handAtBid = game.getPlayer(userId).hand.map((c) => c.toData());
@@ -233,7 +244,7 @@ export class GameService {
         result = game.placeBid(userId, bid as number);
       } catch (err) {
         if (!(err instanceof EngineError)) throw err;
-        await this.publish(live, [
+        await this.publish(live, ctx, [
           { to: 'user', userId, event: 'invalid_bid_error', payload: invalidBidPayload(game, userId, err.code, err.message) },
         ]);
         return;
@@ -283,8 +294,8 @@ export class GameService {
       } else {
         out.push(this.bidRequest(game));
       }
-      await this.publish(live, out);
-    });
+      await this.publish(live, ctx, out);
+    }));
   }
 
   /** Forgets every game (shutdown and tests). Does not touch the database. */
@@ -373,21 +384,30 @@ export class GameService {
     return live;
   }
 
-  private isDuplicate(live: LiveGame, userId: string, key: unknown): boolean {
-    if (typeof key !== 'string' || key.length === 0 || key.length > 64) return false;
+  /**
+   * Runs an action once per idempotency key. The key is recorded only after the action has been
+   * processed and published (an invalid_*_error reply counts), so if the action throws, a retry
+   * with the same key is processed rather than silently acknowledged.
+   */
+  private async once(live: LiveGame, userId: string, key: unknown, fn: () => Promise<void>): Promise<void> {
+    if (typeof key !== 'string' || key.length === 0 || key.length > 64) return fn();
     const now = Date.now();
     for (const [k, at] of live.keys) if (now - at > IDEMPOTENCY_WINDOW_MS) live.keys.delete(k);
     const id = `${userId}:${key}`;
-    if (live.keys.has(id)) return true;
-    live.keys.set(id, now);
-    return false;
+    if (live.keys.has(id)) return;
+    await fn();
+    live.keys.set(id, Date.now());
   }
 
-  private run<T>(live: LiveGame, fn: () => Promise<T>): Promise<T> {
+  private logFields(live: LiveGame, ctx: ActionContext) {
+    return { userId: ctx.userId, traceId: ctx.traceId, gameId: live.game.gameId, roomId: live.game.roomId };
+  }
+
+  private run<T>(live: LiveGame, ctx: ActionContext, fn: () => Promise<T>): Promise<T> {
     const result = live.queue.then(fn);
     live.queue = result.then(
       () => undefined,
-      (err) => logger.error({ err, gameId: live.game.gameId, roomId: live.game.roomId }, 'game action failed'),
+      (err) => logger.error({ err, ...this.logFields(live, ctx) }, 'game action failed'),
     );
     return result;
   }
@@ -395,9 +415,9 @@ export class GameService {
   /**
    * Numbers the broadcasts, appends them to game_events, then delivers everything in order. A
    * failed log write is logged and the events are still delivered: the game must not stall on
-   * the audit log.
+   * the audit log. A failed delivery is logged and the remaining ones still go out.
    */
-  private async publish(live: LiveGame, items: Outbound[]): Promise<void> {
+  private async publish(live: LiveGame, ctx: ActionContext, items: Outbound[]): Promise<void> {
     const { game } = live;
     const rows: GameEventRow[] = [];
     const deliveries: (() => void)[] = [];
@@ -424,8 +444,15 @@ export class GameService {
     try {
       await insertGameEvents(rows);
     } catch (err) {
-      logger.error({ err, gameId: game.gameId, roomId: game.roomId, seqs: rows.map((r) => r.seq) }, 'game event log write failed');
+      logger.error({ err, ...this.logFields(live, ctx), seqs: rows.map((r) => r.seq) }, 'game event log write failed');
     }
-    for (const deliver of deliveries) deliver();
+    // One failed delivery must not stop the rest: the game state has already moved on.
+    for (const deliver of deliveries) {
+      try {
+        deliver();
+      } catch (err) {
+        logger.error({ err, ...this.logFields(live, ctx) }, 'game event delivery failed');
+      }
+    }
   }
 }
