@@ -35,7 +35,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 | **Unauthenticated visitor** | A user who has not logged in | View login and registration pages only; no lobby or game access |
 | **Player** | An authenticated user participating in a game | Join rooms, play cards, bid, chat, view scoreboard, quit game |
 | **Spectator** | An authenticated user observing a game | Join rooms as observer (up to 5 per room), view board and played cards, chat; cannot see player hands |
-| **Host** | The first player to enter a room (a role within Player) | Configure round count and bid total rule, start the game; host role transfers to next player if host leaves before game starts |
+| **Host** | The first player to enter a room (a role within Player) | Configure round count and bid total rule, start the game; host role transfers to next player if host leaves, or is disconnected for 2 minutes, before game starts |
 | **Admin** | An elevated user role | Access admin panel, create and revoke invite codes, upgrade any user to admin, view invite status |
 
 **Role assignment:** All registered users are Players by default. Admin role is assigned manually by an existing admin. Host is a transient per-room role, not a persistent account role.
@@ -144,6 +144,7 @@ The lobby is the default landing page for authenticated users. It displays all a
 
 - The host is the first player to enter the room
 - If the host leaves before the game starts, the host role transfers to the next player who joined (determined by join order); spectators are never promoted. If no players remain, the room closes
+- If the host is disconnected for 2 minutes before the game starts, the host role passes to the next connected player by join order. The old host stays in the room as a player. If they reconnect within the 2 minutes, they keep the role
 - Host transfer is automatic and immediate; the new host is notified
 - Once the game starts, the host role is dissolved — no player has elevated control mid-game
 

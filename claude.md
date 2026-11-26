@@ -151,7 +151,7 @@ Key schema notes:
 |---|---|
 | Player | Default for all registered users |
 | Spectator | Transient per-room role; max 5 per room; cannot see hands |
-| Host | First player to enter a room; role transfers on leave; dissolved when game starts |
+| Host | First player to enter a room; role transfers on leave or after 2 min disconnected (next connected player by join order); dissolved when game starts |
 | Admin | Manages invites, roles, account resets; cannot self-remove admin role |
 
 ## Frontend Notes

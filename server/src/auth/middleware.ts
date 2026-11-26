@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { sendError } from '../http/errors';
+import { logContext } from '../logContext';
 import {
   authenticateToken,
   clearSessionCookie,
@@ -97,7 +98,8 @@ export function authenticate(options: AuthOptions = {}): RequestHandler {
 
       req.user = result.user;
       req.authSession = await slideSession(result.session);
-      next();
+      // Everything the request does from here logs with the session's traceId.
+      logContext.run({ traceId: req.authSession.traceId, userId: req.user.id }, next);
     } catch (err) {
       next(err);
     }

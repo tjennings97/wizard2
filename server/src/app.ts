@@ -5,9 +5,9 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { errorHandler } from './http/errors';
-import { apiRouter } from './routes';
+import { createApiRouter, type ApiDeps } from './routes';
 
-export function createApp() {
+export function createApp(deps: ApiDeps) {
   const app = express();
   app.disable('x-powered-by');
   // Needed for per-IP rate limiting behind Railway's proxy; 0 (local) ignores X-Forwarded-For.
@@ -20,7 +20,7 @@ export function createApp() {
 
   // Liveness check at the root as well as under /api/v1
   app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
-  app.use('/api/v1', apiRouter);
+  app.use('/api/v1', createApiRouter(deps));
 
   // In production, serve the built React app from the same origin.
   const clientDist = path.resolve(__dirname, '../../client/dist');

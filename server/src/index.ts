@@ -1,18 +1,19 @@
-import http from 'http';
 import { config } from './config';
 import { logger } from './logger';
-import { createApp } from './app';
-import { attachSocket } from './socket';
 import { db, checkDbConnection } from './db/knex';
+import { buildServer } from './server';
 
 async function main() {
-  const app = createApp();
-  const httpServer = http.createServer(app);
-  const io = attachSocket(httpServer);
+  const { httpServer, io, rooms, detachSocket } = buildServer();
 
-  checkDbConnection()
-    .then(() => logger.info('database connection ok'))
-    .catch((err) => logger.warn({ err }, 'database not reachable at startup'));
+  try {
+    await checkDbConnection();
+    logger.info('database connection ok');
+    // Room inactivity timers are in memory; re-arm them for rooms left open by the last process.
+    await rooms.restoreTimeouts();
+  } catch (err) {
+    logger.warn({ err }, 'database not reachable at startup');
+  }
 
   httpServer.listen(config.port, () => {
     logger.info({ port: config.port, nodeEnv: config.nodeEnv }, 'server listening');
@@ -20,6 +21,8 @@ async function main() {
 
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    rooms.stop();
+    detachSocket();
     io.close();
     httpServer.close(() => {
       db.destroy().finally(() => process.exit(0));

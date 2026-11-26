@@ -170,6 +170,18 @@ Run these from the repository root:
 | `npm start` | Runs the built server (production mode; also serves `client/dist`) |
 | `npm run migrate:latest -w server` | Applies pending database migrations |
 | `npm run migrate:rollback -w server` | Rolls back the last batch of migrations |
+| `npm test -w server` | Runs the server unit tests (no database needed) |
+| `npm run test:integration -w server` | Runs the server integration tests (Postgres required; see below) |
+
+### Running the server integration tests (Jest)
+
+The `*.int.test.ts` files start the real HTTP and Socket.io server on a random port and call it with Supertest and Socket.io clients. They need Postgres running, but no server and no setup:
+
+```bash
+npm run test:integration -w server
+```
+
+They use a database named `wizard_jest` on the same Postgres server as your `DATABASE_URL`. The first run creates it, and every run migrates it to the latest schema. To use a different database, set `TEST_DATABASE_URL`; its name must end in `_jest`. The tests empty every table between cases, so they refuse to run against any other database name. This database is kept separate from `wizard_test`, which the pytest suite below uses.
 
 ### Running the API tests (pytest)
 

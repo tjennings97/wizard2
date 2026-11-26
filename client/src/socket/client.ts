@@ -1,17 +1,18 @@
 import { io, Socket } from 'socket.io-client';
 
-let socket: Socket | null = null;
-
-/** Single Socket.io client instance. Same origin — Vite proxies /socket.io in dev. */
-export function connectSocket(): Socket {
-  if (socket) return socket;
-  socket = io({ withCredentials: true });
-  socket.on('connect', () => console.log('connected', socket?.id));
-  socket.on('disconnect', (reason) => console.log('disconnected', reason));
-  socket.on('connect_error', (err) => console.warn('socket connect_error', err.message));
-  return socket;
+/**
+ * Creates the app's single Socket.io client. Same origin (Vite proxies /socket.io in dev); the
+ * browser sends the HTTP-only session cookie with the handshake. Created on login and
+ * disconnected on logout by SocketContext.
+ */
+export function createSocket(): Socket {
+  return io({ withCredentials: true });
 }
 
-export function getSocket(): Socket | null {
-  return socket;
+/** Server→client message envelope (docs/api/websocket-events.md, Envelope Schema). */
+export interface Envelope<P> {
+  event: string;
+  seq: number;
+  timestamp: string;
+  payload: P;
 }

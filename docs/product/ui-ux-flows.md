@@ -36,7 +36,7 @@ This flow covers the waiting room from entry through game start. Host and non-ho
 | Bid rule | Open bidding (default) / Uneven | Uneven: dealer’s bid cannot make sum equal trick count |
 | Start game | Button enabled when ≥ 3 players | Disabled below 3 players; grayed with count shown |
 
-**Host transfer:** If the host leaves before the game starts, the role passes automatically to the next player by join order. The new host is notified via `host_changed`; no page reload required.
+**Host transfer:** If the host leaves before the game starts, or is disconnected for 2 minutes, the role passes automatically to the next player by join order (for a disconnect, the next connected player; the old host stays as a player). The new host is notified via `host_changed`; no page reload required.
 
 **Room timeout:** If the game has not started within 10 minutes of the room opening, the server fires `room_closed` and all members are returned to the lobby.
 
