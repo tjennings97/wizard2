@@ -33,12 +33,12 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 **Why:** Gameplay runs over the socket. If the socket does not validate and refresh the session, a player who only uses the socket expires after 24 hours idle, and a displaced or logged-out user keeps a working socket.
 
-**Status:** done. Items 1, 2 and 4: `server/src/socket/auth.ts`, `server/src/auth/sessionEvents.ts`, tests in `server/src/socket/socket.int.test.ts`. Item 3: `recheckSocketSession` and the game-action handlers in `server/src/socket/index.ts`, tests in `server/src/games/games.int.test.ts`; wired for `select_trump`, `place_bid` and `play_card`, and `choose_continue_or_end` must use the same path when it is built.
+**Status:** done. Items 1, 2 and 4: `server/src/socket/auth.ts`, `server/src/auth/sessionEvents.ts`, tests in `server/src/socket/socket.int.test.ts`. Item 3: `recheckSocketSession` and the game-action handlers in `server/src/socket/index.ts`, tests in `server/src/games/games.int.test.ts`; wired for `select_trump`, `place_bid`, `play_card` and `choose_continue_or_end` (and `join_game`, `sync_request` and `leave_game` use the same check).
 
 **Build:**
 1. **Done.** On connection, read the signed `wizard_session` cookie from the handshake and call `authenticateToken`. On failure emit `session_error` (`code` = the failure code, `fatal: true`) and disconnect.
 2. **Done.** On connection, if `session.inReauthWindow` is true and the user is not reconnecting to a game in progress (`isInActiveGame`), emit `session_error` `{ code: "REAUTH_REQUIRED", fatal: true }` and disconnect.
-3. **Done** for `select_trump`, `place_bid` and `play_card`. Call `authenticateToken` again on game actions (`place_bid`, `play_card`, `select_trump`, `choose_continue_or_end`) so that play slides the session expiry. Throttle per socket (for example, at most once every 5 minutes) to avoid a database query per card.
+3. **Done.** Call `authenticateToken` again on game actions (`place_bid`, `play_card`, `select_trump`, `choose_continue_or_end`) so that play slides the session expiry. Throttle per socket (for example, at most once every 5 minutes) to avoid a database query per card.
 4. **Done.** **Displaced sockets:** when a session is invalidated by a new login, a password reset or a logout, every socket using that session must receive `session_error` `{ code: "SESSION_INVALIDATED", fatal: true }` and be disconnected. The auth routes live in the API layer, so add an in-process notification seam (for example, a small typed `EventEmitter` in `server/src/auth/` that emits invalidated session ids) and subscribe to it from the socket layer. Do not import socket code into the auth routes.
 
 **Done when:**
@@ -50,6 +50,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 **Depends on:** the in-memory game orchestration in the socket layer.
 
 **Spec:** `docs/architecture/game-state-machine.md` (Game Lifecycle table and "Game time limit" under Special Cases), `docs/api/websocket-events.md` (`game_time_warning`; `game_abandoned` with `reason: "time_limit"`), and `docs/product/game-rules.md` (End of Game).
+
+**Status: done.** `armTimeLimit` and `endEarly` in `server/src/games/service.ts`; fake-timer tests in `server/src/games/service.test.ts` (warning, abandonment from each phase, timers cleared on completion and when the room closes), socket test in `server/src/games/drops.int.test.ts`.
 
 **Build:**
 - When a game starts, schedule two timers keyed by game id: a warning at 2 h 45 min and a limit at 3 h.
@@ -141,7 +143,7 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 ## 7. Deployment and operations
 
 - **Decision needed: migration strategy (OD-2 in `docs/operations/deployment-infrastructure.md`).** Nothing runs migrations on deploy. Migration `006_add_drop_reasons.ts` has to reach production before game code writes `server_restart` or `time_limit`. Decide whether migrations run automatically (for example, as a Railway pre-deploy command running `npm run migrate:latest -w server`) or by hand, and whether they are forward-only.
-- **Startup cleanup is not implemented.** `server/src/index.ts` does not yet mark `in_progress` games `incomplete` with `drop_reason = 'server_restart'` before accepting traffic (`docs/operations/backup-recovery.md`). It works once 006 is applied; before 006 it violates the check constraint.
+- **Startup cleanup: done.** `server/src/index.ts` runs `abandonInProgressGames()` (`server/src/games/queries.ts`) before listening: `in_progress` games become `incomplete` with `drop_reason = 'server_restart'` and their rooms close (`docs/operations/backup-recovery.md`). It needs migration 006 in production (before 006 the write violates the check constraint and is logged as a failed cleanup), and the game code now also needs migration 008 (new `game_events` types), so the migration decision above still gates deploying it.
 - **Node 20 on Railway.** The repo now requires Node 20 or newer (`engines` in `package.json`, `.nvmrc`), because React Router 7 needs it. Confirm the Railway build uses Node 20 or newer (it reads `engines.node`); if it picks another version, pin it in Railway's build settings. Do this before or with the first deploy of this change.
 - **Verify proxy trust on Railway.** After deploy, confirm that `req.ip` is the real client IP (log it once on a request) and that rate limiting is per client rather than shared. If Railway adds more than one hop, raise `TRUST_PROXY_HOPS`.
 

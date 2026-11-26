@@ -36,7 +36,10 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **OPEN** | All players leave | Room is OPEN (spectators may remain) | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed` (`reason: "empty"`) to the room; remaining spectators returned to lobby; broadcast `rooms_updated` |
 | **OPEN** | Host closes room (`DELETE /rooms/{roomId}`) | Requester is host; room is OPEN | **CLOSED** | Cancel inactivity timer; set `rooms.closed_at`; broadcast `room_closed` (`reason: "host_closed"`); all members returned to lobby; broadcast `rooms_updated` |
 | **IN PROGRESS** | Final round scoring complete | — | **COMPLETING** | In one transaction: write the final round's `rounds` / `round_players`, write `game_results`, set `games.status = complete`, `games.ended_at` and the final `games.state`, set `rooms.state = completing`. Broadcast `game_over` (with `closes_at`); start the 30-second countdown timer; broadcast `rooms_updated` (a completing room leaves the lobby list) |
-| **IN PROGRESS** | Player drop reduces game to 2 players and both choose to end | — | **COMPLETING** | Write `games.status = incomplete`; write `game_results` with `outcome = incomplete`; broadcast `game_over`; start 30-second countdown |
+| **IN PROGRESS** | A player quits (`leave_game` / `POST /rooms/{roomId}/leave`) or their reconnection window runs out | At least 2 players remain | **IN PROGRESS** | Set their `room_members.left_at`; broadcast `user_left` (`voluntary` / `timeout`); player-drop game logic (re-deal, or `continue_or_end_request` at 2 players). A spectator leaving sets `left_at` and broadcasts `user_left` only |
+| **IN PROGRESS** | The game ends early: a drop leaves 1 player; or, at 2 players, either chooses end or no answer arrives within 60 s | — | **COMPLETING** | In one transaction: `games.status = incomplete`, `drop_reason` (`player_quit` / `player_timeout` for the drop that left one player; `mutual_end` for end or no answer), `player_count_at_drop`, `ended_at` and the final `games.state`; `game_results` with `outcome = incomplete` for every player, including those who left (with their own `drop_reason`); `rooms.state = completing`. Broadcast `game_over` (`status: "incomplete"`, no winner); start the 30-second countdown; broadcast `rooms_updated` |
+| **IN PROGRESS** | 3-hour game time limit reached | — | **COMPLETING** | As above with `drop_reason = 'time_limit'`; the round in progress is not scored. Broadcast `game_abandoned` (`reason: "time_limit"`); start the 30-second countdown |
+| **IN PROGRESS** | Server restarts | — | **CLOSED** | Startup cleanup, before accepting traffic: `games.status = incomplete`, `drop_reason = 'server_restart'`; `game_results` (`outcome = incomplete`) for the players still seated; set `rooms.closed_at` and every member's `left_at`. A client that then sends `join_game` or a game action gets `game_abandoned` |
 | **COMPLETING** | A member leaves (`POST /rooms/{roomId}/leave`) | Others remain | **COMPLETING** | Set their `room_members.left_at`; broadcast `user_left` (`reason: "voluntary"`). Not a quit: no player-drop rules |
 | **COMPLETING** | 30-second countdown timer fires | — | **CLOSED** | Set `rooms.closed_at` and every remaining member's `left_at`; drop the in-memory game; broadcast `room_closed` (`reason: "game_finished"`); all users returned to lobby; broadcast `rooms_updated` |
 | **COMPLETING** | All users leave before countdown | The last member leaves | **CLOSED** | Set `rooms.closed_at` immediately; cancel the countdown; drop the in-memory game; broadcast `rooms_updated` |
@@ -54,7 +57,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **TRICK PHASE** | All tricks in round played | — | **ROUND END** | Compute scores; write `rounds` and `round_players`; write `games.state` checkpoint; emit `round_complete` |
 | **ROUND END** | More rounds remain | `currentRound < config.roundCount` | **INITIALISING** | Increment round; rotate dealer; shuffle deck; deal |
 | **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` (see Room Lifecycle, IN PROGRESS → COMPLETING) |
-| **Any active phase** (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player drop reduces game to 2 players and mutual end chosen | — | **INCOMPLETE** | Set `games.status = incomplete`; write partial `game_results`; emit `game_over` |
+| **Any active phase** (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player drop reduces game to 2 players and either chooses end (or no answer within 60 s); or a drop leaves 1 player | — | **INCOMPLETE** | Set `games.status = incomplete`; write partial `game_results`; emit `game_over` |
 | Any active phase (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player quits or times out; ≥ 3 players remain after drop | remainingPlayerCount >= 3 | INITIALISING (same round number) | Void current round; remove dropped player; re-deal same round number to remaining players; emit `user_left` to room, then the re-dealt round (`round_started`, `hand_dealt`) |
 | **GAME END** | — | — | (Room → COMPLETING) | Room state machine takes over |
 | **INCOMPLETE** | — | — | (Room → COMPLETING) | Room state machine takes over |
@@ -101,9 +104,10 @@ This document defines the complete state machines that govern Wizard's room, gam
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
 | — | Player joins room (socket connect) | Valid signed session cookie in handshake | **CONNECTED** | Bind `socket.data.userId`; join Socket.io room; emit `user_joined` |
-| **CONNECTED** | Socket disconnect detected | Player is in an active game | **DISCONNECTED** | Start 30-second server-side `setTimeout` keyed by `userId`; emit `player_disconnected` to room; other players see indicator |
+| **CONNECTED** | Socket disconnect detected (the player's last socket in the room closed, or a client that pings stopped pinging for 30 s) | Player is still seated in a game being played (not over) | **DISCONNECTED** | Start 30-second server-side `setTimeout` keyed by `userId`; set the player's `connected = false`; emit `player_disconnected` to room; other players see indicator |
+| — | Game starts | The player has no socket in the room | **DISCONNECTED** | As above, right after the game's opening events, so a game never waits on someone who never shows up |
 | **CONNECTED** | Player sends `leave_game` (intentional quit) | — | **QUIT** | Set `room_members.left_at`; emit `user_left` (`reason: "voluntary"`) to room; trigger player-drop game logic; player cannot rejoin as a player (may rejoin as a spectator) |
-| **DISCONNECTED** | Player reconnects (socket reconnect) | Session still valid; timer still running; `clearTimeout` | **RECONNECTED** | Send `game.toPlayerView(userId)` (own hand only) via `state_snapshot` to reconnecting socket; emit `player_reconnected` to room; indicator cleared |
+| **DISCONNECTED** | Player reconnects (socket reconnect) | Session still valid; timer still running; `clearTimeout` | **RECONNECTED** | Send `game.toPlayerView(userId)` (own hand only) via `state_snapshot` to reconnecting socket, then the pending prompt; emit `player_reconnected` to room; indicator cleared. The client's `join_game` with `last_seq_seen` then gets the missed events replayed from `game_events` |
 | **DISCONNECTED** | Player sends `leave_game` while socket is down | Server receives leave event on reconnect before timer clears | **QUIT** | Treat as explicit quit; clear timer; trigger player-drop game logic |
 | **DISCONNECTED** | 30-second timer fires | Player has not reconnected | **TIMED OUT** | Treat as quit; trigger player-drop game logic; emit `user_left` (`reason: "timeout"`) to room; set `room_members.left_at` |
 | **RECONNECTED** | Continues playing | — | **CONNECTED** | Normal gameplay resumes |
@@ -116,11 +120,13 @@ This document defines the complete state machines that govern Wizard's room, gam
 2. Remaining player count checked
 3. If ≥ 3 players remain: re-deal to remaining players for the same round number
 4. If exactly 2 players remain: emit `continue_or_end_request` prompt to both; await mutual decision
-5. If ≤ 1 player remains: game ends as INCOMPLETE automatically
+5. If ≤ 1 player remains: game ends as INCOMPLETE automatically (`drop_reason` is the drop's own: `player_quit` or `player_timeout`)
+
+A dropped player's `game_results` row (written when the game ends, however it ends) has `outcome = incomplete`, their own `drop_reason`, and their score and rounds played when they left.
 
 ## Special Cases
 
-**Two-player edge case:** When dropout reduces a game to exactly 2 players, the server emits `continue_or_end_request` to both remaining players. Both must confirm within 60 seconds. If both choose continue, the round is re-dealt for 2 players. If either chooses end, or the timeout expires, the game transitions to INCOMPLETE with `outcome = incomplete` for both. The room then enters COMPLETING.
+**Two-player edge case:** When dropout reduces a game to exactly 2 players, the server emits `continue_or_end_request` to the room (with `decision_deadline`). Both must confirm within 60 seconds. If both choose continue, the voided round is re-dealt for 2 players at the same round number. If either chooses end, or the timeout expires, the game transitions to INCOMPLETE (`drop_reason = 'mutual_end'`) with `outcome = incomplete` for both. The room then enters COMPLETING. A player who reconnects while the decision is pending gets the request again after `state_snapshot`. If one of the two drops meanwhile, one player is left and the game ends as INCOMPLETE.
 
 **Game time limit:** A game may run for at most 3 hours from start. The server sets one timer when the game starts. At 2 h 45 min it broadcasts `game_time_warning`; at 3 hours it abandons the game from whatever phase it is in (the round in progress is not scored), records it incomplete with `drop_reason = 'time_limit'` and no winner, and broadcasts `game_abandoned` (`reason: "time_limit"`). The timers are cleared if the game ends first. The limit also guarantees a game ends before the players' sessions do: entering a room or starting a game requires more than 24 hours left on the session.
 
@@ -147,14 +153,14 @@ No timeout on trump declaration. If the dealer disconnects mid-declaration, the 
 | --- | --- | --- |
 | ROUND SCORING complete | Full | `games.state` snapshot; `rounds` row; `round_players` rows |
 | GAME END | Full | `games.state`; `game_results`; `games.status = complete`, `games.ended_at`; `rooms.state = completing` |
-| INCOMPLETE | Full | `games.state`; `game_results` with `outcome = incomplete`; `games.status = incomplete` |
+| INCOMPLETE | Full | `games.state`; `game_results` with `outcome = incomplete`; `games.status = incomplete`, `drop_reason`, `player_count_at_drop`, `ended_at`; `rooms.state = completing` |
 | Bid placed | Partial | `game_events` row only |
 | Card played | Partial | `game_events` row only |
 | Trick completed | Partial | `game_events` row only |
 | Round scored, game over (`round_complete`, `game_over`) | Partial | `game_events` row (`round_completed`, `game_completed`), alongside the full checkpoints above |
 | Trump declared | Partial | `game_events` row only |
-| Any other event broadcast to the game's room (`game_starting`, `game_started`, `round_started`, `trump_revealed`, `all_bids_placed`, spectator `user_joined` / `user_left`) | Partial | `game_events` row only, numbered by the game's `seq` for reconnect replay |
+| Any other event broadcast to the game's room (`game_starting`, `game_started`, `round_started`, `trump_revealed`, `all_bids_placed`, `user_joined` / `user_left`, `player_disconnected`, `player_reconnected`, `continue_or_end_request`, `game_time_warning`, `game_abandoned`) | Partial | `game_events` row only, numbered by the game's `seq` for reconnect replay |
 
-**Reconnection restore sequence:** On reconnect within 30s: session validated → `clearTimeout` → `game.toPlayerView(userId)` called (snapshot with only the reconnecting player's own hand; other players show a card count) → `state_snapshot` emitted → `player_reconnected` broadcast to room. Player resumes from current state with no round rewind.
+**Reconnection restore sequence:** On reconnect within 30s: session validated → `game.toPlayerView(userId)` called (snapshot with only the reconnecting player's own hand; other players show a card count) → `state_snapshot` emitted, then the pending prompt → `clearTimeout` → `player_reconnected` broadcast to room. The client then sends `join_game` with `last_seq_seen` and gets a fresh `state_snapshot` followed by the broadcasts it missed (`game_events` rows with `seq > last_seq_seen`, at most 200). Player resumes from current state with no round rewind.
 
 **Server restart mid-game:** The in-memory `Game` object and all timers are lost, and in-progress games are abandoned rather than resumed. Before accepting traffic, startup cleanup marks every `in_progress` game `incomplete` (`drop_reason = 'server_restart'`); clients that reconnect receive `game_abandoned` and return to the lobby. The `games.state` checkpoint is kept as a record but is not used to rebuild the game. See the Backup & Recovery Runbook.

@@ -365,6 +365,16 @@ export class Game {
     return { playerId, outcome: 'removed', roundStarted: null };
   }
 
+  /**
+   * Ends the game early from any phase that is not already over, without scoring the round in
+   * progress (the 3-hour game time limit). The game is `incomplete` with no winner.
+   */
+  abandon(): void {
+    this.assertPhase('not_started', 'trump_declaration', 'bidding', 'trick', 'round_end', 'awaiting_continue_decision');
+    this._phase = 'incomplete';
+    this.pendingContinue = null;
+  }
+
   /** Two remaining players chose to continue (true) or end (false). */
   resolveContinueOrEnd(continueGame: boolean): RoundStarted | null {
     this.assertPhase('awaiting_continue_decision');

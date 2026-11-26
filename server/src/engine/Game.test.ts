@@ -473,6 +473,32 @@ describe('Game player drops', () => {
     expect(() => g.startRound()).toThrow(EngineError);
   });
 
+  it('abandon() ends the game from any active phase without scoring the round', () => {
+    const g = makeGame({ random: seeded(13) });
+    g.startRound();
+    autoPlayRound(g);
+    g.startRound();
+    if (g.phase === 'trump_declaration') g.declareTrump('b', 'hearts');
+    const scores = g.scores;
+    g.abandon();
+    expect(g.phase).toBe('incomplete');
+    expect(g.scores).toEqual(scores);
+    expect(g.toGameState().roundHistory).toHaveLength(1);
+    expect(g.toGameState().winnerUserIds).toEqual([]);
+    expect(() => g.placeBid('c', 0)).toThrow(EngineError);
+    expect(() => g.abandon()).toThrow(EngineError);
+  });
+
+  it('abandon() also ends a game waiting on continue-or-end', () => {
+    const g = makeGame({ random: seeded(14) });
+    g.startRound();
+    g.removePlayer('a');
+    g.abandon();
+    expect(g.phase).toBe('incomplete');
+    expect(g.toGameState().pendingContinue).toBeNull();
+    expect(() => g.resolveContinueOrEnd(true)).toThrow(EngineError);
+  });
+
   it('drop to 1 player ends the game as incomplete', () => {
     const g = makeGame({ random: seeded(12) });
     g.startRound();

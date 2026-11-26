@@ -4,7 +4,7 @@ import { leaveRoom } from '../api/rooms';
 import { SUITS, type Card as CardData, type PlayEntry, type Suit } from '../api/types';
 import { Card, SUIT_NAMES, SUIT_SYMBOLS, cardKey, cardLabel } from '../components/Card';
 import { useAuth } from '../context/AuthContext';
-import { currentTurnId, isLegal, useGame, type GameView, type RoundResult, type SeatView } from '../context/GameContext';
+import { ABANDON_MESSAGES, currentTurnId, isLegal, useGame, type GameView, type RoundResult, type SeatView } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
 
 /** How long the round summary stays up before the next round shows (docs/design/ui-foundation.md). */
@@ -28,11 +28,58 @@ export function GamePage() {
       </main>
     );
   }
+  if (game.abandoned) return <Abandoned game={game} />;
   if (game.gameOver) return <GameOver game={game} />;
   return (
     <>
+      {!connected && (
+        <p className="banner warn" role="status">
+          Connection lost. Reconnecting… Your seat is held for 30 seconds.
+        </p>
+      )}
       <Board game={game} />
       {game.roundSummary && <RoundSummary game={game} result={game.roundSummary} />}
+      {!game.roundSummary && game.decision && <ContinueOrEnd game={game} />}
+    </>
+  );
+}
+
+/** Leaves the room (POST /rooms/{roomId}/leave). The server then moves the socket to the lobby. */
+function useLeave(roomId: string) {
+  const [leaving, setLeaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const leave = async () => {
+    setLeaving(true);
+    setError(null);
+    try {
+      await leaveRoom(roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not leave the room.');
+      setLeaving(false);
+    }
+  };
+  return { leave, leaving, error };
+}
+
+/** "Leave game": a quit. The player cannot come back as a player, so confirm first. */
+function LeaveGame({ game }: { game: GameView }) {
+  const { leave, leaving, error } = useLeave(game.roomId);
+  const label = game.isSpectator ? 'Stop watching' : 'Leave game';
+  const onClick = () => {
+    if (game.isSpectator || window.confirm('Leave this game? You cannot rejoin it as a player (you may watch it as a spectator).')) {
+      void leave();
+    }
+  };
+  return (
+    <>
+      <button type="button" className="link" onClick={onClick} disabled={leaving}>
+        {label}
+      </button>
+      {error && (
+        <span className="error" role="alert">
+          {error}
+        </span>
+      )}
     </>
   );
 }
@@ -61,7 +108,10 @@ function Board({ game }: { game: GameView }) {
         </span>
         <span className="muted">{game.bidRule === 'uneven' ? 'Uneven bidding' : 'Open bidding'}</span>
         {game.isSpectator && <span className="badge">Spectating</span>}
+        <LeaveGame game={game} />
       </header>
+      {game.timeWarning && <TimeWarning endsAt={game.timeWarning.endsAt} />}
+      {game.notice && <GameNotice text={game.notice} />}
 
       <section className="opponents" aria-label={game.isSpectator ? 'Players' : 'Opponents'}>
         {others.map((s) => (
@@ -106,9 +156,42 @@ function bidProgress(seat: SeatView): string {
   return `${base} · On target`;
 }
 
-function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; isTurn: boolean }) {
+function TimeWarning({ endsAt }: { endsAt: string }) {
+  const left = useSecondsLeft(endsAt, 0);
+  const at = new Date(endsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   return (
-    <div className={isTurn ? 'seat turn' : 'seat'} aria-current={isTurn ? 'true' : undefined}>
+    <p className="banner warn" role="status">
+      Time limit: this game stops at {at} ({Math.ceil(left / 60)} min left) and will not be scored.
+    </p>
+  );
+}
+
+function GameNotice({ text }: { text: string }) {
+  const { clearNotice } = useGame();
+  return (
+    <p className="banner" role="status">
+      {text}{' '}
+      <button type="button" className="link" onClick={clearNotice}>
+        Dismiss
+      </button>
+    </p>
+  );
+}
+
+/** "Reconnecting · 0:23" on a player whose seat is held for them. */
+function Disconnected({ deadline }: { deadline: string | null }) {
+  const left = useSecondsLeft(deadline, 30_000);
+  return (
+    <span className="badge away">
+      Reconnecting{deadline ? ` · 0:${String(left).padStart(2, '0')}` : '…'}
+    </span>
+  );
+}
+
+function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; isTurn: boolean }) {
+  const cls = ['seat', isTurn && 'turn', !seat.connected && 'away'].filter(Boolean).join(' ');
+  return (
+    <div className={cls} aria-current={isTurn ? 'true' : undefined}>
       <span className="avatar" aria-hidden="true">
         {seat.displayName.slice(0, 1).toUpperCase()}
       </span>
@@ -118,6 +201,7 @@ function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; i
         {seat.handCount} card{seat.handCount === 1 ? '' : 's'}
         {isDealer && ' · Dealer'}
       </span>
+      {!seat.connected && <Disconnected deadline={seat.reconnectDeadline} />}
     </div>
   );
 }
@@ -166,6 +250,8 @@ function statusLine(game: GameView, me: string, turnId: string | null): string {
       return game.dealerId === me ? 'Choose the trump suit.' : `Waiting for ${name(game.dealerId)} to choose trump.`;
     case 'bidding':
       return turnId === me ? 'Your bid.' : `Waiting for ${name(turnId)} to bid.`;
+    case 'deciding':
+      return 'Only two players are left. Waiting to hear whether the game goes on.';
     case 'playing': {
       const won = game.lastTrick && !(game.trick && game.trick.cards.length > 0) ? `${nameOf(game, game.lastTrick.winnerId, me)} won the trick. ` : '';
       return won + (turnId === me ? 'Your turn: play a card.' : `Waiting for ${name(turnId)} to play.`);
@@ -409,35 +495,105 @@ function RoundSummary({ game, result }: { game: GameView; result: RoundResult })
   );
 }
 
+/**
+ * continue_or_end_request: a drop left two players. They choose (no answer by the deadline counts
+ * as end); everyone else waits.
+ */
+function ContinueOrEnd({ game }: { game: GameView }) {
+  const { user } = useAuth();
+  const { chooseContinueOrEnd } = useGame();
+  const decision = game.decision!;
+  const left = useSecondsLeft(decision.deadline, 60_000);
+  const mine = decision.remainingIds.includes(user?.id ?? '');
+  const others = decision.remainingIds.filter((id) => id !== user?.id).map((id) => nameOf(game, id, user?.id ?? ''));
+  return (
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="decide-title">
+      <div className="modal">
+        <h2 id="decide-title">Only two players left</h2>
+        {mine ? (
+          decision.myChoice ? (
+            <p>
+              You chose to {decision.myChoice === 'continue' ? 'keep playing' : 'end the game'}. Waiting for {others.join(' and ')}…
+            </p>
+          ) : (
+            <p>
+              Keep playing with {others.join(' and ')}, or end the game now? Ending records it as unfinished, with no winner. If
+              either of you ends it, or nobody answers in time, the game ends.
+            </p>
+          )
+        ) : (
+          <p>The two remaining players are deciding whether to keep playing.</p>
+        )}
+        {game.error && (
+          <p className="error" role="alert">
+            {game.error}
+          </p>
+        )}
+        <div className="modal-foot">
+          <span className="countdown" role="timer">
+            {left}s left
+          </span>
+          {mine && !decision.myChoice && (
+            <>
+              <button type="button" onClick={() => chooseContinueOrEnd('end')}>
+                End game
+              </button>
+              <button type="button" className="primary" onClick={() => chooseContinueOrEnd('continue')}>
+                Keep playing
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** game_abandoned: the server stopped the game (time limit). The room closes after the countdown. */
+function Abandoned({ game }: { game: GameView }) {
+  const { leave, leaving, error } = useLeave(game.roomId);
+  return (
+    <main className="page game-over">
+      <p className="muted">Game stopped</p>
+      <h1>No result</h1>
+      <p>{ABANDON_MESSAGES[game.abandoned!]}</p>
+      <div className="game-over-foot">
+        <span className="muted">You will be returned to the lobby shortly.</span>
+        <button type="button" className="primary" onClick={() => void leave()} disabled={leaving}>
+          Back to lobby
+        </button>
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </main>
+  );
+}
+
 /** Winners, final standings and every round, with the countdown back to the lobby. */
 function GameOver({ game }: { game: GameView }) {
   const over = game.gameOver!;
   const left = useSecondsLeft(over.closesAt, 30_000);
-  const [leaving, setLeaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // The server then moves this socket to the lobby (lobby_snapshot), which navigates away.
+  const { leave, leaving, error } = useLeave(game.roomId);
   const name = (id: string) => game.seats.find((s) => s.userId === id)?.displayName ?? 'Someone';
   const standings = [...over.finalScores].sort((a, b) => b.score - a.score);
   const winners = over.winnerIds.map(name);
-
-  const leave = async () => {
-    setLeaving(true);
-    setError(null);
-    try {
-      // The server then moves this socket to the lobby (lobby_snapshot), which navigates away.
-      await leaveRoom(game.roomId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not leave the room.');
-      setLeaving(false);
-    }
-  };
+  const early = over.status === 'incomplete';
 
   return (
     <main className="page game-over">
-      <p className="muted">Game over</p>
-      <h1 className="winner">
-        <span aria-hidden="true">♛ </span>
-        {winners.length > 1 ? `${winners.join(' and ')} tie for the win` : `${winners[0]} wins`}
-      </h1>
+      <p className="muted">{early ? 'Game ended early' : 'Game over'}</p>
+      {early ? (
+        <h1>No winner: the game was not finished</h1>
+      ) : (
+        <h1 className="winner">
+          <span aria-hidden="true">♛ </span>
+          {winners.length > 1 ? `${winners.join(' and ')} tie for the win` : `${winners[0]} wins`}
+        </h1>
+      )}
 
       <ol className="standings">
         {standings.map((e, i) => (
@@ -460,7 +616,7 @@ function GameOver({ game }: { game: GameView }) {
         <span className="countdown" role="timer">
           Returning to lobby in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}…
         </span>
-        <button type="button" className="primary" onClick={leave} disabled={leaving}>
+        <button type="button" className="primary" onClick={() => void leave()} disabled={leaving}>
           Leave now
         </button>
       </div>
