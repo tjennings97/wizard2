@@ -18,7 +18,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   // (presence), so the handler forwards to it once it exists.
   let app: ReturnType<typeof createApp> | null = null;
   const httpServer = http.createServer((req, res) => app!(req, res));
-  const games = new GameService({ deckFactory: options.deckFactory, random: options.random });
+  const games = new GameService({ deckFactory: options.deckFactory, random: options.random, countdownMs: options.countdownMs });
   const rooms = new RoomService({ timeoutMs: options.timeoutMs, hostAwayMs: options.hostAwayMs, games });
   const { io, realtime, detach } = attachSocket(httpServer, rooms, { sessionRecheckMs: options.sessionRecheckMs });
   app = createApp({ rooms, presence: realtime });

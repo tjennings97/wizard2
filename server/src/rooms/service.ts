@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { Knex } from 'knex';
 import { db } from '../db/knex';
 import { ApiError } from '../http/errors';
-import { GameService } from '../games/service';
+import { GameService, type GameLifecycle } from '../games/service';
 import { seatedPlayers } from '../games/queries';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, type RoomRow, type RoomView } from './queries';
@@ -103,10 +103,12 @@ export interface RoomServiceOptions {
   games?: GameService;
 }
 
-export class RoomService {
+export class RoomService implements GameLifecycle {
   private notifier: RoomNotifier;
   private readonly timeoutMs: number;
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  /** COMPLETING countdown timers (game over → room closed), keyed by room id. */
+  private readonly closeTimers = new Map<string, NodeJS.Timeout>();
   private readonly hostAwayMs: number;
   /** Host-away grace timers, keyed by the disconnected user's id. */
   private readonly awayTimers = new Map<string, NodeJS.Timeout>();
@@ -122,6 +124,52 @@ export class RoomService {
     this.games = games;
     this.timeoutMs = timeoutMs;
     this.hostAwayMs = hostAwayMs;
+    games.setLifecycle(this);
+  }
+
+  /**
+   * The game has ended and the room is COMPLETING: tell the lobby, and close the room when the
+   * countdown runs out (or sooner, if everyone leaves first; see leaveRoom).
+   */
+  gameFinished(roomId: string, closesAt: Date): void {
+    this.cancelCloseTimer(roomId);
+    const timer = setTimeout(() => {
+      this.closeTimers.delete(roomId);
+      this.closeAfterGame(roomId).catch((err) => logger.error({ err, roomId }, 'room close after game failed'));
+    }, Math.max(0, closesAt.getTime() - Date.now()));
+    timer.unref();
+    this.closeTimers.set(roomId, timer);
+    void this.notify(() => this.notifier.lobbyChanged());
+  }
+
+  hasCloseTimer(roomId: string): boolean {
+    return this.closeTimers.has(roomId);
+  }
+
+  /**
+   * COMPLETING → CLOSED when the countdown fires: room_closed (`game_finished`) and everyone still
+   * in the room back to the lobby. Also closes a room still marked in_progress, in case writing
+   * the game's results (which moves it to completing) failed.
+   */
+  async closeAfterGame(roomId: string): Promise<void> {
+    this.cancelCloseTimer(roomId);
+    const closed = await db.transaction(async (trx) => {
+      const row = await lockRoom(trx, roomId);
+      if (!row || row.state === 'closed' || row.state === 'open') return false;
+      await closeRoomTx(trx, roomId);
+      return true;
+    });
+    // The game goes first, so room_closed is a plain room event, not part of the game's sequence.
+    this.games.forget(roomId);
+    if (!closed) return;
+    logger.info({ roomId }, 'room closed after game');
+    await this.afterClose(roomId, 'game_finished');
+  }
+
+  private cancelCloseTimer(roomId: string): void {
+    const timer = this.closeTimers.get(roomId);
+    if (timer) clearTimeout(timer);
+    this.closeTimers.delete(roomId);
   }
 
   /**
@@ -295,7 +343,7 @@ export class RoomService {
         .whereNull('left_at')
         .first('role');
       if (!member || row.state === 'closed') throw new ApiError(404, 'NOT_FOUND', 'You are not in this room.');
-      if (member.role === 'player' && row.state !== 'open') {
+      if (member.role === 'player' && row.state === 'in_progress') {
         // Quitting a started game applies the player-drop rules, which need the game engine.
         throw new ApiError(403, 'GAME_ALREADY_STARTED', 'Leaving a game in progress is not supported yet.');
       }
@@ -304,7 +352,14 @@ export class RoomService {
 
       let newHostId: string | null = null;
       let closed = false;
-      if (row.state === 'open' && member.role === 'player') {
+      if (row.state === 'completing') {
+        // The game is over: leaving is not a quit. The last one out closes the room at once.
+        const { players, spectators } = await countActive(trx, roomId);
+        if (players + spectators === 0) {
+          await closeRoomTx(trx, roomId);
+          closed = true;
+        }
+      } else if (row.state === 'open' && member.role === 'player') {
         const remaining: { user_id: string }[] = await trx('room_members')
           .where({ room_id: roomId, role: 'player' })
           .whereNull('left_at')
@@ -321,16 +376,23 @@ export class RoomService {
           newHostId = next.user_id;
         }
       }
-      return { role: member.role, newHostId, closed, room: (await getRoomView(roomId, trx))! };
+      return { role: member.role, newHostId, closed, completing: row.state === 'completing', room: (await getRoomView(roomId, trx))! };
     });
 
     logger.info({ userId, roomId, role: outcome.role, newHostId: outcome.newHostId, closed: outcome.closed }, 'user left room');
-    if (outcome.closed) this.cancelTimeout(roomId);
+    if (outcome.closed) {
+      this.cancelTimeout(roomId);
+      this.cancelCloseTimer(roomId);
+    }
     if (outcome.newHostId) this.armIfAway(outcome.newHostId, roomId);
     await this.notify(async () => {
       await this.notifier.userLeftRoom(userId, outcome.role, outcome.room);
       if (outcome.newHostId) await this.notifier.hostChanged(roomId, outcome.newHostId);
-      if (outcome.closed) await this.notifier.roomClosed(roomId, 'empty');
+      if (outcome.closed) {
+        // Nobody is left in the room to receive room_closed; the lobby hears of it below.
+        if (outcome.completing) this.games.forget(roomId);
+        await this.notifier.roomClosed(roomId, outcome.completing ? 'game_finished' : 'empty');
+      }
       await this.notifier.lobbyChanged();
     });
   }
@@ -427,11 +489,15 @@ export class RoomService {
 
   /**
    * Timers live in memory, so after a restart the open rooms have none. Re-arm the inactivity
-   * timers from created_at (rooms already past the timeout close straight away), and start the
-   * host-away grace period for every host without a socket, which right after a restart is all
-   * of them; a host who reconnects in time keeps the role.
+   * timers from created_at (rooms already past the timeout close straight away), close rooms that
+   * were showing a game-over countdown, and start the host-away grace period for every host
+   * without a socket, which right after a restart is all of them; a host who reconnects in time
+   * keeps the role.
    */
   async restoreTimeouts(): Promise<void> {
+    // A game-over countdown does not survive a restart, and the game it showed is gone: close.
+    const completing: { id: string }[] = await db('rooms').where({ state: 'completing' }).select('id');
+    for (const r of completing) await this.closeAfterGame(r.id);
     const rows: { id: string; created_at: Date; host_user_id: string }[] = await db('rooms')
       .where({ state: 'open' })
       .select('id', 'created_at', 'host_user_id');
@@ -447,6 +513,8 @@ export class RoomService {
     this.timers.clear();
     for (const t of this.awayTimers.values()) clearTimeout(t);
     this.awayTimers.clear();
+    for (const t of this.closeTimers.values()) clearTimeout(t);
+    this.closeTimers.clear();
   }
 
   hasTimeout(roomId: string): boolean {

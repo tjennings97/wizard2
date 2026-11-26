@@ -36,7 +36,7 @@ Every message, in both directions, is a JSON object with this top-level envelope
 `seq` is assigned by the server; clients send `0`. How it counts depends on where the socket is:
 
 - **Lobby and open rooms:** per socket. Each event sent on the socket takes the next number.
-- **A room whose game has started (players and spectators):** per game. Every event broadcast to the game's room takes the game's next `seq`, and every socket in the room receives it with the same number. Each one is logged in `game_events` with that `seq` (see the data model), which is what a reconnect replays from. A unicast (`hand_dealt`, `bid_request`, `trump_selection_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, a non-fatal `session_error`) carries the game's current `seq` without advancing it, so it has the same number as the broadcast before it. Unicasts are not logged; `state_snapshot` restores what they carried.
+- **A room whose game has started (players and spectators):** per game. Every event broadcast to the game's room takes the game's next `seq`, and every socket in the room receives it with the same number. Each one is logged in `game_events` with that `seq` (see the data model), which is what a reconnect replays from. A unicast (`hand_dealt`, `bid_request`, `trump_selection_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, `invalid_play_error`, a non-fatal `session_error`) carries the game's current `seq` without advancing it, so it has the same number as the broadcast before it. Unicasts are not logged; `state_snapshot` restores what they carried.
 
 Clients detect gaps and emit `sync_request` if `seq` jumps by more than 1. A repeated `seq` (a unicast after a broadcast) is not a gap. On entering a game, the client takes the `seq` of `state_snapshot` (or of `game_starting`, which is `1`) as its starting point.
 
@@ -85,7 +85,7 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `play_card` | Player plays a card | `player_id: string`, `card: { suit: string, rank: string }`, `idempotency_key?: string` |
+| `play_card` | Player plays a card | `player_id: string`, `card: Card` (as in `hand_dealt`), `idempotency_key?: string` — answered with `invalid_play_error` if it is not the sender's turn, trick play is not under way, the card is not in their hand, or the follow-suit rule forbids it |
 
 ### Player Drop
 
@@ -102,7 +102,7 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 ### Game actions: who acts, ordering and session refresh
 
-These rules apply to every game action (`select_trump`, `place_bid`, and later `play_card` and `choose_continue_or_end`):
+These rules apply to every game action (`select_trump`, `place_bid`, `play_card`, and later `choose_continue_or_end`):
 
 - **The acting player is the socket's user.** The `player_id` in the payload is informational and is ignored; a socket cannot act for someone else.
 - **Ordering:** events from one socket are handled one at a time, in the order sent, and actions on one game are applied one at a time across all its players.
@@ -126,7 +126,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `host_changed` | Room | `room_id`, `host_id` |
 | `room_config_updated` | Room | `room_id`, `config: RoomConfig` — after the host changes config via REST |
 | `chat_message` | Room | `room_id`, `sender_id`, `display_name`, `text`, `sent_at: ISO-8601` |
-| `room_closed` | Room | `room_id`, `reason: "inactivity"\|"game_finished"\|"empty"\|"host_closed"` — members (including spectators) return to the lobby. `empty`: the last player left an open room; `host_closed`: the host closed it via `DELETE /rooms/{roomId}` |
+| `room_closed` | Room | `room_id`, `reason: "inactivity"\|"game_finished"\|"empty"\|"host_closed"` — members (including spectators) return to the lobby. `empty`: the last player left an open room; `host_closed`: the host closed it via `DELETE /rooms/{roomId}`; `game_finished`: the 30-second game-over countdown ran out. A `room_closed` after a game is not part of the game's sequence and is not logged: the game is dropped first, so it carries the socket's next `seq` (the game's last `seq` + 1). If every member leaves during the countdown the room closes at once and, with nobody left in it, only the lobby hears (`rooms_updated`) |
 
 ### Lobby & Game Flow
 
@@ -136,7 +136,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress |
 | `game_starting` | All | `game_id: string`, `countdown_seconds: integer`, `player_order: string[]` — the host started the game (`POST /rooms/{roomId}/start`). `countdown_seconds` is `0`: the game starts at once. `player_order` is the seat order (join order); seat 1 deals round 1 |
 | `game_started` | All | `game_id: string`, `room_id: string`, `round_count: integer`, `bid_rule: "open"\|"uneven"`, `players: PlayerSummary[]` — `PlayerSummary` is `{ user_id, display_name, seat_index }` (0-based, as in `user_joined`). Clients go to the game screen (`/game/{game_id}`) |
-| `game_over` | All | `final_scores: ScoreEntry[]`, `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners |
+| `game_over` | All | `game_id`, `final_scores: ScoreEntry[]` (seat order), `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners — `closes_at: ISO-8601`, `countdown_seconds: integer` (`30`). Sent right after the final `round_complete`. The room is now COMPLETING: at `closes_at` it closes (`room_closed`, `reason: "game_finished"`) and everyone returns to the lobby. Members may leave sooner with `POST /rooms/{roomId}/leave`; this is not a quit |
 | `game_time_warning` | All | `game_id: string`, `ends_at: ISO-8601`, `minutes_remaining: 15`: sent once, 15 minutes before the 3-hour game time limit |
 | `game_abandoned` | All | `reason: "server_restart"\|"time_limit"`, `game_id: string` |
 | `player_disconnected` | All | `player_id`, `reconnect_deadline: ISO-8601` — socket dropped; the player's seat is held until the deadline |
@@ -164,18 +164,18 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `play_request` | **U** | `player_id`, `trick_number`, `trick_so_far: PlayEntry[]`, `legal_cards: Card[]` |
-| `card_played` | All | `player_id`, `card: Card`, `trick_number: integer` |
-| `trick_complete` | All | `winner_id: string`, `cards_played: PlayEntry[]`, `trick_number: integer` |
-| `round_complete` | All | `scores_this_round: ScoreEntry[]`, `cumulative_scores: ScoreEntry[]` |
+| `play_request` | **U** | `player_id`, `round_number`, `trick_number`, `trick_so_far: PlayEntry[]`, `legal_cards: Card[]` — to the player whose turn it is, never to spectators: the first bidder (left of the dealer) after `all_bids_placed`, the next player clockwise after each `card_played`, and the winner after `trick_complete` when tricks remain. `PlayEntry` is `{ player_id, card: Card }`, in play order. `legal_cards` is the cards in the player's hand the follow-suit rule allows, in hand order |
+| `card_played` | All | `player_id`, `card: Card`, `trick_number: integer` (1-based within the round) |
+| `trick_complete` | All | `winner_id: string`, `cards_played: PlayEntry[]`, `trick_number: integer` — right after the trick's last `card_played`. The winner leads the next trick |
+| `round_complete` | All | `round_number`, `scores_this_round: RoundScoreEntry[]`, `cumulative_scores: ScoreEntry[]`, `is_final_round: boolean` — right after the round's last `trick_complete`. `ScoreEntry` is `{ player_id, score }` (the running total); `RoundScoreEntry` is `{ player_id, bid, tricks_won, score }` where `score` is the round's score change. Both lists are in seat order. Unless it was the final round, the next round follows at once (`round_started`, `hand_dealt`, ...); the client holds its round summary on screen for a few seconds on its own. After the final round, `game_over` follows |
 
 ### Sync, Error & Control
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState`. `seq` is the game seq the view reflects. Sent when a socket connects while its user is in a room with a game in progress, and to a spectator who joins a game in progress (instead of `room_snapshot`). If it is the recipient's turn to bid or declare trump, the matching `bid_request` or `trump_selection_request` follows it |
+| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState`. `seq` is the game seq the view reflects. Sent when a socket connects while its user is in a room with a game in progress, and to a spectator who joins a game in progress (instead of `room_snapshot`). If it is the recipient's turn to declare trump, bid or play, the matching `trump_selection_request`, `bid_request` or `play_request` follows it. Once the game is over (room COMPLETING), `game_over` follows it, so the client can show the countdown |
 | `pong` | **U** | `server_time: ISO-8601` |
-| `invalid_play_error` | **U** | `player_id`, `reason: string`, `legal_cards: Card[]` |
+| `invalid_play_error` | **U** | `player_id`, `code: string`, `reason: string`, `legal_cards: Card[]` — `code` is `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND` (including anything that is not a card), `ILLEGAL_CARD` (follow-suit) or `INVALID_PHASE` (no trick in play). `legal_cards` is what the sender may play now: empty when it is not their turn |
 | `invalid_bid_error` | **U** | `player_id`, `code: string`, `reason: string`, `min_bid: integer`, `max_bid: integer`, `allowed_bids: integer[]` — `code` is `NOT_YOUR_TURN`, `INVALID_BID` (out of range, not an integer, or blocked by the uneven rule), `ALREADY_BID` or `INVALID_PHASE` (not bidding now). `allowed_bids` is empty when it is not the sender's turn |
 | `invalid_trump_error` | **U** | `player_id`, `code: string`, `reason: string` — a refused `select_trump`: `code` is `NOT_YOUR_TURN` (not the dealer), `INVALID_SUIT` or `INVALID_PHASE` (no declaration pending) |
 | `session_error` | **U** | `code: string`, `message: string`, `fatal: boolean`, `reason?: string` — `code: "SESSION_INVALIDATED"` (fatal) is sent to every socket on a session that a newer login, a password reset or a logout has ended, with `reason` `"displaced"`, `"password_reset"` or `"logout"` so the client can say which, and the socket is then disconnected (on connect with an already-ended session there is no `reason`); `code: "REAUTH_REQUIRED"` (fatal) is sent on connect when the session is within 24 hours of its 30-day cap and the user is not reconnecting to a game in progress; `code: "ACTION_FAILED"` (not fatal) when a game action could not be processed (see Game actions) |
@@ -191,7 +191,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 | `BIDDING` | `all_bids_placed` pending; `bid_request` per player | `place_bid` | `all_bids_placed` |
 | `PLAYING` | `all_bids_placed` | `play_card` | `round_complete` |
 | `SCORING` | `round_complete` | — | `round_started` or `game_over` |
-| `GAME_OVER` | `game_over` | `leave_game` | — |
+| `GAME_OVER` | `game_over` | `leave_game` (or `POST /rooms/{roomId}/leave`) | `room_closed` (`game_finished`) after the 30-second countdown |
 
 **Server restart.** `game_abandoned` (broadcast, `reason: "server_restart"`) may be emitted from any non-terminal state (`DEALING`, `BIDDING`, `PLAYING`, `SCORING`) when the server restarts and the startup cleanup closes an in-progress game. Clients that reconnect and receive this event must return the player to the lobby. There is no valid client event in response; the game cannot be resumed.
 
@@ -205,7 +205,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 ### Error Recovery
 
-1. **Invalid action:** Server emits `invalid_play_error` or `invalid_bid_error` (unicast). State does not change; the client re-enables the relevant UI.
+1. **Invalid action:** Server emits `invalid_play_error`, `invalid_bid_error` or `invalid_trump_error` (unicast). State does not change; the client re-enables the relevant UI.
 2. **Fatal session error:** Server emits `session_error` with `fatal: true`. The client disconnects and shows a re-join prompt.
 3. **Reconnect:** Client sends `join_game` with `last_seq_seen` within the 30-second window. Server validates the session, emits `state_snapshot` (the player's own view, so they resume exactly where they left off), replays any events with `seq > last_seq_seen`, and broadcasts `player_reconnected`.
 

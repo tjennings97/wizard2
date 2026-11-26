@@ -16,12 +16,15 @@ const deckFactory: DeckFactory = (_ruleset, round) => {
   return decks[round] ?? new Deck();
 };
 
+/** The game-over countdown, shortened. */
+const COUNTDOWN_MS = 1500;
+
 let server: Awaited<ReturnType<typeof startServer>>;
 let clients: TestClient[] = [];
 
 beforeAll(async () => {
   // Re-check the session on every game action, so the refresh is observable.
-  server = await startServer({ deckFactory, sessionRecheckMs: 0 });
+  server = await startServer({ deckFactory, sessionRecheckMs: 0, countdownMs: COUNTDOWN_MS });
 });
 afterAll(async () => {
   await server.close();
@@ -103,6 +106,12 @@ const GAME_EVENTS = [
   'all_bids_placed',
   'invalid_bid_error',
   'invalid_trump_error',
+  'play_request',
+  'card_played',
+  'trick_complete',
+  'round_complete',
+  'invalid_play_error',
+  'game_over',
   'state_snapshot',
 ];
 const gameLog = (c: TestClient) => c.log.filter((e) => GAME_EVENTS.includes(e.event));
@@ -333,10 +342,12 @@ describe('bidding', () => {
       expect(c.events('bid_placed').map((e) => e.payload)).toEqual(bids);
     }
     expect(names(t.sc[0]).slice(-4)).toEqual(['bid_placed', 'bid_placed', 'bid_placed', 'all_bids_placed']);
-    // Bidding is over; a late bid is refused. Trick play is not wired yet: no play_request.
+    // Bidding is over; a late bid is refused. Seat 2, left of the dealer, leads the first trick.
     emit(dealer, 'place_bid', { bid: 0 });
     await dealer.waitFor('invalid_bid_error', (p) => p.code === 'INVALID_PHASE');
+    expect((await p2.waitFor('play_request')).payload).toMatchObject({ player_id: ids[1], trick_number: 1, trick_so_far: [] });
     expect(dealer.events('play_request')).toHaveLength(0);
+    expect(t.sc[0].events('play_request')).toHaveLength(0);
 
     const rows = await db('game_events').where({ game_id: t.gameId }).whereIn('event', ['bid_placed', 'all_bids_placed']).orderBy('seq');
     expect(rows.map((r) => r.event)).toEqual(['bid_placed', 'bid_placed', 'bid_placed', 'all_bids_placed']);
@@ -525,5 +536,440 @@ describe('joining a game in progress', () => {
     // Spectators see later broadcasts too.
     emit(t.pc[1], 'place_bid', { bid: 0 });
     expect((await lc.waitFor('bid_placed')).seq).toBe(6);
+  });
+});
+
+// --- trick play, scoring and game end ----------------------------------------------------------
+
+const card = (c: Card) => c.toData();
+
+/**
+ * Two rounds, three seats (P1 deals round 1, P2 round 2). Round 1: P2 ♥10, P3 ♥A, P1 ♠2, clubs
+ * trump; P3 wins the trick. Round 2: P3 ♥3 ♣3, P1 ♥A W, P2 ♠5 ♣5, diamonds trump; P2 wins trick 1
+ * with ♣5 (P1 has no club), P1's Wizard wins trick 2. With the bids below, the totals are
+ * P1 50, P2 10, P3 50: P1 and P3 are co-winners.
+ */
+function stackTwoRounds(): void {
+  decks[1] = stacked([S('hearts', 10), S('hearts', 14), S('spades', 2), S('clubs', 5)]);
+  decks[2] = stacked([S('hearts', 3), S('clubs', 3), S('hearts', 14), W(), S('spades', 5), S('clubs', 5), S('diamonds', 2)]);
+}
+
+/** Bids in bidding order, each after that player's bid_request. */
+async function bidAll(t: Table, order: number[], bids: number[], from = 0): Promise<void> {
+  for (let i = 0; i < order.length; i++) {
+    const c = t.pc[order[i]];
+    await c.waitFor('bid_request', () => true, { from });
+    emit(c, 'place_bid', { bid: bids[i] });
+    await t.pc[0].waitFor('bid_placed', (p) => p.player_id === t.players[order[i]].id, { from: 0 });
+  }
+}
+
+/** Plays `c` for seat `seat` once it has been asked, and waits for the room to see it. */
+async function play(t: Table, seat: number, c: Card, from = 0): Promise<void> {
+  await t.pc[seat].waitFor('play_request', () => true, { from });
+  emit(t.pc[seat], 'play_card', { card: card(c) });
+  await t.pc[0].waitFor('card_played', (p) => p.player_id === t.players[seat].id && JSON.stringify(p.card) === JSON.stringify(card(c)), { from });
+}
+
+/** Round 1 of stackTwoRounds: bids P2 0, P3 1, P1 0; one trick, won by P3. */
+async function playRound1(t: Table): Promise<void> {
+  await bidAll(t, [1, 2, 0], [0, 1, 0]);
+  await play(t, 1, S('hearts', 10));
+  await play(t, 2, S('hearts', 14));
+  await play(t, 0, S('spades', 2));
+  await t.pc[0].waitFor('round_complete');
+}
+
+/** Round 2 of stackTwoRounds: bids P3 0, P1 1, P2 0. Ends the game. */
+async function playRound2(t: Table): Promise<void> {
+  const from = (await t.pc[0].waitFor('round_started', (p) => p.round_number === 2)).index;
+  await bidAll(t, [2, 0, 1], [0, 1, 0], from);
+  const at = (c: TestClient) => c.events('round_started').at(-1)!.index;
+  await play(t, 2, S('clubs', 3), at(t.pc[2]));
+  await play(t, 0, S('hearts', 14), at(t.pc[0]));
+  await play(t, 1, S('clubs', 5), at(t.pc[1]));
+  const trick1 = (await t.pc[1].waitFor('trick_complete', (p) => p.trick_number === 1, { from: at(t.pc[1]) })).index;
+  await play(t, 1, S('spades', 5), trick1);
+  await play(t, 2, S('hearts', 3), at(t.pc[2]));
+  await play(t, 0, W(), at(t.pc[0]));
+  await t.pc[0].waitFor('game_over');
+}
+
+describe('trick play', () => {
+  it('asks the leader with legal_cards, validates play_card, broadcasts card_played and trick_complete', async () => {
+    stackTwoRounds();
+    const t = await startTable({ spectators: 1, config: { roundCount: 2 } });
+    const [p1, p2, p3] = t.pc;
+    const ids = t.players.map((p) => p.id);
+    await bidAll(t, [1, 2, 0], [0, 1, 0]);
+
+    expect((await p2.waitFor('play_request')).payload).toEqual({
+      player_id: ids[1],
+      round_number: 1,
+      trick_number: 1,
+      trick_so_far: [],
+      legal_cards: [card(S('hearts', 10))],
+    });
+    // Out of turn; a card not held; not a card at all.
+    emit(p3, 'play_card', { card: card(S('hearts', 14)) });
+    expect((await p3.waitFor('invalid_play_error')).payload).toEqual({
+      player_id: ids[2],
+      code: 'NOT_YOUR_TURN',
+      reason: expect.any(String),
+      legal_cards: [],
+    });
+    emit(p2, 'play_card', { card: card(S('hearts', 9)) });
+    expect((await p2.waitFor('invalid_play_error')).payload).toMatchObject({ code: 'CARD_NOT_IN_HAND', legal_cards: [card(S('hearts', 10))] });
+    const n = p2.events('invalid_play_error').length;
+    emit(p2, 'play_card', { card: 'hearts 10' });
+    await p2.waitFor('invalid_play_error', (p) => p.code === 'CARD_NOT_IN_HAND', { from: p2.events('invalid_play_error')[n - 1].index + 1 });
+    expect(t.sc[0].events('card_played')).toHaveLength(0);
+
+    emit(p2, 'play_card', { card: card(S('hearts', 10)) });
+    for (const c of [p1, p2, p3, t.sc[0]]) {
+      expect((await c.waitFor('card_played')).payload).toEqual({ player_id: ids[1], card: card(S('hearts', 10)), trick_number: 1 });
+    }
+    expect((await p3.waitFor('play_request')).payload).toMatchObject({
+      player_id: ids[2],
+      trick_so_far: [{ player_id: ids[1], card: card(S('hearts', 10)) }],
+      legal_cards: [card(S('hearts', 14))],
+    });
+    await play(t, 2, S('hearts', 14));
+    await play(t, 0, S('spades', 2));
+
+    const cardsPlayed = [
+      { player_id: ids[1], card: card(S('hearts', 10)) },
+      { player_id: ids[2], card: card(S('hearts', 14)) },
+      { player_id: ids[0], card: card(S('spades', 2)) },
+    ];
+    for (const c of [p1, p2, p3, t.sc[0]]) {
+      expect((await c.waitFor('trick_complete')).payload).toEqual({ winner_id: ids[2], cards_played: cardsPlayed, trick_number: 1 });
+    }
+    // Spectators never get a prompt or a hand.
+    expect(t.sc[0].events('play_request')).toHaveLength(0);
+    expect(t.sc[0].events('hand_dealt')).toHaveLength(0);
+  });
+
+  it('enforces follow-suit and the trick winner leads the next trick', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    const ids = t.players.map((p) => p.id);
+    await playRound1(t);
+    const from = (await t.pc[0].waitFor('round_started', (p) => p.round_number === 2)).index;
+    expect((await t.pc[0].waitFor('round_started', (p) => p.round_number === 2)).payload).toMatchObject({ dealer_id: ids[1] });
+    await bidAll(t, [2, 0, 1], [0, 1, 0], from);
+    const at = (c: TestClient) => c.events('round_started').at(-1)!.index;
+
+    await play(t, 2, S('clubs', 3), at(t.pc[2]));
+    // P1 holds no club: anything goes.
+    expect((await t.pc[0].waitFor('play_request', () => true, { from: at(t.pc[0]) })).payload.legal_cards).toEqual([card(S('hearts', 14)), card(W())]);
+    await play(t, 0, S('hearts', 14), at(t.pc[0]));
+    // P2 must follow clubs.
+    const req = await t.pc[1].waitFor('play_request', () => true, { from: at(t.pc[1]) });
+    expect(req.payload.legal_cards).toEqual([card(S('clubs', 5))]);
+    emit(t.pc[1], 'play_card', { card: card(S('spades', 5)) });
+    expect((await t.pc[1].waitFor('invalid_play_error', () => true, { from: req.index })).payload).toMatchObject({
+      code: 'ILLEGAL_CARD',
+      legal_cards: [card(S('clubs', 5))],
+    });
+    await play(t, 1, S('clubs', 5), at(t.pc[1]));
+
+    const done = await t.pc[0].waitFor('trick_complete', (p) => p.trick_number === 1, { from: at(t.pc[0]) });
+    expect(done.payload.winner_id).toBe(ids[1]);
+    // The winner leads trick 2, with whatever is left.
+    expect((await t.pc[1].waitFor('play_request', (p) => p.trick_number === 2)).payload).toMatchObject({
+      player_id: ids[1],
+      trick_so_far: [],
+      legal_cards: [card(S('spades', 5))],
+    });
+  });
+
+  it('a reconnecting player in trick play gets state_snapshot (with the trick so far), then play_request', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    await bidAll(t, [1, 2, 0], [0, 1, 0]);
+    await play(t, 1, S('hearts', 10));
+    t.pc[2].close();
+
+    const again = connect(server.url, t.players[2].cookie);
+    clients.push(again);
+    const view = (await again.waitFor('state_snapshot')).payload.game_state;
+    expect(view.phase).toBe('trick');
+    expect(view.currentTurnUserId).toBe(t.players[2].id);
+    expect(view.tricksSoFar).toEqual([
+      expect.objectContaining({ trickNumber: 1, cards: [{ userId: t.players[1].id, card: card(S('hearts', 10)) }] }),
+    ]);
+    expect((await again.waitFor('play_request')).payload).toMatchObject({ legal_cards: [card(S('hearts', 14))] });
+    emit(again, 'play_card', { card: card(S('hearts', 14)) });
+    await t.pc[0].waitFor('play_request');
+  });
+
+  it('play_card refreshes the session; on an ended session it is refused and not applied', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    await bidAll(t, [1, 2, 0], [0, 1, 0]);
+    await t.pc[1].waitFor('play_request');
+    const soon = new Date(Date.now() + 60 * 60 * 1000);
+    await db('sessions').where({ user_id: t.players[1].id }).whereNull('invalidated_at').update({ expires_at: soon });
+    await play(t, 1, S('hearts', 10));
+    const row = await db('sessions').where({ user_id: t.players[1].id }).whereNull('invalidated_at').first();
+    expect(new Date(row.expires_at).getTime()).toBeGreaterThan(soon.getTime() + 60 * 60 * 1000);
+
+    await t.pc[2].waitFor('play_request');
+    await db('sessions').where({ user_id: t.players[2].id }).update({ invalidated_at: db.fn.now() });
+    emit(t.pc[2], 'play_card', { card: card(S('hearts', 14)) });
+    expect((await t.pc[2].waitFor('session_error')).payload).toMatchObject({ code: 'SESSION_INVALIDATED', fatal: true });
+    await sleep(100);
+    expect(t.pc[0].events('card_played')).toHaveLength(1);
+  });
+
+  it('refuses play_card from a spectator', async () => {
+    stackTwoRounds();
+    const t = await startTable({ spectators: 1, config: { roundCount: 2 } });
+    await bidAll(t, [1, 2, 0], [0, 1, 0]);
+    emit(t.sc[0], 'play_card', { card: card(S('hearts', 10)) });
+    expect((await t.sc[0].waitFor('session_error')).payload).toMatchObject({ code: 'SPECTATOR_ACTION_FORBIDDEN', fatal: false });
+  });
+});
+
+describe('round end', () => {
+  it('broadcasts round_complete, writes rounds, round_players and the checkpoint, then deals the next round', async () => {
+    stackTwoRounds();
+    const t = await startTable({ spectators: 1, config: { roundCount: 2 } });
+    const ids = t.players.map((p) => p.id);
+    await playRound1(t);
+
+    const expected = {
+      round_number: 1,
+      // Seat order. P2 and P1 made 0 (+20); P3 made 1 (+30).
+      scores_this_round: [
+        { player_id: ids[0], bid: 0, tricks_won: 0, score: 20 },
+        { player_id: ids[1], bid: 0, tricks_won: 0, score: 20 },
+        { player_id: ids[2], bid: 1, tricks_won: 1, score: 30 },
+      ],
+      cumulative_scores: [
+        { player_id: ids[0], score: 20 },
+        { player_id: ids[1], score: 20 },
+        { player_id: ids[2], score: 30 },
+      ],
+      is_final_round: false,
+    };
+    for (const c of [...t.pc, t.sc[0]]) expect((await c.waitFor('round_complete')).payload).toEqual(expected);
+
+    // The next round follows straight away: seat 2 deals, two cards each, seat 3 bids first.
+    await t.sc[0].waitFor('trump_revealed', (p) => p.round_number === 2);
+    expect(names(t.sc[0]).slice(-7)).toEqual([
+      'card_played',
+      'card_played',
+      'card_played',
+      'trick_complete',
+      'round_complete',
+      'round_started',
+      'trump_revealed',
+    ]);
+    expect((await t.pc[2].waitFor('hand_dealt', (p) => p.round_number === 2)).payload.hand).toHaveLength(2);
+    expect((await t.pc[2].waitFor('bid_request', (p) => p.round_number === 2)).payload).toMatchObject({ allowed_bids: [0, 1, 2] });
+
+    const rounds = await db('rounds').where({ game_id: t.gameId });
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toMatchObject({ round_number: 1, dealer_user_id: ids[0], trump_suit: 'clubs', trump_source: 'flip' });
+    expect(rounds[0].ended_at).not.toBeNull();
+    const rp = await db('round_players').where({ round_id: rounds[0].id }).orderBy('bid_position');
+    expect(rp.map((r) => [r.user_id, r.bid, r.tricks_won, r.score_delta, r.bid_position])).toEqual([
+      [ids[1], 0, 0, 20, 1],
+      [ids[2], 1, 1, 30, 2],
+      [ids[0], 0, 0, 20, 3],
+    ]);
+    const game = await db('games').where({ id: t.gameId }).first();
+    expect(game.status).toBe('in_progress');
+    expect(game.state).toMatchObject({ phase: 'round_end', currentRound: 1, scores: { [ids[0]]: 20, [ids[1]]: 20, [ids[2]]: 30 } });
+    expect(game.state.roundHistory).toHaveLength(1);
+  });
+
+  it('logs card plays, the trick and the round with their own round and trick numbers', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    const ids = t.players.map((p) => p.id);
+    await playRound1(t);
+    await t.pc[2].waitFor('bid_request', (p) => p.round_number === 2);
+
+    const rows = await db('game_events').where({ game_id: t.gameId }).where('seq', '>', 8).orderBy('seq');
+    expect(rows.map((r) => [r.seq, r.event, r.event_type, r.round_number, r.trick_number])).toEqual([
+      [9, 'card_played', 'card_played', 1, 1],
+      [10, 'card_played', 'card_played', 1, 1],
+      [11, 'card_played', 'card_played', 1, 1],
+      [12, 'trick_complete', 'trick_completed', 1, 1],
+      [13, 'round_complete', 'round_completed', 1, null],
+      [14, 'round_started', 'round_started', 2, null],
+      [15, 'trump_revealed', 'trump_revealed', 2, null],
+    ]);
+    expect(rows[1].payload).toMatchObject({
+      playerId: ids[2],
+      card: card(S('hearts', 14)),
+      playPosition: 2,
+      handBeforePlay: [card(S('hearts', 14))],
+      ledSuit: 'hearts',
+      trumpSuit: 'clubs',
+      cardsPlayedInTrick: [{ playerId: ids[1], card: card(S('hearts', 10)) }],
+      bidsThisRound: { [ids[0]]: 0, [ids[1]]: 0, [ids[2]]: 1 },
+    });
+    expect(rows[3].payload).toMatchObject({ winnerUserId: ids[2], winningCardType: 'suited', tricksWonPerPlayer: { [ids[2]]: 1 } });
+    expect(rows[4].payload.results).toContainEqual({ userId: ids[2], bid: 1, tricksWon: 1, scoreDelta: 30, cumulativeScore: 30 });
+    // The broadcast copies never carry a hand.
+    for (const r of rows) expect(JSON.stringify(r.sent_payload)).not.toContain('hand');
+  });
+});
+
+describe('game end', () => {
+  it('writes the results, broadcasts game_over, holds the room COMPLETING, then closes it', async () => {
+    stackTwoRounds();
+    const t = await startTable({ spectators: 1, config: { roundCount: 2 } });
+    const ids = t.players.map((p) => p.id);
+    await playRound1(t);
+    await playRound2(t);
+
+    const lastRound = await t.pc[0].waitFor('round_complete', (p) => p.round_number === 2);
+    expect(lastRound.payload).toMatchObject({ is_final_round: true });
+    for (const c of [...t.pc, t.sc[0]]) {
+      const over = await c.waitFor('game_over');
+      expect(over.payload).toEqual({
+        game_id: t.gameId,
+        final_scores: [
+          { player_id: ids[0], score: 50 },
+          { player_id: ids[1], score: 10 },
+          { player_id: ids[2], score: 50 },
+        ],
+        winner_ids: [ids[0], ids[2]],
+        closes_at: expect.any(String),
+        countdown_seconds: 2,
+      });
+      expect(over.seq).toBe(lastRound.seq + 1);
+    }
+    // No next round.
+    expect(t.pc[0].events('round_started')).toHaveLength(2);
+
+    const game = await db('games').where({ id: t.gameId }).first();
+    expect(game).toMatchObject({ status: 'complete', drop_reason: null });
+    expect(game.ended_at).not.toBeNull();
+    expect(game.state).toMatchObject({ phase: 'completed', winnerUserIds: [ids[0], ids[2]] });
+    const results = await db('game_results').where({ game_id: t.gameId });
+    expect(results.map((r) => [r.user_id, r.final_score, r.outcome, r.rounds_played]).sort()).toEqual(
+      [
+        [ids[0], 50, 'win', 2],
+        [ids[1], 10, 'loss', 2],
+        [ids[2], 50, 'win', 2],
+      ].sort(),
+    );
+    expect(await db('rounds').where({ game_id: t.gameId }).count('* as n').first()).toEqual({ n: '2' });
+    expect((await db('rooms').where({ id: t.roomId }).first()).state).toBe('completing');
+    const logged = await db('game_events').where({ game_id: t.gameId, event: 'game_over' }).first();
+    expect(logged).toMatchObject({ event_type: 'game_completed', round_number: 2, seq: lastRound.seq + 1 });
+    expect(logged.payload).toMatchObject({ status: 'complete', winners: [ids[0], ids[2]], roundCount: 2, playerCount: 3 });
+    expect(server.rooms.hasCloseTimer(t.roomId)).toBe(true);
+    // A game action now is refused as out of phase.
+    emit(t.pc[0], 'play_card', { card: card(W()) });
+    expect((await t.pc[0].waitFor('invalid_play_error')).payload).toMatchObject({ code: 'INVALID_PHASE' });
+
+    // The countdown runs out: room_closed, everyone back to the lobby, the room closed.
+    for (const c of [...t.pc, t.sc[0]]) {
+      expect((await c.waitFor('room_closed', () => true, { timeoutMs: COUNTDOWN_MS + 3000 })).payload).toEqual({
+        room_id: t.roomId,
+        reason: 'game_finished',
+      });
+      await c.waitFor('lobby_snapshot');
+    }
+    const room = await db('rooms').where({ id: t.roomId }).first();
+    expect(room.state).toBe('closed');
+    expect(room.closed_at).not.toBeNull();
+    expect(await db('room_members').where({ room_id: t.roomId }).whereNull('left_at')).toHaveLength(0);
+    expect(server.games.isLive(t.roomId)).toBe(false);
+  });
+
+  it('a player reconnecting during the countdown gets state_snapshot, then game_over', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    await playRound1(t);
+    await playRound2(t);
+    t.pc[1].close();
+
+    const again = connect(server.url, t.players[1].cookie);
+    clients.push(again);
+    expect((await again.waitFor('state_snapshot')).payload.game_state.phase).toBe('completed');
+    expect((await again.waitFor('game_over')).payload).toMatchObject({ winner_ids: [t.players[0].id, t.players[2].id] });
+  });
+
+  it('players may leave during the countdown; once everyone has left the room closes at once', async () => {
+    stackTwoRounds();
+    const t = await startTable({ spectators: 1, config: { roundCount: 2 } });
+    await playRound1(t);
+    await playRound2(t);
+
+    for (const u of [...t.players, ...t.spectators].slice(0, -1)) {
+      await api().post(`/api/v1/rooms/${t.roomId}/leave`).set('Cookie', u.cookie).expect(204);
+    }
+    await t.pc[0].waitFor('lobby_snapshot');
+    expect((await db('rooms').where({ id: t.roomId }).first()).state).toBe('completing');
+    // The spectator, still there, saw them go.
+    expect(t.sc[0].events('user_left')).toHaveLength(3);
+
+    await api().post(`/api/v1/rooms/${t.roomId}/leave`).set('Cookie', t.spectators[0].cookie).expect(204);
+    const room = await db('rooms').where({ id: t.roomId }).first();
+    expect(room.state).toBe('closed');
+    expect(server.rooms.hasCloseTimer(t.roomId)).toBe(false);
+    expect(server.games.isLive(t.roomId)).toBe(false);
+    // Everyone can go straight into another room.
+    await api().post('/api/v1/rooms').set('Cookie', t.players[0].cookie).send({}).expect(201);
+  });
+
+  it('a player still cannot leave a game in progress', async () => {
+    const t = await startTable();
+    await api().post(`/api/v1/rooms/${t.roomId}/leave`).set('Cookie', t.players[1].cookie).expect(403);
+  });
+});
+
+describe('a whole game', () => {
+  it('plays a shuffled 20-round game to game_over with players answering every prompt; the records add up', async () => {
+    // Seeded shuffles, the same every run. Round 20 deals all 60 cards: no flip, no trump.
+    let seed = 42;
+    const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    for (let r = 1; r <= 20; r++) decks[r] = new Deck('standard', random).shuffle();
+    const t = await startTable({ spectators: 1 });
+
+    for (const c of t.pc) {
+      c.socket.on('trump_selection_request', () => emit(c, 'select_trump', { suit: 'spades' }));
+      c.socket.on('bid_request', (env: { payload: { allowed_bids: number[] } }) => emit(c, 'place_bid', { bid: env.payload.allowed_bids.at(-1) }));
+      c.socket.on('play_request', (env: { payload: { legal_cards: unknown[] } }) => emit(c, 'play_card', { card: env.payload.legal_cards[0] }));
+    }
+    // round_started for round 1 was already seen: answer the prompts that arrived before the handlers.
+    for (const c of t.pc) {
+      if (c.events('bid_request').length > 0) emit(c, 'place_bid', { bid: c.events('bid_request')[0].payload.allowed_bids.at(-1) });
+      if (c.events('trump_selection_request').length > 0) emit(c, 'select_trump', { suit: 'spades' });
+    }
+
+    const over = await t.sc[0].waitFor('game_over', () => true, { timeoutMs: 20000 });
+    for (const c of [...t.pc, t.sc[0]]) {
+      expect(c.events('round_complete')).toHaveLength(20);
+      // No gaps: every broadcast this client saw has the next seq.
+      const start = c.events('game_starting')[0].index;
+      const unicasts = ['hand_dealt', 'bid_request', 'play_request', 'trump_selection_request'];
+      const seqs = c.log.filter((e) => e.index >= start && !unicasts.includes(e.event)).map((e) => e.seq);
+      expect(seqs[0]).toBe(1);
+      expect(seqs).toEqual(seqs.map((_, i) => seqs[0] + i));
+    }
+    expect(t.pc.flatMap((c) => c.events('invalid_play_error'))).toHaveLength(0);
+    expect(t.pc.flatMap((c) => c.events('invalid_bid_error'))).toHaveLength(0);
+    const last = t.sc[0].events('round_started').at(-1)!.payload;
+    expect(last).toMatchObject({ round_number: 20, trump_card: null, trump_suit: null });
+
+    const results = await db('game_results').where({ game_id: t.gameId });
+    const sums: { user_id: string; total: string }[] = await db('round_players as rp')
+      .join('rounds as r', 'r.id', 'rp.round_id')
+      .where('r.game_id', t.gameId)
+      .groupBy('rp.user_id')
+      .select('rp.user_id', db.raw('sum(rp.score_delta) as total'));
+    expect(sums).toHaveLength(3);
+    for (const s of sums) expect(results.find((r) => r.user_id === s.user_id)!.final_score).toBe(Number(s.total));
+    for (const e of over.payload.final_scores) expect(results.find((r) => r.user_id === e.player_id)!.final_score).toBe(e.score);
+    expect(await db('game_events').where({ game_id: t.gameId }).count('* as n').first()).toEqual({ n: String(over.seq) });
   });
 });

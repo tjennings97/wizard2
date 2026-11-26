@@ -192,7 +192,7 @@ function payloadOf(envelope: unknown): Record<string, unknown> {
 }
 
 /**
- * select_trump and place_bid. Each is handled after the previous event from this socket, so a
+ * select_trump, place_bid and play_card. Each is handled after the previous event from this socket, so a
  * socket's actions reach the game in the order sent. The session is re-validated first, at most
  * once per `recheckMs`, which also slides it: a player who only uses the socket stays logged in.
  * The acting player is always the socket's user; a payload player_id is ignored.
@@ -201,6 +201,7 @@ function registerGameActions(realtime: Realtime, games: GameService, socket: App
   const actions: Record<string, (roomId: string, p: Record<string, unknown>) => Promise<void>> = {
     select_trump: (roomId, p) => games.selectTrump(roomId, actor(socket), p.suit, p.idempotency_key),
     place_bid: (roomId, p) => games.placeBid(roomId, actor(socket), p.bid, p.idempotency_key),
+    play_card: (roomId, p) => games.playCard(roomId, actor(socket), p.card, p.idempotency_key),
   };
   for (const [event, act] of Object.entries(actions)) {
     socket.on(event, (envelope: unknown) => {

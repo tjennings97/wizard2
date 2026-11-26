@@ -301,6 +301,17 @@ export class Game {
     };
   }
 
+  /**
+   * The cards the player may play right now, in hand order: on their turn in the trick phase,
+   * the cards the follow-suit rule allows; otherwise none.
+   */
+  legalCards(playerId: string): Card[] {
+    const player = this.getPlayer(playerId);
+    if (this._phase !== 'trick' || this.currentTurnId !== playerId) return [];
+    const trick = this.activeRound().currentTrick as Trick;
+    return player.hand.filter((c) => trick.isLegalPlay(player.hand, c));
+  }
+
   /** Ends the game after the final round has been scored. */
   endGame(): GameResult {
     this.assertPhase('round_end');
