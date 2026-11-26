@@ -3,7 +3,7 @@ name: ci-pr
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [master]
 
 concurrency:
   group: ci-pr-${{ github.event.pull_request.number }}
