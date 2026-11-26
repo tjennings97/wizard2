@@ -71,6 +71,15 @@ describe('Round bidding', () => {
     r.recordBid('a', 2);
   });
 
+  it('uneven rule does not apply in round 1', () => {
+    const r = makeRound({ bidRule: 'uneven', roundNumber: 1 });
+    r.recordBid('b', 0);
+    r.recordBid('c', 0);
+    expect(r.allowedBids('a')).toEqual([0, 1]);
+    r.recordBid('a', 1);
+    expect(r.bidTotal).toBe(1);
+  });
+
   it('uneven rule does not restrict non-dealers', () => {
     const r = makeRound({ bidRule: 'uneven' });
     r.recordBid('b', 3);

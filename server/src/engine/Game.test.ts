@@ -282,14 +282,29 @@ describe('Game round flow', () => {
     g.playCard('b', S('spades', 5)); // no hearts → anything goes
   });
 
-  it('enforces the uneven bid rule on the dealer', () => {
+  it('does not apply the uneven bid rule in round 1', () => {
     const g = gameWithDecks({ 1: round1() }, { config: { roundCount: 3, bidRule: 'uneven' } });
     g.startRound();
     g.placeBid('b', 0);
     g.placeBid('c', 0);
-    expect(() => g.placeBid('a', 1)).toThrow(expect.objectContaining({ code: 'INVALID_BID' }));
-    expect(g.getPlayer('a').bid).toBeNull();
-    g.placeBid('a', 0);
+    expect(g.currentRound!.allowedBids('a')).toEqual([0, 1]);
+    g.placeBid('a', 1); // total 1 = trick count: allowed in round 1
+  });
+
+  it('enforces the uneven bid rule on the dealer from round 2', () => {
+    const g = makeGame({ config: { roundCount: 3, bidRule: 'uneven' }, random: seeded(1) });
+    g.startRound();
+    autoPlayRound(g);
+    expect(g.startRound().roundNumber).toBe(2);
+    if (g.phase === 'trump_declaration') g.declareTrump(g.currentTurnId!, 'hearts');
+    const round = g.currentRound!;
+    const [first, second, dealer] = round.bidOrder;
+    g.placeBid(first, 1);
+    g.placeBid(second, 0);
+    expect(round.allowedBids(dealer)).toEqual([0, 2]);
+    expect(() => g.placeBid(dealer, 1)).toThrow(expect.objectContaining({ code: 'INVALID_BID' }));
+    expect(g.getPlayer(dealer).bid).toBeNull();
+    g.placeBid(dealer, 2);
   });
 
   it('cumulative scores can go negative', () => {

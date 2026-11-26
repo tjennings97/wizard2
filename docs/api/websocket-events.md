@@ -159,7 +159,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `bid_request` | **U** | `player_id`, `round_number`, `bids_so_far: BidEntry[]`, `hand_size: integer`, `allowed_bids: integer[]` — to the next bidder only, starting left of the dealer; the dealer bids last. `BidEntry` is `{ player_id, bid }`, in bidding order. `allowed_bids` is `0…round_number`, minus the one bid that would make the total equal the trick count when the dealer bids under the uneven rule |
+| `bid_request` | **U** | `player_id`, `round_number`, `bids_so_far: BidEntry[]`, `hand_size: integer`, `allowed_bids: integer[]` — to the next bidder only, starting left of the dealer; the dealer bids last. `BidEntry` is `{ player_id, bid }`, in bidding order. `allowed_bids` is `0…round_number`, minus the one bid that would make the total equal the trick count when the dealer bids under the uneven rule in round 2 or later (round 1 is exempt) |
 | `bid_placed` | All | `player_id`, `bid: integer` |
 | `all_bids_placed` | All | `bids: BidEntry[]` — every player has bid, in bidding order; trick play begins |
 

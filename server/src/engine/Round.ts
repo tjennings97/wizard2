@@ -151,7 +151,9 @@ export class Round {
     if (this.isScored || this._awaitingDeclaration || this.currentBidderId !== playerId) return [];
     const all = Array.from({ length: this.roundNumber + 1 }, (_, i) => i);
     const isLast = this.bids.size === this.bidOrder.length - 1;
-    if (this.bidRule === 'uneven' && isLast) {
+    // Uneven bidding binds the last bidder (the dealer) in every round but the first: with one
+    // trick, forcing the total off 1 leaves the dealer no real choice (docs/product/game-rules.md).
+    if (this.bidRule === 'uneven' && isLast && this.roundNumber > 1) {
       const forbidden = this.roundNumber - this.bidTotal;
       return all.filter((b) => b !== forbidden);
     }

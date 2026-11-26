@@ -166,7 +166,7 @@ Key design decisions for each of your 10 flows, based on what matters most per s
 
 **Trump Determination (Flow 4)** This is a quick transition moment, not a full screen. Show a modal or overlay: the flipped card large in the center, trump suit indicator updating. The dealer's suit-selection prompt is a simple 4-button grid (♠ ♥ ♦ ♣). Others see a spinner + "Waiting for dealer to choose trump." Resolve in under 2 seconds visually.
 
-**Bidding Phase (Flow 5)** The game board stays visible behind a bidding panel. Show each player's seat and a "?" chip until their bid is locked. The active bidder sees a number picker (0 to N), large and touch-friendly. Uneven rule: grey out the forbidden number with a tooltip explaining why. Scoreboard strip visible at top showing round number and bids so far.
+**Bidding Phase (Flow 5)** The game board stays visible behind a bidding panel. Show each player's seat and a "?" chip until their bid is locked. The active bidder sees a number picker (0 to N), large and touch-friendly. Uneven rule (round 2 onward): grey out the forbidden number with a tooltip explaining why. Scoreboard strip visible at top showing round number and bids so far.
 
 **Trick Phase (Flow 6)** This is the core loop — invest design time here. Layout: player hand at the bottom, trick play area (table center), other players' seats around the edges showing card-back stacks (count visible). The active player's turn is announced with a gold pulse on their seat + a "Your turn" banner. Played cards animate to the center table. Invalid play: card snaps back with a brief red flash + toast.
 

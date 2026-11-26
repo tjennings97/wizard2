@@ -53,7 +53,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | --- | --- | --- | --- | --- |
 | Room IN PROGRESS | Game created | — | **INITIALISING** | Shuffle deck; assign seat order; determine dealer (seat 1 for round 1); write `games` row |
 | **INITIALISING** | Trump card flipped (or dealer declares) | — | **BIDDING** | Record trump suit and source; emit `round_started` with trump; emit `hand_dealt` to each player |
-| **BIDDING** | All players have placed bids | Bid total constraint satisfied if `bid_rule = uneven` | **TRICK PHASE** | Emit `all_bids_placed`; set first lead to player left of dealer |
+| **BIDDING** | All players have placed bids | Bid total constraint satisfied if `bid_rule = uneven` and round > 1 | **TRICK PHASE** | Emit `all_bids_placed`; set first lead to player left of dealer |
 | **TRICK PHASE** | All tricks in round played | — | **ROUND END** | Compute scores; write `rounds` and `round_players`; write `games.state` checkpoint; emit `round_complete` |
 | **ROUND END** | More rounds remain | `currentRound < config.roundCount` | **INITIALISING** | Increment round; rotate dealer; shuffle deck; deal |
 | **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` (see Room Lifecycle, IN PROGRESS → COMPLETING) |
@@ -76,7 +76,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **TRUMP DETERMINATION** | Dealer declares trump suit | Top card was a Wizard; dealer has viewed hand | **TRUMP DETERMINATION → BIDDING** | Set `rounds.trump_suit` to declared suit; set `rounds.trump_source = declaration`; write `game_events` (trump\_declared); emit `trump_revealed` |
 | **TRUMP DETERMINATION** | (Superseded) No top card to flip — final round, all cards dealt | Handled at ROUND START before entering TRUMP DETERMINATION. This row is kept for reference only. Condition: `deckSize % playerCount === 0` | **TRUMP DETERMINATION → BIDDING** | Set `rounds.trump_suit = null`; no trump for this round |
 | **TRUMP DETERMINATION** | Trump resolved | — | **BIDDING PHASE** | Set bid order starting left of dealer; emit `bid_request` to the first bidder |
-| **BIDDING PHASE** | Each player places bid | Player's turn; bid is 0–N; if last bidder and `bid_rule = uneven`, bid cannot make total equal trick count | **BIDDING PHASE** (until all bid) | Record bid; emit `bid_placed`; write `game_events` (bid\_placed) |
+| **BIDDING PHASE** | Each player places bid | Player's turn; bid is 0–N; if last bidder, `bid_rule = uneven` and round > 1, bid cannot make total equal trick count | **BIDDING PHASE** (until all bid) | Record bid; emit `bid_placed`; write `game_events` (bid\_placed) |
 | **BIDDING PHASE** | All players have bid | — | **TRICK PHASE** | Emit `all_bids_placed`; set first lead to player left of dealer |
 | BIDDING PHASE | All players have bid | — | TRICK PHASE | Emit all_bids_placed; set first trick lead to player left of dealer; Trick state machine takes over for each trick |
 | **TRICK PHASE** | All N tricks completed | — | **ROUND SCORING** | Compute score deltas; write `rounds` and `round_players`; emit `round_complete` |
