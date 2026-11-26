@@ -77,6 +77,21 @@ GitHub Actions is the CI platform. No Railway-specific CI is required; Railway h
 
 **`npm audit`.** Dependency audit runs as part of `ci-pr.yml`. Known vulnerabilities in direct dependencies block merge.
 
+**`ci-pr.yml` steps.** One job on `ubuntu-latest` with a `postgres:16` service container (database `wizard_test`). It triggers on pull requests to `main` and also to `master`, the repository's current default branch.
+
+1. `npm ci`
+2. `npm audit` (dev dependencies included)
+3. `npm run typecheck`
+4. `npm run build` (client and server)
+5. `npm test -w server` (Jest unit tests)
+6. `npm run test:integration -w server` (Jest integration and Socket.io tests; they create and migrate their own `wizard_jest` database)
+7. `npm run migrate:latest -w server` against `wizard_test`
+8. Start the server with `NODE_ENV=test TRUST_PROXY_HOPS=1 PORT=3100` and poll `/health` for up to 60 seconds
+9. `pip install -r tests/api/requirements.txt`, then `pytest tests/api` with `API_BASE_URL=http://127.0.0.1:3100/api/v1` and `DATABASE_URL` pointing at `wizard_test`
+10. Print the server log, whether or not the earlier steps passed
+
+`SESSION_SECRET` and `PROMETHEUS_TOKEN` are fixed throwaway values set in the workflow, not secrets. Playwright E2E tests are not part of the job yet; add a step when the suite exists.
+
 **Secrets.** The `RAILWAY_TOKEN` and any other CI-required secrets are stored as GitHub Actions secrets, not in the repository.
 
 ## Test Automation Execution

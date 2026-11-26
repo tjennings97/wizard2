@@ -124,6 +124,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 ## 6. CI
 
+**Status: done.** `.github/workflows/ci-pr.yml` runs every step below on pull requests to `main` (and `master`, the repo's current default branch). The workflow is described under "CI — GitHub Actions" in `docs/operations/deployment-infrastructure.md`.
+
 **Why:** there is no `.github/` directory yet, but `docs/operations/deployment-infrastructure.md` says PRs to `main` must pass CI and that the API tests run there.
 
 **Build:** `.github/workflows/ci-pr.yml`, the PR workflow named in the deployment doc, which:
@@ -165,4 +167,4 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 ## 10. Small fixes
 
 - `docs/api/openapi-spec.md` lists the local dev server as `http://localhost:3001/api/v1`. The server and Vite proxy use port 3000. Correct the spec.
-- **Dev-server advisories (`vite`, `esbuild`).** `npm audit` (including dev dependencies) reports advisories against `vite` 5.x and its bundled `esbuild` (≤ 0.24.2). They affect only the local dev server, not the production bundle, but `docs/operations/deployment-infrastructure.md` says known vulnerabilities in direct dependencies block merge. **Decision needed:** upgrade to `vite` 6.4.4 or newer (all listed advisories are fixed there; check that `@vitejs/plugin-react` supports it), or have `ci-pr.yml` audit production dependencies only (`npm audit --omit=dev`).
+- **Dev-server advisories (`vite`, `esbuild`): done.** The client was upgraded to `vite` 6.4.6 (`@vitejs/plugin-react` 4.7 supports it), and `npm audit`, dev dependencies included, now reports no vulnerabilities, so `ci-pr.yml` runs the full audit. Original note: `npm audit` (including dev dependencies) reports advisories against `vite` 5.x and its bundled `esbuild` (≤ 0.24.2). They affect only the local dev server, not the production bundle, but `docs/operations/deployment-infrastructure.md` says known vulnerabilities in direct dependencies block merge. **Decision needed:** upgrade to `vite` 6.4.4 or newer (all listed advisories are fixed there; check that `@vitejs/plugin-react` supports it), or have `ci-pr.yml` audit production dependencies only (`npm audit --omit=dev`).
