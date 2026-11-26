@@ -36,9 +36,11 @@ Every message, in both directions, is a JSON object with this top-level envelope
 `seq` is assigned by the server; clients send `0`. How it counts depends on where the socket is:
 
 - **Lobby and open rooms:** per socket. Each event sent on the socket takes the next number.
-- **A room whose game has started (players and spectators):** per game. Every event broadcast to the game's room takes the game's next `seq`, and every socket in the room receives it with the same number. Each one is logged in `game_events` with that `seq` (see the data model), which is what a reconnect replays from. A unicast (`hand_dealt`, `bid_request`, `trump_selection_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, `invalid_play_error`, a non-fatal `session_error`) carries the game's current `seq` without advancing it, so it has the same number as the broadcast before it. Unicasts are not logged; `state_snapshot` restores what they carried.
+- **A room whose game has started (players and spectators):** per game. Every event broadcast to the game's room takes the game's next `seq`, and every socket in the room receives it with the same number. Each one is logged in `game_events` with that `seq` (see the data model), which is what a reconnect replays from. A unicast (`hand_dealt`, `bid_request`, `trump_selection_request`, `play_request`, `state_snapshot`, `invalid_bid_error`, `invalid_trump_error`, `invalid_play_error`, `pong`, a non-fatal `session_error`) carries the game's current `seq` without advancing it, so it has the same number as the broadcast before it. Unicasts are not logged; `state_snapshot` restores what they carried.
 
 Clients detect gaps and emit `sync_request` if `seq` jumps by more than 1. A repeated `seq` (a unicast after a broadcast) is not a gap. On entering a game, the client takes the `seq` of `state_snapshot` (or of `game_starting`, which is `1`) as its starting point.
+
+**Replayed events.** After a `state_snapshot` with `seq` S, a reply to `join_game` or `sync_request` with `last_seq_seen` L replays the logged broadcasts with L < `seq` ≤ S, each with its original `seq` and payload (the `sent_payload` column, which never holds hands). They are already reflected in the snapshot: a client applies a broadcast only if its `seq` is greater than the last one applied, and may use the replayed ones to show what happened while it was away (the last trick, the round summary). If more than 200 events were missed, only the snapshot is sent.
 
 ### Delivery Guarantees
 
@@ -60,8 +62,8 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `join_game` | Player opens game URL | `player_id: string`, `display_name: string`, `last_seq_seen?: number` |
-| `leave_game` | Player clicks Leave | `player_id: string` |
+| `join_game` | The client reconnects while showing a game (or opens the game URL) | `player_id: string`, `display_name: string`, `last_seq_seen?: number` — the session is checked as for game actions. In a room with a live game: `state_snapshot`, the replayed events after `last_seq_seen` (see Replayed events), then the pending prompt (as after any `state_snapshot`); a player whose seat was held is reconnected (`player_reconnected`). Not in a live game: `game_abandoned` (unicast, the socket's own `seq`) if the user's latest game was abandoned (server restart or time limit), otherwise nothing. Connecting is enough to get back into a game (the server sends `state_snapshot` on connect); `join_game` adds the replay |
+| `leave_game` | Player clicks Leave | `player_id: string` — the socket equivalent of `POST /rooms/{roomId}/leave`, for the socket's room. In a game in progress it is a quit (see Leave in the Lifecycle Summary) |
 
 ### Room
 
@@ -91,25 +93,26 @@ All events below are sent by the client inside the standard envelope. `seq` is a
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `choose_continue_or_end` | One of the two remaining players answers `continue_or_end_request` | `player_id: string`, `choice: "continue"\|"end"` |
+| `choose_continue_or_end` | One of the two remaining players answers `continue_or_end_request` | `player_id: string`, `choice: "continue"\|"end"`, `idempotency_key?: string` — `end` from either player ends the game at once; when both have answered `continue`, the voided round is re-dealt for the two of them. Ignored if no decision is pending or `choice` is neither value (there is no error event for it) |
 
 ### Sync & Control
 
 | Event | Trigger | Key Payload Fields |
 | --- | --- | --- |
-| `sync_request` | Client detects a `seq` gap | `player_id: string`, `last_seq_seen: number` |
-| `ping` | Client keepalive (every 15 s) | `client_time: ISO-8601` |
+| `sync_request` | Client detects a `seq` gap | `player_id: string`, `last_seq_seen: number` — answered exactly like `join_game` |
+| `ping` | Client keepalive (every 15 s, and on each Socket.io heartbeat, which background tabs do not throttle) | `client_time: ISO-8601` — answered with `pong`. Once a socket has sent a `ping`, 30 s without another disconnects it (see Idle & Timeout Policy). A client that never pings relies on Socket.io's own heartbeat |
 
 ### Game actions: who acts, ordering and session refresh
 
-These rules apply to every game action (`select_trump`, `place_bid`, `play_card`, and later `choose_continue_or_end`):
+These rules apply to every game action (`select_trump`, `place_bid`, `play_card`, `choose_continue_or_end`); the session check and ordering also apply to `join_game`, `sync_request` and `leave_game`:
 
 - **The acting player is the socket's user.** The `player_id` in the payload is informational and is ignored; a socket cannot act for someone else.
 - **Ordering:** events from one socket are handled one at a time, in the order sent, and actions on one game are applied one at a time across all its players.
 - **Session refresh:** before an action, the server validates the socket's session cookie again with `authenticateToken`, which also slides the session's 24-hour idle expiry, so a player who only uses the socket stays logged in. This is throttled per socket: at most once every 5 minutes (connecting counts as a check). If the session has ended or expired, the server sends `session_error` (`fatal: true`, with the failure `code`) and disconnects, and the action is not applied.
 - **Could not process:** if the session check cannot run (for example a database error) or the action fails unexpectedly on the server, the action is not applied and the socket gets `session_error` `{ code: "ACTION_FAILED", fatal: false }`; the socket stays connected. The client may resend the action with the same `idempotency_key`: a key is recorded only once its action has been processed.
 - **Not a player:** an action from a spectator (or anyone not seated in the game) gets `session_error` `{ code: "SPECTATOR_ACTION_FORBIDDEN", fatal: false }`; the socket stays connected.
-- **Outside a game:** an action from a socket that is not in a room with a game in progress is ignored.
+- **Outside a game:** an action from a socket that is not in a room with a live game is not applied, but it is answered so the client can recover (for example one still showing a bid panel after a server restart): `game_abandoned` if the user's latest game was abandoned (server restart or time limit); otherwise the action's error with `code: "INVALID_PHASE"` (`invalid_trump_error`, `invalid_bid_error` with `min_bid` and `max_bid` `0` and empty `allowed_bids`, or `invalid_play_error` with empty `legal_cards`). `choose_continue_or_end` has no error event and gets nothing. These replies carry the socket's own `seq`.
+- **Once the game has ended** (`game_over` or `game_abandoned`), actions are refused with `INVALID_PHASE`.
 
 ## Server → Client Events
 
@@ -133,15 +136,15 @@ The server broadcasts most events to all players in the session. Unicast events 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
 | `user_joined` | All | `user_id`, `display_name`, `role: "player"\|"spectator"`, `seat_index: integer\|null` (null for spectators), `player_count`, `spectator_count` — sent for players and spectators |
-| `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress |
+| `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress. Then the player is out of the game for good and the drop's consequence follows at once: with 3 or more players left, the voided round is re-dealt at the same round number (`round_started`, `hand_dealt`, ...); with 2, `continue_or_end_request`; with 1, `game_over` (`status: "incomplete"`). `timeout`: a disconnected player did not come back within 30 s |
 | `game_starting` | All | `game_id: string`, `countdown_seconds: integer`, `player_order: string[]` — the host started the game (`POST /rooms/{roomId}/start`). `countdown_seconds` is `0`: the game starts at once. `player_order` is the seat order (join order); seat 1 deals round 1 |
 | `game_started` | All | `game_id: string`, `room_id: string`, `round_count: integer`, `bid_rule: "open"\|"uneven"`, `players: PlayerSummary[]` — `PlayerSummary` is `{ user_id, display_name, seat_index }` (0-based, as in `user_joined`). Clients go to the game screen (`/game/{game_id}`) |
-| `game_over` | All | `game_id`, `final_scores: ScoreEntry[]` (seat order), `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners — `closes_at: ISO-8601`, `countdown_seconds: integer` (`30`). Sent right after the final `round_complete`. The room is now COMPLETING: at `closes_at` it closes (`room_closed`, `reason: "game_finished"`) and everyone returns to the lobby. Members may leave sooner with `POST /rooms/{roomId}/leave`; this is not a quit |
+| `game_over` | All | `game_id`, `status: "complete"\|"incomplete"`, `final_scores: ScoreEntry[]` (seat order, players still seated), `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners — `closes_at: ISO-8601`, `countdown_seconds: integer` (`30`). `complete`: sent right after the final `round_complete`. `incomplete`: the game ended early after a player drop (one player left, or the last two did not both choose to continue); the round in progress is not scored and `winner_ids` is empty. The room is now COMPLETING: at `closes_at` it closes (`room_closed`, `reason: "game_finished"`) and everyone returns to the lobby. Members may leave sooner with `POST /rooms/{roomId}/leave`; this is not a quit |
 | `game_time_warning` | All | `game_id: string`, `ends_at: ISO-8601`, `minutes_remaining: 15`: sent once, 15 minutes before the 3-hour game time limit |
-| `game_abandoned` | All | `reason: "server_restart"\|"time_limit"`, `game_id: string` |
-| `player_disconnected` | All | `player_id`, `reconnect_deadline: ISO-8601` — socket dropped; the player's seat is held until the deadline |
-| `player_reconnected` | All | `player_id` — the player rejoined within the window; clears the disconnect indicator |
-| `continue_or_end_request` | All | `remaining_player_ids: string[]` — a drop left exactly two players; each answers with `choose_continue_or_end` within 60 s (no answer counts as end) |
+| `game_abandoned` | All | `reason: "server_restart"\|"time_limit"`, `game_id: string` — `time_limit`: broadcast at the 3-hour limit; the game is recorded incomplete with no winner, the room is COMPLETING and closes after the 30-second countdown as after `game_over` (clients show the message and return to the lobby). `server_restart`: the game was lost to a restart; sent as a unicast to a socket that sends `join_game` or a game action afterwards (see Game actions, Outside a game) |
+| `player_disconnected` | All | `player_id`, `reconnect_deadline: ISO-8601` — the player's last socket in the room closed (or a player had no socket when the game started); the seat is held until the deadline. Not sent once the game has ended |
+| `player_reconnected` | All | `player_id` — the player has a socket in the room again within the window (sent after their `state_snapshot`); clears the disconnect indicator |
+| `continue_or_end_request` | All | `remaining_player_ids: string[]`, `decision_deadline: ISO-8601` — a drop left exactly two players; each answers with `choose_continue_or_end` by the deadline, 60 s on. `end` from either player, or no answer from both by the deadline, ends the game (`game_over`, `status: "incomplete"`, recorded with `drop_reason = 'mutual_end'`). Bidding and play wait meanwhile |
 
 ### Round & Deal
 
@@ -173,8 +176,8 @@ The server broadcasts most events to all players in the session. Unicast events 
 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
-| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState`. `seq` is the game seq the view reflects. Sent when a socket connects while its user is in a room with a game in progress, and to a spectator who joins a game in progress (instead of `room_snapshot`). If it is the recipient's turn to declare trump, bid or play, the matching `trump_selection_request`, `bid_request` or `play_request` follows it. Once the game is over (room COMPLETING), `game_over` follows it, so the client can show the countdown |
-| `pong` | **U** | `server_time: ISO-8601` |
+| `state_snapshot` | **U** | `game_state: GameStateView`, `seq: integer` (replay from `last_seq_seen`) — the recipient's filtered view (`game.toPlayerView(userId)`: own hand only; spectators get `game.toSpectatorView()`), never the server-side `GameState`. `seq` is the game seq the view reflects. Sent when a socket connects while its user is in a room with a game in progress, to a spectator who joins a game in progress (instead of `room_snapshot`), and in reply to `join_game` and `sync_request` (then followed by the replayed events). If it is the recipient's turn to declare trump, bid or play, the matching `trump_selection_request`, `bid_request` or `play_request` follows it. While the last two players decide, the pending `continue_or_end_request` follows it (to everyone, with the original deadline). Once the game is over (room COMPLETING), `game_over` or `game_abandoned` follows it, so the client can show the result |
+| `pong` | **U** | `server_time: ISO-8601` — the reply to `ping` |
 | `invalid_play_error` | **U** | `player_id`, `code: string`, `reason: string`, `legal_cards: Card[]` — `code` is `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND` (including anything that is not a card), `ILLEGAL_CARD` (follow-suit) or `INVALID_PHASE` (no trick in play). `legal_cards` is what the sender may play now: empty when it is not their turn |
 | `invalid_bid_error` | **U** | `player_id`, `code: string`, `reason: string`, `min_bid: integer`, `max_bid: integer`, `allowed_bids: integer[]` — `code` is `NOT_YOUR_TURN`, `INVALID_BID` (out of range, not an integer, or blocked by the uneven rule), `ALREADY_BID` or `INVALID_PHASE` (not bidding now). `allowed_bids` is empty when it is not the sender's turn |
 | `invalid_trump_error` | **U** | `player_id`, `code: string`, `reason: string` — a refused `select_trump`: `code` is `NOT_YOUR_TURN` (not the dealer), `INVALID_SUIT` or `INVALID_PHASE` (no declaration pending) |
@@ -193,7 +196,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 | `SCORING` | `round_complete` | — | `round_started` or `game_over` |
 | `GAME_OVER` | `game_over` | `leave_game` (or `POST /rooms/{roomId}/leave`) | `room_closed` (`game_finished`) after the 30-second countdown |
 
-**Server restart.** `game_abandoned` (broadcast, `reason: "server_restart"`) may be emitted from any non-terminal state (`DEALING`, `BIDDING`, `PLAYING`, `SCORING`) when the server restarts and the startup cleanup closes an in-progress game. Clients that reconnect and receive this event must return the player to the lobby. There is no valid client event in response; the game cannot be resumed.
+**Server restart.** A restart loses every game in memory. Before accepting traffic, the startup cleanup records each in-progress game as incomplete (`drop_reason = 'server_restart'`) and closes its room, so a reconnecting client is placed in the lobby (`lobby_snapshot`). A client that was showing the game and sends `join_game` (as it does on reconnect) or a game action gets `game_abandoned` (`reason: "server_restart"`, unicast) and tells the player what happened. There is no valid client event in response; the game cannot be resumed.
 
 **Game time limit.** A game may run for at most 3 hours from `game_started`. At 2 h 45 min the server broadcasts `game_time_warning`. At 3 hours it broadcasts `game_abandoned` (`reason: "time_limit"`) from whatever non-terminal state the game is in, and the game is recorded as incomplete with no winner, exactly as for a server restart. Clients return to the lobby.
 
@@ -219,14 +222,14 @@ The table below maps each GSM state to the events that drive entry, the client e
 | Session ended elsewhere | Server → Client | `session_error` | When a newer login, a password reset or a logout ends a session, every socket using it receives `code: "SESSION_INVALIDATED"` (`fatal: true`, `reason`: `"displaced"`, `"password_reset"` or `"logout"`) and is disconnected. The auth routes publish the ended session ids in-process once their transaction commits; the socket layer subscribes. Single-instance only |
 | Join | Client → Server | `join_game` | Server uses the session bound at connect (`socket.data.userId`); assigns seat |
 | Seat confirmed | Server → Client | `user_joined` (broadcast) | All room members receive the newcomer's info and role |
-| Leave (intentional) | Client → Server | `leave_game` | The player has quit. Server broadcasts `user_left` with `reason: "voluntary"`; in a game, player-drop rules apply |
-| Disconnect detected | Server → All | `player_disconnected` | Socket closed or no `ping` for 30 s. Seat held; 30-second reconnection window starts |
-| Reconnect (within window) | Client → Server | `join_game` with `last_seq_seen` | Server sends `state_snapshot`, replays missed events, broadcasts `player_reconnected` |
-| Window expires | Server → All | `user_left` | `reason: "timeout"`; treated as a quit, player-drop rules apply |
+| Leave (intentional) | Client → Server | `leave_game` (or `POST /rooms/{roomId}/leave`) | The player has quit. Server broadcasts `user_left` with `reason: "voluntary"`; in a game, player-drop rules apply, the player's sockets return to the lobby, and they cannot rejoin the game as a player (joining as a spectator is allowed). After the game is over (COMPLETING) leaving is not a quit |
+| Disconnect detected | Server → All | `player_disconnected` | The player's last socket in the room closed, or a client that pings sent no `ping` for 30 s (the server disconnects it). Only for a player still seated in a game being played. Seat held; 30-second reconnection window starts. A player with no socket in the room when the game starts is treated the same way |
+| Reconnect (within window) | Client → Server | Socket connect; then `join_game` with `last_seq_seen` | On connect the server sends `state_snapshot` and the pending prompt, then broadcasts `player_reconnected`. `join_game` then gets a second `state_snapshot` with the missed events replayed |
+| Window expires | Server → All | `user_left` | `reason: "timeout"`; treated as a quit (the member is marked left), player-drop rules apply |
 
 ### Spectator Mode
 
-Spectators join a room with `POST /rooms/{roomId}/join` (`role: "spectator"`), before or during the game; their socket is then moved into the room (`room_snapshot` before the game, `state_snapshot` with the spectator view during it). `join_game` with `role: "spectator"` is the socket equivalent. The server:
+Spectators join a room with `POST /rooms/{roomId}/join` (`role: "spectator"`), before or during the game; their socket is then moved into the room (`room_snapshot` before the game, `state_snapshot` with the spectator view during it). A socket equivalent (`join_game` with `role: "spectator"`) is not built yet: `join_game` only resyncs the socket's current room. The server:
 
 - Sends them all broadcast events.
 - Never sends `bid_request`, `play_request`, or `hand_dealt` to them.
@@ -239,7 +242,10 @@ Spectator joins and leaves are broadcast to the room like players': `user_joined
 | Condition | Timeout | Server Action |
 | --- | --- | --- |
 | No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 30-second reconnection window |
-| Disconnected player does not rejoin | 30 s after `player_disconnected` | `user_left` (timeout) |
+| Disconnected player does not rejoin | 30 s after `player_disconnected` | `user_left` (timeout), then the player-drop rules |
+| The last two players do not both answer `continue_or_end_request` | 60 s after it | Treated as end: `game_over` (`status: "incomplete"`) |
+| Game running | 2 h 45 min after `game_started` | `game_time_warning` |
+| Game running | 3 h after `game_started` | `game_abandoned` (`reason: "time_limit"`) |
 | Host of an open room has no connected socket | 120 s | The host role passes to the connected player with the lowest join order (`host_changed` to the room, `rooms_updated` to the lobby). The old host stays a member and returns as a regular player. If no other player is connected, nothing changes. Reconnecting within the 120 s keeps the role |
 
 There are no turn timers: the game waits for a player to bid, play, or declare trump. A player who is disconnected is handled by the reconnection window above.

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useReducer, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import type {
   BidEntry,
   BidRule,
@@ -25,6 +25,10 @@ export interface SeatView {
   tricksWon: number;
   /** Cumulative score. */
   score: number;
+  /** False while the seat is held for the player to reconnect. */
+  connected: boolean;
+  /** When the held seat is given up, if known. */
+  reconnectDeadline: string | null;
 }
 
 /** Where the round is, as the client renders it. */
@@ -34,8 +38,12 @@ export type RoundStage =
   | 'bidding'
   /** Every bid is in; tricks are being played. */
   | 'playing'
+  /** A drop left two players; they are deciding whether to continue. */
+  | 'deciding'
   /** The game has ended (game_over). */
   | 'game_over'
+  /** The server stopped the game (game_abandoned). */
+  | 'abandoned'
   | 'waiting';
 
 export interface TrickView {
@@ -53,6 +61,8 @@ export interface RoundResult {
 }
 
 export interface GameOverView {
+  /** `incomplete`: the game ended early (players left) and nobody won. */
+  status: 'complete' | 'incomplete';
   finalScores: ScoreEntry[];
   winnerIds: string[];
   /** When the room closes and everyone returns to the lobby. Null until game_over arrives. */
@@ -90,12 +100,27 @@ export interface GameView {
   /** The round just scored, shown briefly before the next round (dismissed by the page). */
   roundSummary: RoundResult | null;
   gameOver: GameOverView | null;
+  /** Set while the last two players decide whether to continue (continue_or_end_request). */
+  decision: { remainingIds: string[]; deadline: string | null; myChoice: 'continue' | 'end' | null } | null;
+  /** Set once game_time_warning has arrived: the game is stopped at `endsAt`. */
+  timeWarning: { endsAt: string } | null;
+  /** Why the server stopped the game, once game_abandoned has arrived. */
+  abandoned: AbandonReason | null;
+  /** A passing message, e.g. who left. */
+  notice: string | null;
   error: string | null;
   /** Envelope seq of the last game event applied. */
   seq: number;
 }
 
 type State = GameView | null;
+
+export type AbandonReason = 'server_restart' | 'time_limit';
+
+export const ABANDON_MESSAGES: Record<AbandonReason, string> = {
+  time_limit: 'The game reached its 3-hour limit and was stopped. No result was recorded.',
+  server_restart: 'The server restarted, so your game was stopped. No result was recorded.',
+};
 
 type Action =
   | { type: 'reset' }
@@ -111,11 +136,37 @@ type Action =
   | { type: 'card_played'; seq: number; userId: string; playerId: string; card: Card; trickNumber: number }
   | { type: 'trick_complete'; seq: number; winnerId: string; cards: PlayEntry[]; trickNumber: number }
   | { type: 'round_complete'; seq: number; roundNumber: number; scores: RoundScoreEntry[]; totals: ScoreEntry[] }
-  | { type: 'game_over'; seq: number; finalScores: ScoreEntry[]; winnerIds: string[]; closesAt: string }
+  | { type: 'game_over'; seq: number; status: 'complete' | 'incomplete'; finalScores: ScoreEntry[]; winnerIds: string[]; closesAt: string }
+  | { type: 'player_disconnected'; seq: number; playerId: string; deadline: string }
+  | { type: 'player_reconnected'; seq: number; playerId: string }
+  | { type: 'user_left'; seq: number; userId: string; playerId: string; role: string; reason: string }
+  | { type: 'continue_or_end_request'; seq: number; remainingIds: string[]; deadline: string }
+  | { type: 'choice_sent'; choice: 'continue' | 'end' }
+  | { type: 'game_time_warning'; seq: number; endsAt: string }
+  | { type: 'game_abandoned'; seq: number; gameId: string; reason: AbandonReason }
   | { type: 'error'; seq: number; reason: string; allowedBids?: number[]; legalCards?: Card[] }
   | { type: 'state_snapshot'; seq: number; view: GameStateView }
   | { type: 'dismiss_summary' }
+  | { type: 'clear_notice' }
   | { type: 'clear_error' };
+
+/**
+ * Broadcasts that change the game step by step. One whose seq is not past the last applied one is
+ * already reflected in the state (a reconnect replays what was missed after its state_snapshot):
+ * it only updates what the snapshot does not show (the last trick, the round summary).
+ */
+const INCREMENTAL = new Set<Action['type']>([
+  'round_started',
+  'trump_revealed',
+  'bid_placed',
+  'all_bids_placed',
+  'card_played',
+  'trick_complete',
+  'round_complete',
+  'player_disconnected',
+  'player_reconnected',
+  'user_left',
+]);
 
 const sameCard = (a: Card, b: Card) => a.type === b.type && a.suit === b.suit && a.rank === b.rank;
 
@@ -134,7 +185,8 @@ function historyFromView(view: GameStateView): RoundResult[] {
   }));
 }
 
-function snapshotState(view: GameStateView, seq: number): GameView {
+function snapshotState(view: GameStateView, seq: number, prev: State): GameView {
+  const same = prev?.gameId === view.gameId ? prev : null;
   const me = view.players.find((p) => p.userId === view.viewerUserId);
   const stage: RoundStage =
     view.phase === 'trump_declaration'
@@ -143,9 +195,11 @@ function snapshotState(view: GameStateView, seq: number): GameView {
         ? 'bidding'
         : view.phase === 'trick'
           ? 'playing'
-          : view.phase === 'completed'
-            ? 'game_over'
-            : 'waiting';
+          : view.phase === 'awaiting_continue_decision'
+            ? 'deciding'
+            : view.phase === 'completed'
+              ? 'game_over'
+              : 'waiting';
   const open = view.tricksSoFar.at(-1);
   const trick =
     view.phase === 'trick' && open && open.winnerUserId === null
@@ -161,6 +215,8 @@ function snapshotState(view: GameStateView, seq: number): GameView {
       handCount: p.handCount,
       tricksWon: p.tricksWon,
       score: p.cumulativeScore,
+      connected: p.connected,
+      reconnectDeadline: p.connected ? null : (same?.seats.find((s) => s.userId === p.userId)?.reconnectDeadline ?? null),
     }));
   return {
     gameId: view.gameId,
@@ -186,11 +242,41 @@ function snapshotState(view: GameStateView, seq: number): GameView {
     roundSummary: null,
     gameOver:
       view.phase === 'completed'
-        ? { finalScores: seats.map((s) => ({ player_id: s.userId, score: s.score })), winnerIds: view.winnerUserIds, closesAt: null }
+        ? { status: 'complete', finalScores: seats.map((s) => ({ player_id: s.userId, score: s.score })), winnerIds: view.winnerUserIds, closesAt: null }
         : null,
+    // The pending continue_or_end_request follows the snapshot with the deadline.
+    decision:
+      view.phase === 'awaiting_continue_decision'
+        ? { remainingIds: seats.map((s) => s.userId), deadline: same?.decision?.deadline ?? null, myChoice: same?.decision?.myChoice ?? null }
+        : null,
+    timeWarning: same?.timeWarning ?? null,
+    abandoned: same?.abandoned ?? null,
+    notice: same?.notice ?? null,
     error: null,
     seq,
   };
+}
+
+/** A broadcast the state already reflects (see INCREMENTAL): only the transient display is updated. */
+function replayed(state: GameView, action: Action): GameView {
+  switch (action.type) {
+    case 'round_started':
+    case 'card_played':
+      return { ...state, lastTrick: null };
+    case 'trick_complete':
+      return { ...state, lastTrick: { winnerId: action.winnerId, cards: action.cards } };
+    case 'round_complete': {
+      const result = [...state.history].reverse().find((h) => h.roundNumber === action.roundNumber);
+      return result ? { ...state, roundSummary: result } : state;
+    }
+    case 'player_disconnected':
+      return {
+        ...state,
+        seats: state.seats.map((s) => (s.userId === action.playerId && !s.connected ? { ...s, reconnectDeadline: action.deadline } : s)),
+      };
+    default:
+      return state;
+  }
 }
 
 /** The seat after `userId`, clockwise. */
@@ -215,6 +301,8 @@ function reducer(state: State, action: Action): State {
         handCount: 0,
         tricksWon: 0,
         score: 0,
+        connected: true,
+        reconnectDeadline: null,
       })),
       isSpectator: !action.players.some((p) => p.user_id === action.userId),
       roundNumber: 0,
@@ -232,14 +320,23 @@ function reducer(state: State, action: Action): State {
       history: [],
       roundSummary: null,
       gameOver: null,
+      decision: null,
+      timeWarning: null,
+      abandoned: null,
+      notice: null,
       error: null,
       seq: action.seq,
     };
   }
-  if (action.type === 'state_snapshot') return snapshotState(action.view, action.seq);
+  if (action.type === 'state_snapshot') return snapshotState(action.view, action.seq, state);
   if (!state) return state;
   if (action.type === 'clear_error') return { ...state, error: null };
+  if (action.type === 'clear_notice') return { ...state, notice: null };
   if (action.type === 'dismiss_summary') return { ...state, roundSummary: null };
+  if (action.type === 'choice_sent') return state.decision ? { ...state, decision: { ...state.decision, myChoice: action.choice } } : state;
+  if (INCREMENTAL.has(action.type) && action.seq <= state.seq) return replayed(state, action);
+  // An older request (replayed) is stale; the one following a snapshot carries the snapshot's seq.
+  if (action.type === 'continue_or_end_request' && action.seq < state.seq) return state;
 
   const next = { ...state, seq: Math.max(state.seq, action.seq) };
   switch (action.type) {
@@ -259,6 +356,7 @@ function reducer(state: State, action: Action): State {
         playRequest: null,
         trick: null,
         lastTrick: null,
+        decision: null,
         error: null,
       };
     case 'hand_dealt':
@@ -352,8 +450,64 @@ function reducer(state: State, action: Action): State {
         roundSummary: null,
         playRequest: null,
         bidRequest: null,
-        gameOver: { finalScores: action.finalScores, winnerIds: action.winnerIds, closesAt: action.closesAt },
+        trumpRequest: false,
+        decision: null,
+        gameOver: { status: action.status, finalScores: action.finalScores, winnerIds: action.winnerIds, closesAt: action.closesAt },
       };
+    case 'game_abandoned':
+      if (action.gameId !== next.gameId) return state;
+      return {
+        ...next,
+        stage: 'abandoned',
+        abandoned: action.reason,
+        roundSummary: null,
+        playRequest: null,
+        bidRequest: null,
+        trumpRequest: false,
+        decision: null,
+      };
+    case 'player_disconnected':
+      return {
+        ...next,
+        seats: next.seats.map((s) => (s.userId === action.playerId ? { ...s, connected: false, reconnectDeadline: action.deadline } : s)),
+      };
+    case 'player_reconnected':
+      return {
+        ...next,
+        seats: next.seats.map((s) => (s.userId === action.playerId ? { ...s, connected: true, reconnectDeadline: null } : s)),
+      };
+    case 'user_left': {
+      if (action.role !== 'player') return next;
+      const seat = next.seats.find((s) => s.userId === action.playerId);
+      if (!seat) return next;
+      const why = action.reason === 'timeout' ? 'did not reconnect in time' : 'left the game';
+      return {
+        ...next,
+        seats: next.seats.filter((s) => s.userId !== action.playerId).map((s, i) => ({ ...s, seatIndex: i })),
+        // A re-deal (round_started) or the continue-or-end question follows.
+        bidRequest: null,
+        trumpRequest: false,
+        playRequest: null,
+        trick: null,
+        notice: `${seat.displayName} ${why}.`,
+      };
+    }
+    case 'continue_or_end_request':
+      return {
+        ...next,
+        stage: 'deciding',
+        bidRequest: null,
+        trumpRequest: false,
+        playRequest: null,
+        trick: null,
+        decision: {
+          remainingIds: action.remainingIds,
+          deadline: action.deadline,
+          myChoice: next.decision?.myChoice ?? null,
+        },
+      };
+    case 'game_time_warning':
+      return { ...next, timeWarning: { endsAt: action.endsAt } };
     case 'error':
       return {
         ...next,
@@ -397,12 +551,20 @@ export function isLegal(game: GameView, card: Card): boolean {
 
 interface GameValue {
   game: GameView | null;
+  /** Shown in the lobby after the game this client was showing was abandoned (e.g. a restart). */
+  lobbyNotice: string | null;
   selectTrump(suit: Suit): void;
   placeBid(bid: number): void;
   playCard(card: Card): void;
+  chooseContinueOrEnd(choice: 'continue' | 'end'): void;
   dismissSummary(): void;
+  clearNotice(): void;
+  clearLobbyNotice(): void;
   clearError(): void;
 }
+
+/** Client keepalive (docs/api/websocket-events.md, ping). */
+const PING_INTERVAL_MS = 15_000;
 
 const GameContext = createContext<GameValue | null>(null);
 
@@ -419,7 +581,14 @@ type Payloads = {
   card_played: { player_id: string; card: Card; trick_number: number };
   trick_complete: { winner_id: string; cards_played: PlayEntry[]; trick_number: number };
   round_complete: { round_number: number; scores_this_round: RoundScoreEntry[]; cumulative_scores: ScoreEntry[] };
-  game_over: { final_scores: ScoreEntry[]; winner_ids: string[]; closes_at: string };
+  game_over: { status?: 'complete' | 'incomplete'; final_scores: ScoreEntry[]; winner_ids: string[]; closes_at: string };
+  player_disconnected: { player_id: string; reconnect_deadline: string };
+  player_reconnected: { player_id: string };
+  user_left: { user_id: string; role: string; reason: string };
+  user_joined: unknown;
+  continue_or_end_request: { remaining_player_ids: string[]; decision_deadline: string };
+  game_time_warning: { game_id: string; ends_at: string; minutes_remaining: number };
+  game_abandoned: { reason: AbandonReason; game_id: string };
   invalid_bid_error: { reason: string; allowed_bids: number[] };
   invalid_trump_error: { reason: string };
   invalid_play_error: { reason: string; legal_cards: Card[] };
@@ -441,59 +610,154 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const { socket } = useRealtime();
   const { user } = useAuth();
   const userId = user?.id ?? '';
+  const displayName = user?.displayName ?? '';
   const [game, dispatch] = useReducer(reducer, null);
+  const [lobbyNotice, setLobbyNotice] = useState<string | null>(null);
+  // Read by socket handlers, which outlive renders: the current game, and the id of the last one
+  // shown (it survives the reset when the server puts the socket back in the lobby).
+  const gameRef = useRef<GameView | null>(null);
+  gameRef.current = game;
+  const lastGameIdRef = useRef<string | null>(null);
+  if (game) lastGameIdRef.current = game.gameId;
+  /** Highest game seq received, to spot a gap (a missed broadcast) and ask for a resync. */
+  const lastSeqRef = useRef(0);
 
   useEffect(() => {
     if (!socket) return;
     const handlers: [string, (envelope: Envelope<never>) => void][] = [];
-    const on = <E extends keyof Payloads>(event: E, handle: (payload: Payloads[E], seq: number) => void) => {
-      const h = (envelope: Envelope<Payloads[E]>) => handle(envelope.payload, envelope.seq);
+    const emit = (event: string, payload: Record<string, unknown>) =>
+      socket.emit(event, { event, seq: 0, timestamp: new Date().toISOString(), payload: { player_id: userId, ...payload } });
+    /** A game broadcast: if its seq skips one, ask the server for what was missed. */
+    const track = (seq: number) => {
+      const last = lastSeqRef.current;
+      if (last > 0 && seq > last + 1) emit('sync_request', { last_seq_seen: last });
+      lastSeqRef.current = Math.max(last, seq);
+    };
+    const on = <E extends keyof Payloads>(event: E, handle: (payload: Payloads[E], seq: number) => void, broadcast = false) => {
+      const h = (envelope: Envelope<Payloads[E]>) => {
+        if (broadcast) track(envelope.seq);
+        handle(envelope.payload, envelope.seq);
+      };
       socket.on(event as string, h);
       handlers.push([event as string, h as (envelope: Envelope<never>) => void]);
     };
+    const B = true;
 
-    on('game_started', (p, seq) =>
-      dispatch({ type: 'game_started', seq, userId, gameId: p.game_id, roomId: p.room_id, roundCount: p.round_count, bidRule: p.bid_rule, players: p.players }),
-    );
-    on('round_started', (p, seq) =>
-      dispatch({ type: 'round_started', seq, roundNumber: p.round_number, dealerId: p.dealer_id, trumpSuit: p.trump_suit, trumpCard: p.trump_card }),
+    on('game_started', (p, seq) => {
+      lastSeqRef.current = seq;
+      dispatch({ type: 'game_started', seq, userId, gameId: p.game_id, roomId: p.room_id, roundCount: p.round_count, bidRule: p.bid_rule, players: p.players });
+    });
+    on(
+      'round_started',
+      (p, seq) =>
+        dispatch({ type: 'round_started', seq, roundNumber: p.round_number, dealerId: p.dealer_id, trumpSuit: p.trump_suit, trumpCard: p.trump_card }),
+      B,
     );
     on('hand_dealt', (p, seq) => dispatch({ type: 'hand_dealt', seq, hand: p.hand, roundNumber: p.round_number }));
-    on('trump_revealed', (p, seq) =>
-      dispatch({ type: 'trump_revealed', seq, trumpSuit: p.trump_suit, trumpCard: p.trump_card, trumpSource: p.trump_source }),
+    on(
+      'trump_revealed',
+      (p, seq) => dispatch({ type: 'trump_revealed', seq, trumpSuit: p.trump_suit, trumpCard: p.trump_card, trumpSource: p.trump_source }),
+      B,
     );
     on('trump_selection_request', (_p, seq) => dispatch({ type: 'trump_selection_request', seq }));
     on('bid_request', (p, seq) => dispatch({ type: 'bid_request', seq, allowedBids: p.allowed_bids }));
-    on('bid_placed', (p, seq) => dispatch({ type: 'bid_placed', seq, userId, playerId: p.player_id, bid: p.bid }));
-    on('all_bids_placed', (p, seq) => dispatch({ type: 'all_bids_placed', seq, bids: p.bids }));
+    on('bid_placed', (p, seq) => dispatch({ type: 'bid_placed', seq, userId, playerId: p.player_id, bid: p.bid }), B);
+    on('all_bids_placed', (p, seq) => dispatch({ type: 'all_bids_placed', seq, bids: p.bids }), B);
     on('play_request', (p, seq) => dispatch({ type: 'play_request', seq, trickNumber: p.trick_number, legalCards: p.legal_cards }));
-    on('card_played', (p, seq) =>
-      dispatch({ type: 'card_played', seq, userId, playerId: p.player_id, card: p.card, trickNumber: p.trick_number }),
+    on(
+      'card_played',
+      (p, seq) => dispatch({ type: 'card_played', seq, userId, playerId: p.player_id, card: p.card, trickNumber: p.trick_number }),
+      B,
     );
-    on('trick_complete', (p, seq) =>
-      dispatch({ type: 'trick_complete', seq, winnerId: p.winner_id, cards: p.cards_played, trickNumber: p.trick_number }),
+    on(
+      'trick_complete',
+      (p, seq) => dispatch({ type: 'trick_complete', seq, winnerId: p.winner_id, cards: p.cards_played, trickNumber: p.trick_number }),
+      B,
     );
-    on('round_complete', (p, seq) =>
-      dispatch({ type: 'round_complete', seq, roundNumber: p.round_number, scores: p.scores_this_round, totals: p.cumulative_scores }),
+    on(
+      'round_complete',
+      (p, seq) => dispatch({ type: 'round_complete', seq, roundNumber: p.round_number, scores: p.scores_this_round, totals: p.cumulative_scores }),
+      B,
     );
-    on('game_over', (p, seq) =>
-      dispatch({ type: 'game_over', seq, finalScores: p.final_scores, winnerIds: p.winner_ids, closesAt: p.closes_at }),
+    on(
+      'game_over',
+      (p, seq) =>
+        dispatch({
+          type: 'game_over',
+          seq,
+          status: p.status ?? 'complete',
+          finalScores: p.final_scores,
+          winnerIds: p.winner_ids,
+          closesAt: p.closes_at,
+        }),
+      B,
     );
+    on('player_disconnected', (p, seq) => dispatch({ type: 'player_disconnected', seq, playerId: p.player_id, deadline: p.reconnect_deadline }), B);
+    on('player_reconnected', (p, seq) => dispatch({ type: 'player_reconnected', seq, playerId: p.player_id }), B);
+    on('user_left', (p, seq) => {
+      // Outside a game user_left is a room event with the socket's own seq: not tracked here.
+      if (gameRef.current) track(seq);
+      dispatch({ type: 'user_left', seq, userId, playerId: p.user_id, role: p.role, reason: p.reason });
+    });
+    on('user_joined', (_p, seq) => {
+      if (gameRef.current) track(seq);
+    });
+    on(
+      'continue_or_end_request',
+      (p, seq) => dispatch({ type: 'continue_or_end_request', seq, remainingIds: p.remaining_player_ids, deadline: p.decision_deadline }),
+      B,
+    );
+    on('game_time_warning', (p, seq) => dispatch({ type: 'game_time_warning', seq, endsAt: p.ends_at }), B);
+    on('game_abandoned', (p, seq) => {
+      if (gameRef.current) track(seq);
+      dispatch({ type: 'game_abandoned', seq, gameId: p.game_id, reason: p.reason });
+      // Also shown in the lobby, where the client goes next (or already is, after a restart).
+      if (p.game_id === lastGameIdRef.current) setLobbyNotice(ABANDON_MESSAGES[p.reason] ?? 'The game was stopped.');
+    });
     on('invalid_bid_error', (p, seq) => dispatch({ type: 'error', seq, reason: p.reason, allowedBids: p.allowed_bids }));
     on('invalid_trump_error', (p, seq) => dispatch({ type: 'error', seq, reason: p.reason }));
     on('invalid_play_error', (p, seq) => dispatch({ type: 'error', seq, reason: p.reason, legalCards: p.legal_cards }));
     on('session_error', (p, seq) => {
       if (!p.fatal) dispatch({ type: 'error', seq, reason: p.message });
     });
-    on('state_snapshot', (p) => dispatch({ type: 'state_snapshot', seq: p.seq, view: p.game_state }));
-    on('lobby_snapshot', () => dispatch({ type: 'reset' }));
-    on('room_snapshot', () => dispatch({ type: 'reset' }));
+    on('state_snapshot', (p) => {
+      lastSeqRef.current = p.seq;
+      dispatch({ type: 'state_snapshot', seq: p.seq, view: p.game_state });
+    });
+    const leaveGame = () => {
+      lastSeqRef.current = 0;
+      dispatch({ type: 'reset' });
+    };
+    on('lobby_snapshot', leaveGame);
+    on('room_snapshot', leaveGame);
+
+    // Back after a dropped connection while in a game: ask for what was missed. The server sends
+    // state_snapshot on connect anyway; join_game adds the replay of the events after last_seq_seen
+    // (and game_abandoned if the game was stopped meanwhile, e.g. by a restart).
+    const onConnect = () => {
+      const g = gameRef.current;
+      if (g) emit('join_game', { display_name: displayName, last_seq_seen: g.seq });
+    };
+    socket.on('connect', onConnect);
+
+    // Keepalive: the server treats a client that stops pinging for 30 s as disconnected. Background
+    // tabs throttle timers, so also ping on each Socket.io heartbeat (driven by the network).
+    const ping = () => {
+      if (socket.connected) socket.emit('ping', { event: 'ping', seq: 0, timestamp: new Date().toISOString(), payload: { client_time: new Date().toISOString() } });
+    };
+    ping();
+    const pinger = setInterval(ping, PING_INTERVAL_MS);
+    socket.io.on('ping', ping);
 
     return () => {
       for (const [event, h] of handlers) socket.off(event, h);
+      socket.off('connect', onConnect);
+      socket.io.off('ping', ping);
+      clearInterval(pinger);
+      lastSeqRef.current = 0;
       dispatch({ type: 'reset' });
     };
-  }, [socket, userId]);
+  }, [socket, userId, displayName]);
 
   const send = useCallback(
     (event: string, payload: Record<string, unknown>) => {
@@ -510,6 +774,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const dismissSummary = useCallback(() => dispatch({ type: 'dismiss_summary' }), []);
   const value: GameValue = {
     game,
+    lobbyNotice,
     selectTrump: (suit) => {
       dispatch({ type: 'clear_error' });
       send('select_trump', { suit });
@@ -522,7 +787,14 @@ export function GameProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'clear_error' });
       send('play_card', { card });
     },
+    chooseContinueOrEnd: (choice) => {
+      dispatch({ type: 'clear_error' });
+      dispatch({ type: 'choice_sent', choice });
+      send('choose_continue_or_end', { choice });
+    },
     dismissSummary,
+    clearNotice: () => dispatch({ type: 'clear_notice' }),
+    clearLobbyNotice: () => setLobbyNotice(null),
     clearError: () => dispatch({ type: 'clear_error' }),
   };
   return <GameContext.Provider value={value}>{children}</GameContext.Provider>;

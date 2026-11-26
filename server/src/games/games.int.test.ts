@@ -491,12 +491,14 @@ describe('joining a game in progress', () => {
     const t = await startTable();
     await t.pc[1].waitFor('bid_request');
     t.pc[1].close();
+    // The seat is held (seq 5); see drops.int.test.ts for the window itself.
+    expect((await t.pc[0].waitFor('player_disconnected')).seq).toBe(5);
 
     // A started game sends state_snapshot on connect, not lobby_snapshot or room_snapshot.
     const again = connect(server.url, t.players[1].cookie);
     clients.push(again);
     const snap = (await again.waitFor('state_snapshot')).payload;
-    expect(snap.seq).toBe(4);
+    expect(snap.seq).toBe(5);
     const view = snap.game_state;
     expect(view.viewerUserId).toBe(t.players[1].id);
     expect(view.phase).toBe('bidding');
@@ -508,6 +510,7 @@ describe('joining a game in progress', () => {
       expect(p.handCount).toBe(1);
     }
     expect((await again.waitFor('bid_request')).payload).toMatchObject({ player_id: t.players[1].id, allowed_bids: [0, 1] });
+    expect((await t.pc[0].waitFor('player_reconnected')).payload).toEqual({ player_id: t.players[1].id });
     // And can carry on bidding.
     emit(again, 'place_bid', { bid: 1 });
     await t.pc[2].waitFor('bid_request');
@@ -834,6 +837,7 @@ describe('game end', () => {
       const over = await c.waitFor('game_over');
       expect(over.payload).toEqual({
         game_id: t.gameId,
+        status: 'complete',
         final_scores: [
           { player_id: ids[0], score: 50 },
           { player_id: ids[1], score: 10 },
@@ -921,9 +925,18 @@ describe('game end', () => {
     await api().post('/api/v1/rooms').set('Cookie', t.players[0].cookie).send({}).expect(201);
   });
 
-  it('a player still cannot leave a game in progress', async () => {
-    const t = await startTable();
-    await api().post(`/api/v1/rooms/${t.roomId}/leave`).set('Cookie', t.players[1].cookie).expect(403);
+  it('a player reconnecting during the countdown is not announced as disconnected or reconnected', async () => {
+    stackTwoRounds();
+    const t = await startTable({ config: { roundCount: 2 } });
+    await playRound1(t);
+    await playRound2(t);
+    t.pc[1].close();
+    const again = connect(server.url, t.players[1].cookie);
+    clients.push(again);
+    await again.waitFor('game_over');
+    await sleep(150);
+    expect(t.pc[0].events('player_disconnected')).toHaveLength(0);
+    expect(t.pc[0].events('player_reconnected')).toHaveLength(0);
   });
 });
 

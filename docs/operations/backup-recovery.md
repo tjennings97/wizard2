@@ -141,10 +141,13 @@ Upon server startup, the application must query for any games with `status = 'in
 **Startup cleanup procedure (application code responsibility):**
 
 1. Query `games` where `status = 'in_progress'`.
-2. For each such game, set `status = 'incomplete'` and `ended_at = now()`.
-3. For each player in that game, insert a row into `game_results` with `outcome = 'incomplete'` and `drop_reason = 'server_restart'`.
-4. Partial per-round stats up to the last committed checkpoint are retained in `rounds` and `round_players` and are not modified.
-5. Log each closed game at INFO level with the `gameId` and `drop_reason`.
+2. For each such game, set `status = 'incomplete'`, `drop_reason = 'server_restart'`, `player_count_at_drop` (the players still seated) and `ended_at = now()`.
+3. For each player still seated in that game, insert a row into `game_results` with `outcome = 'incomplete'`, `drop_reason = 'server_restart'`, their score at the last checkpoint (`games.state`, else 0) and the number of rounds scored.
+4. Close the game's room: `rooms.state = 'closed'`, `closed_at = now()`, and `left_at = now()` for every member still in it.
+5. Partial per-round stats up to the last committed checkpoint are retained in `rounds` and `round_players` and are not modified.
+6. Log each closed game at INFO level with the `gameId` and `drop_reason`, then `startup cleanup done` with the count.
+
+All of this runs in one transaction (`abandonInProgressGames` in `server/src/games/queries.ts`, called from `server/src/index.ts`). It needs migration `006_add_drop_reasons` (which allows `server_restart`); if it fails, the error is logged as `startup cleanup of games in progress failed` and the server starts anyway, leaving those games `in_progress` until the next successful run. Rooms that were COMPLETING (a game-over countdown) are closed by the room timer restore that follows.
 
 This cleanup runs before the application begins accepting traffic. It is idempotent: if the server restarts twice in quick succession, the second run finds no `in_progress` games and does nothing.
 
@@ -152,7 +155,7 @@ This cleanup runs before the application begins accepting traffic. It is idempot
 
 Clients whose sockets disconnected during the restart will attempt to reconnect using Socket.io's built-in retry. On reconnect, the server validates their session token. Since sessions are stored in Postgres (not in memory), they survive the restart and remain valid for their configured 24-hour expiry.
 
-However, because all in-progress games have been marked incomplete by the startup cleanup, reconnecting clients whose game was in progress will not be restored to a game. The server emits `game_abandoned` to any client that reconnects and whose last known room is now closed, directing them back to the lobby.
+However, because all in-progress games have been marked incomplete by the startup cleanup, reconnecting clients whose game was in progress will not be restored to a game: the server places them in the lobby. A client that was showing the game sends `join_game` when it reconnects (or a game action, if one was pending), and the server answers with `game_abandoned` (`reason: "server_restart"`), so the client can tell the player why the game ended.
 
 ### Recovery Checklist — After an Unexpected Restart
 

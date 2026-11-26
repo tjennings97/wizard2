@@ -7,7 +7,9 @@ import {
   type CardData,
   type CardPlayed,
   type DeckFactory,
+  type GameState,
   type GameStateView,
+  type PlayerDropped,
   type RandomSource,
   type RoundCompleted,
   type RoundStarted,
@@ -19,7 +21,10 @@ import type { RoomConfig } from '../rooms/rules';
 import {
   bidRequestPayload,
   bidsSoFar,
+  continueOrEndRequestPayload,
+  gameAbandonedPayload,
   gameStartedPayload,
+  gameTimeWarningPayload,
   gameStartingPayload,
   handDealtPayload,
   gameOverPayload,
@@ -27,18 +32,24 @@ import {
   invalidPlayPayload,
   invalidTrumpPayload,
   playEntries,
+  playerDisconnectedPayload,
   playRequestPayload,
   roundCompletePayload,
   roundStartedPayload,
   trumpRevealedPayload,
 } from './payloads';
 import {
+  eventsBetween,
   insertGameEvents,
   recordGameComplete,
+  recordGameIncomplete,
   recordRound,
+  type DropReason,
   type GameEventRow,
   type GameEventType,
   type GamePlayerRow,
+  type GameResultRow,
+  type ReplayedEvent,
   type RoundRecord,
 } from './queries';
 
@@ -52,9 +63,11 @@ export interface GameNotifier {
   deliverToRoom(roomId: string, event: string, payload: unknown, seq: number): void;
   /** Only this user's sockets in the room's channel. Never used for a room broadcast. */
   deliverToUser(roomId: string, userId: string, event: string, payload: unknown, seq: number): void;
+  /** Whether the user has a socket in the room's channel. */
+  isInRoom(roomId: string, userId: string): boolean;
 }
 
-const noopNotifier: GameNotifier = { deliverToRoom: () => {}, deliverToUser: () => {} };
+const noopNotifier: GameNotifier = { deliverToRoom: () => {}, deliverToUser: () => {}, isInRoom: () => true };
 
 /**
  * What the game service tells the room service. Implemented by RoomService, which owns the room
@@ -67,15 +80,36 @@ export interface GameLifecycle {
    * at `closesAt` (room_closed, everyone back to the lobby).
    */
   gameFinished(roomId: string, closesAt: Date): void;
+  /**
+   * A disconnected player's 30-second seat hold ran out. Mark them left (room_members.left_at)
+   * and broadcast user_left with reason "timeout", which applies the player-drop rules
+   * (userLeft below).
+   */
+  playerTimedOut(roomId: string, userId: string): Promise<void>;
 }
 
-const noopLifecycle: GameLifecycle = { gameFinished: () => {} };
+const noopLifecycle: GameLifecycle = { gameFinished: () => {}, playerTimedOut: async () => {} };
 
 /** How long the room stays COMPLETING (the game-over screen) before it closes. */
 export const COMPLETING_COUNTDOWN_MS = 30 * 1000;
 
 /** Duplicate idempotency keys within this window are acknowledged without reprocessing. */
 export const IDEMPOTENCY_WINDOW_MS = 60 * 1000;
+
+/** How long a disconnected player's seat is held for them to reconnect. */
+export const RECONNECT_WINDOW_MS = 30 * 1000;
+
+/** How long the last two players have to answer continue_or_end_request. No answer counts as end. */
+export const CONTINUE_DECISION_MS = 60 * 1000;
+
+/** A game lasts at most this long from game_started. */
+export const GAME_TIME_LIMIT_MS = 3 * 60 * 60 * 1000;
+
+/** game_time_warning goes out this long before the limit. */
+export const GAME_TIME_WARNING_LEAD_MS = 15 * 60 * 1000;
+
+/** A reconnect that missed more events than this gets the state_snapshot without the replay. */
+export const MAX_REPLAY_EVENTS = 200;
 
 interface LogFields {
   eventType: GameEventType;
@@ -103,8 +137,24 @@ class LiveGame {
   readonly keys = new Map<string, number>();
   /** When the current round was dealt, for rounds.started_at. */
   roundStartedAt = new Date();
-  /** The game_over payload once the game has ended; re-sent after state_snapshot. */
-  gameOver: unknown = null;
+  /** When game_started went out; the time limit runs from here. */
+  readonly startedAt = new Date();
+  /**
+   * The event that ended the game (game_over, or game_abandoned at the time limit) once it has
+   * ended; re-sent after state_snapshot. Nothing else is applied to an ended game.
+   */
+  ended: { event: string; payload: unknown } | null = null;
+  /** Seat holds of disconnected players (the 30-second reconnection window), by user id. */
+  readonly away = new Map<string, NodeJS.Timeout>();
+  /** Players who quit or timed out, for their game_results row. */
+  readonly departed = new Map<string, { dropReason: DropReason; roundsPlayed: number }>();
+  /** Answers to continue_or_end_request so far, by user id. */
+  readonly choices = new Map<string, 'continue' | 'end'>();
+  continueTimer: NodeJS.Timeout | null = null;
+  /** The continue_or_end_request payload while a decision is pending; re-sent after state_snapshot. */
+  continueRequest: unknown = null;
+  warningTimer: NodeJS.Timeout | null = null;
+  limitTimer: NodeJS.Timeout | null = null;
 
   constructor(readonly game: Game) {}
 }
@@ -123,6 +173,13 @@ export interface GameServiceOptions {
   random?: RandomSource;
   /** How long the room stays COMPLETING after game_over. Tests shorten it. */
   countdownMs?: number;
+  /** The disconnected player's seat hold. Tests shorten it. */
+  reconnectWindowMs?: number;
+  /** The continue-or-end decision window. Tests shorten it. */
+  continueDecisionMs?: number;
+  /** The game time limit, and how long before it the warning goes out. Tests shorten them. */
+  timeLimitMs?: number;
+  timeWarningLeadMs?: number;
 }
 
 /** Who caused an action, for log lines. Null for server-initiated work. */
@@ -146,16 +203,26 @@ export interface NewGame {
  * broadcast to game_events with its seq, and hands events to the notifier in order.
  * See docs/architecture/game-state-machine.md and docs/api/websocket-events.md.
  *
- * Covers start through game_over. Disconnects, quits and player drops are not wired yet.
+ * Covers start through game_over, and the connection side: a disconnected player's seat is held
+ * for 30 seconds, a player who quits or times out is dropped (the round is voided and re-dealt,
+ * or the last two decide whether to continue), and a game is abandoned at the 3-hour limit.
  */
 export class GameService {
   private notifier: GameNotifier = noopNotifier;
   private lifecycle: GameLifecycle = noopLifecycle;
   private readonly byRoom = new Map<string, LiveGame>();
   readonly countdownMs: number;
+  readonly reconnectWindowMs: number;
+  readonly continueDecisionMs: number;
+  readonly timeLimitMs: number;
+  readonly timeWarningLeadMs: number;
 
   constructor(private readonly options: GameServiceOptions = {}) {
     this.countdownMs = options.countdownMs ?? COMPLETING_COUNTDOWN_MS;
+    this.reconnectWindowMs = options.reconnectWindowMs ?? RECONNECT_WINDOW_MS;
+    this.continueDecisionMs = options.continueDecisionMs ?? CONTINUE_DECISION_MS;
+    this.timeLimitMs = options.timeLimitMs ?? GAME_TIME_LIMIT_MS;
+    this.timeWarningLeadMs = options.timeWarningLeadMs ?? GAME_TIME_WARNING_LEAD_MS;
   }
 
   /** The socket layer is created after the service, so it is set late. */
@@ -191,10 +258,15 @@ export class GameService {
    * game_starting, game_started, then the round opening (see openRound). Nothing here can leave
    * the game half-started: the event log write and each delivery are guarded in publish, and the
    * game is playable (state_snapshot, bids) from the moment it is registered.
+   *
+   * Starts the 3-hour time limit. A player with no socket in the room right now is treated as
+   * disconnected (player_disconnected and the seat hold), so a game never waits forever on someone
+   * who never shows up.
    */
   async launch(game: Game, started: RoundStarted, ctx: ActionContext = SERVER_CONTEXT): Promise<void> {
     const live = new LiveGame(game);
     this.byRoom.set(game.roomId, live);
+    this.armTimeLimit(live);
     await this.run(live, ctx, async () => {
       const context = {
         config: game.config,
@@ -204,7 +276,10 @@ export class GameService {
         { to: 'room', event: 'game_starting', payload: gameStartingPayload(game), log: { eventType: 'game_starting', actorUserId: null, context, roundNumber: 0 } },
         { to: 'room', event: 'game_started', payload: gameStartedPayload(game), log: { eventType: 'game_started', actorUserId: null, context, roundNumber: 0 } },
       ];
-      await this.publish(live, ctx, [...announce, ...this.openRound(live, started)]);
+      const absent = game.activePlayers
+        .filter((p) => !this.notifier.isInRoom(game.roomId, p.id))
+        .map((p) => this.holdSeat(live, p.id));
+      await this.publish(live, ctx, [...announce, ...this.openRound(live, started), ...absent]);
     });
   }
 
@@ -219,19 +294,40 @@ export class GameService {
   /**
    * Runs `fn` in the game's queue with the viewer's filtered state, the current seq and the
    * prompt the viewer still owes (trump_selection_request, bid_request or play_request when it is
-   * their turn; game_over to everyone once the game has ended),
+   * their turn; game_over or game_abandoned to everyone once the game has ended),
    * so what it sends is ordered with the game's events. Players get their own view, everyone else
    * the spectator view. Returns false (without calling `fn`) if the room has no live game.
+   *
+   * With `replayAfter` (a reconnect's last_seq_seen), `replay` is the logged broadcasts after it, up
+   * to the view's seq, read from game_events: what the client missed. Empty if it missed more than
+   * MAX_REPLAY_EVENTS (the view alone restores the state) or the log could not be read.
    */
   async withView(
     roomId: string,
     userId: string,
-    fn: (view: GameStateView, seq: number, prompt: { event: string; payload: unknown } | null) => void,
+    fn: (view: GameStateView, seq: number, prompt: { event: string; payload: unknown } | null, replay: ReplayedEvent[]) => void,
+    replayAfter: number | null = null,
   ): Promise<boolean> {
     const live = this.byRoom.get(roomId);
     if (!live) return false;
-    await this.run(live, SERVER_CONTEXT, async () => fn(this.viewFor(live.game, userId), live.seq, this.pendingPrompt(live, userId)));
+    await this.run(live, SERVER_CONTEXT, async () => {
+      const seq = live.seq;
+      let replay: ReplayedEvent[] = [];
+      if (replayAfter !== null && replayAfter < seq && seq - replayAfter <= MAX_REPLAY_EVENTS) {
+        try {
+          replay = await eventsBetween(live.game.gameId, replayAfter, seq);
+        } catch (err) {
+          logger.error({ err, ...this.logFields(live, { userId, traceId: null }), replayAfter }, 'replay read failed');
+        }
+      }
+      fn(this.viewFor(live.game, userId), seq, this.pendingPrompt(live, userId), replay);
+    });
     return true;
+  }
+
+  /** Whether the user holds a seat in the room's live game (has not quit or timed out). */
+  isSeated(roomId: string, userId: string): boolean {
+    return this.byRoom.get(roomId)?.game.activePlayers.some((p) => p.id === userId) ?? false;
   }
 
   /** Current seq of the room's game, or null if there is none. For unicasts from other layers. */
@@ -240,15 +336,149 @@ export class GameService {
   }
 
   /**
-   * Broadcasts a room event (a spectator joining or leaving) as part of the game's sequence, so
-   * it is numbered and logged like any other. Returns false if the room has no live game.
+   * Broadcasts user_joined (a spectator joining) as part of the game's sequence, so it is numbered
+   * and logged like any other. Returns false if the room has no live game.
    */
-  async publishRoomEvent(roomId: string, event: 'user_joined' | 'user_left', actorUserId: string, payload: unknown): Promise<boolean> {
+  async publishRoomEvent(roomId: string, event: 'user_joined', actorUserId: string, payload: unknown): Promise<boolean> {
     const live = this.byRoom.get(roomId);
     if (!live) return false;
     const ctx: ActionContext = { userId: actorUserId, traceId: null };
     await this.run(live, ctx, () => this.publish(live, ctx, [{ to: 'room', event, payload, log: { eventType: event, actorUserId } }]));
     return true;
+  }
+
+  /**
+   * A member has left the room (their room_members.left_at is set): broadcasts user_left in the
+   * game's sequence. If they held a seat in a game still being played, that is a drop
+   * (`voluntary` = quit, `timeout` = the seat hold ran out) and the player-drop rules follow, in
+   * the same step: with 3 or more players left the round is voided and re-dealt (round_started,
+   * hand_dealt, ...); with 2, continue_or_end_request; with 1, the game ends incomplete
+   * (game_over). Anyone else leaving (a spectator, or anyone once the game is over) is not a
+   * drop. Returns false if the room has no live game.
+   */
+  async userLeft(roomId: string, userId: string, reason: 'voluntary' | 'timeout', payload: unknown): Promise<boolean> {
+    const live = this.byRoom.get(roomId);
+    if (!live) return false;
+    const ctx: ActionContext = { userId, traceId: null };
+    await this.run(live, ctx, async () => {
+      this.clearSeatHold(live, userId);
+      const game = live.game;
+      const out: Outbound[] = [{ to: 'room', event: 'user_left', payload, log: { eventType: 'user_left', actorUserId: userId } }];
+      if (live.ended || !game.activePlayers.some((p) => p.id === userId)) {
+        await this.publish(live, ctx, out);
+        return;
+      }
+
+      const dropReason: DropReason = reason === 'voluntary' ? 'player_quit' : 'player_timeout';
+      const roundsPlayed = game.toGameState().roundHistory.length;
+      let dropped: PlayerDropped;
+      try {
+        dropped = game.removePlayer(userId);
+      } catch (err) {
+        if (!(err instanceof EngineError)) throw err;
+        logger.error({ err, ...this.logFields(live, ctx) }, 'player drop refused by the engine');
+        await this.publish(live, ctx, out);
+        return;
+      }
+      live.departed.set(userId, { dropReason, roundsPlayed });
+      logger.info({ ...this.logFields(live, ctx), dropReason, outcome: dropped.outcome, remaining: game.activePlayers.length }, 'player dropped');
+
+      let closesAt: Date | null = null;
+      switch (dropped.outcome) {
+        case 'round_redealt':
+          out.push(...this.openRound(live, dropped.roundStarted!));
+          break;
+        case 'removed':
+          out.push(...this.resumeAfterDrop(live, ctx));
+          break;
+        case 'continue_or_end':
+          out.push(this.askContinueOrEnd(live));
+          break;
+        case 'incomplete': {
+          const end = await this.endEarly(live, ctx, dropReason);
+          out.push(end.item);
+          closesAt = end.closesAt;
+          break;
+        }
+      }
+      await this.publish(live, ctx, out);
+      if (closesAt) this.finished(live, ctx, closesAt);
+    });
+    return true;
+  }
+
+  /**
+   * The user's last socket in the room has closed. A player still seated in a game being played
+   * keeps their seat for the reconnection window: player_disconnected goes out and the hold
+   * starts. If it runs out, the room service is told (GameLifecycle.playerTimedOut).
+   */
+  async playerDisconnected(roomId: string, userId: string): Promise<void> {
+    const live = this.byRoom.get(roomId);
+    if (!live) return;
+    const ctx: ActionContext = { userId, traceId: null };
+    await this.run(live, ctx, async () => {
+      if (live.ended || live.away.has(userId) || !live.game.activePlayers.some((p) => p.id === userId)) return;
+      // A socket that came back while this waited in the queue.
+      if (this.notifier.isInRoom(roomId, userId)) return;
+      await this.publish(live, ctx, [this.holdSeat(live, userId)]);
+    });
+  }
+
+  /**
+   * A player whose seat is held has a socket in the room again (after it was sent state_snapshot):
+   * the hold is cleared and player_reconnected goes out. A no-op for anyone else.
+   */
+  async playerReconnected(roomId: string, userId: string): Promise<void> {
+    const live = this.byRoom.get(roomId);
+    if (!live) return;
+    const ctx: ActionContext = { userId, traceId: null };
+    await this.run(live, ctx, async () => {
+      const held = this.clearSeatHold(live, userId);
+      const player = live.game.activePlayers.find((p) => p.id === userId);
+      // Also a player whose hold ran out but who was not dropped (the timeout could not be
+      // recorded): they are back, so they are connected again.
+      if (!player || (!held && player.connected)) return;
+      player.connected = true;
+      if (live.ended) return;
+      await this.publish(live, ctx, [
+        { to: 'room', event: 'player_reconnected', payload: { player_id: userId }, log: { eventType: 'player_reconnected', actorUserId: userId } },
+      ]);
+    });
+  }
+
+  /** Whether the user's seat is being held for them (tests). */
+  isHoldingSeat(roomId: string, userId: string): boolean {
+    return this.byRoom.get(roomId)?.away.has(userId) ?? false;
+  }
+
+  /**
+   * One of the last two players answers continue_or_end_request. `end` from either ends the game
+   * incomplete (mutual_end) at once; once both have said `continue`, the voided round is re-dealt
+   * for the two of them. Anything else (no decision pending, not a choice) is ignored.
+   */
+  async chooseContinueOrEnd(roomId: string, ctx: ActionContext & { userId: string }, choice: unknown, idempotencyKey?: unknown): Promise<void> {
+    const { userId } = ctx;
+    const live = this.liveFor(roomId, userId);
+    await this.run(live, ctx, () => this.once(live, userId, idempotencyKey, async () => {
+      const game = live.game;
+      if (live.ended || game.phase !== 'awaiting_continue_decision' || (choice !== 'continue' && choice !== 'end')) {
+        logger.debug({ ...this.logFields(live, ctx), choice, phase: game.phase }, 'choose_continue_or_end ignored');
+        return;
+      }
+      live.choices.set(userId, choice);
+      logger.info({ ...this.logFields(live, ctx), choice }, 'continue or end chosen');
+      if (choice === 'end') {
+        const end = await this.endEarly(live, ctx, 'mutual_end');
+        await this.publish(live, ctx, [end.item]);
+        this.finished(live, ctx, end.closesAt);
+        return;
+      }
+      if (!game.activePlayers.every((p) => live.choices.get(p.id) === 'continue')) return;
+      this.clearContinueTimer(live);
+      live.choices.clear();
+      const started = game.resolveContinueOrEnd(true);
+      await this.publish(live, ctx, started ? this.openRound(live, started) : this.resumeAfterDrop(live, ctx));
+    }));
   }
 
   /** The dealer declares trump after a Wizard flip. */
@@ -442,23 +672,20 @@ export class GameService {
         out.push(this.playRequest(game));
       }
       await this.publish(live, ctx, out);
-      if (closesAt) {
-        try {
-          this.lifecycle.gameFinished(game.roomId, closesAt);
-        } catch (err) {
-          logger.error({ err, ...this.logFields(live, ctx) }, 'game finished handling failed');
-        }
-      }
+      if (closesAt) this.finished(live, ctx, closesAt);
     }));
   }
 
   /** Drops the room's game from memory once its room has closed. */
   forget(roomId: string): void {
+    const live = this.byRoom.get(roomId);
+    if (live) this.clearTimers(live);
     this.byRoom.delete(roomId);
   }
 
-  /** Forgets every game (shutdown and tests). Does not touch the database. */
+  /** Forgets every game and clears its timers (shutdown and tests). Does not touch the database. */
   stop(): void {
+    for (const live of this.byRoom.values()) this.clearTimers(live);
     this.byRoom.clear();
   }
 
@@ -531,23 +758,18 @@ export class GameService {
     }
 
     const result = game.endGame();
+    this.clearTimers(live);
     const closesAt = new Date(Date.now() + this.countdownMs);
     const payload = gameOverPayload(game, result, closesAt, this.countdownMs);
-    live.gameOver = payload;
+    live.ended = { event: 'game_over', payload };
     const state = game.toGameState();
-    const winners = new Set(result.winnerIds);
     await this.persist(live, ctx, 'game result', async (trx) => {
       await recordRound(trx, record, state);
       await recordGameComplete(trx, {
         gameId: game.gameId,
         roomId: game.roomId,
         state,
-        results: game.activePlayers.map((p) => ({
-          userId: p.id,
-          finalScore: result.scores[p.id],
-          outcome: winners.has(p.id) ? 'win' : 'loss',
-          roundsPlayed: state.roundHistory.length,
-        })),
+        results: this.resultRows(live, state, { winners: new Set(result.winnerIds) }),
       });
     });
     out.push({
@@ -568,6 +790,238 @@ export class GameService {
       },
     });
     return { out, closesAt };
+  }
+
+  /**
+   * Ends the game early: the round in progress is not scored, nobody wins. Writes games.status =
+   * incomplete with `dropReason`, game_results (outcome incomplete) and the final checkpoint, and
+   * moves the room to completing. Returns the event that announces it: game_over (status
+   * incomplete) after a drop or a mutual end, game_abandoned at the time limit. The caller
+   * publishes it, then calls finished().
+   */
+  private async endEarly(live: LiveGame, ctx: ActionContext, dropReason: DropReason): Promise<{ item: Outbound; closesAt: Date }> {
+    const game = live.game;
+    const phaseBefore = game.phase;
+    const roundNumber = game.currentRoundNumber;
+    if (game.phase === 'awaiting_continue_decision' && dropReason === 'mutual_end') game.resolveContinueOrEnd(false);
+    else if (game.phase !== 'incomplete') game.abandon();
+    this.clearTimers(live);
+
+    const closesAt = new Date(Date.now() + this.countdownMs);
+    const state = game.toGameState();
+    await this.persist(live, ctx, 'incomplete game result', (trx) =>
+      recordGameIncomplete(trx, {
+        gameId: game.gameId,
+        roomId: game.roomId,
+        state,
+        dropReason,
+        playerCountAtDrop: game.activePlayers.length,
+        results: this.resultRows(live, state, { dropReason }),
+      }),
+    );
+    logger.info({ ...this.logFields(live, ctx), dropReason, phaseBefore, roundNumber }, 'game ended incomplete');
+
+    let item: Outbound;
+    if (dropReason === 'time_limit' || dropReason === 'server_restart') {
+      const payload = gameAbandonedPayload(game.gameId, dropReason);
+      item = {
+        to: 'room',
+        event: 'game_abandoned',
+        payload,
+        log: { eventType: 'game_abandoned', actorUserId: null, context: { ...payload, phase: phaseBefore, roundNumber, scores: game.scores } },
+      };
+    } else {
+      const payload = gameOverPayload(game, { winnerIds: [], scores: game.scores }, closesAt, this.countdownMs, 'incomplete');
+      item = {
+        to: 'room',
+        event: 'game_over',
+        payload,
+        log: {
+          eventType: 'game_completed',
+          actorUserId: null,
+          context: {
+            finalScores: game.scores,
+            winners: [],
+            status: 'incomplete',
+            dropReason,
+            roundCount: game.config.roundCount,
+            playerCount: game.activePlayers.length,
+          },
+        },
+      };
+    }
+    live.ended = { event: item.event, payload: item.payload };
+    return { item, closesAt };
+  }
+
+  /**
+   * game_results rows: the players still seated (win / loss, or incomplete with the game's
+   * `dropReason`), and everyone who quit or timed out (incomplete, with their own reason and
+   * their score and rounds when they left).
+   */
+  private resultRows(
+    live: LiveGame,
+    state: GameState,
+    end: { winners: Set<string> } | { dropReason: DropReason },
+  ): GameResultRow[] {
+    const rows: GameResultRow[] = state.players.map((p) => ({
+      userId: p.userId,
+      finalScore: p.cumulativeScore,
+      outcome: 'winners' in end ? (end.winners.has(p.userId) ? 'win' : 'loss') : 'incomplete',
+      dropReason: 'winners' in end ? null : end.dropReason,
+      roundsPlayed: state.roundHistory.length,
+    }));
+    for (const d of state.droppedPlayers) {
+      const departed = live.departed.get(d.userId);
+      rows.push({
+        userId: d.userId,
+        finalScore: d.finalScore,
+        outcome: 'incomplete',
+        dropReason: departed?.dropReason ?? 'player_quit',
+        roundsPlayed: departed?.roundsPlayed ?? 0,
+      });
+    }
+    return rows;
+  }
+
+  /** The game has ended: hand the room to the room service for the COMPLETING countdown. */
+  private finished(live: LiveGame, ctx: ActionContext, closesAt: Date): void {
+    try {
+      this.lifecycle.gameFinished(live.game.roomId, closesAt);
+    } catch (err) {
+      logger.error({ err, ...this.logFields(live, ctx) }, 'game finished handling failed');
+    }
+  }
+
+  /**
+   * After a drop that voided no round (the game was between rounds): deal the next round. Only
+   * reachable if dealing failed earlier, since the next round is normally dealt in the same step.
+   */
+  private resumeAfterDrop(live: LiveGame, ctx: ActionContext): Outbound[] {
+    const game = live.game;
+    if (game.phase !== 'round_end' || !game.hasMoreRounds) return [];
+    try {
+      return this.openRound(live, game.startRound());
+    } catch (err) {
+      logger.error({ err, ...this.logFields(live, ctx) }, 'deal after drop failed');
+      return [];
+    }
+  }
+
+  /** continue_or_end_request to the room, starting the decision window. */
+  private askContinueOrEnd(live: LiveGame): Outbound {
+    live.choices.clear();
+    this.clearContinueTimer(live);
+    const deadline = new Date(Date.now() + this.continueDecisionMs);
+    const timer = setTimeout(() => {
+      if (live.continueTimer !== timer) return;
+      live.continueTimer = null;
+      this.runTimer(live, 'continue decision timeout', async () => {
+        if (live.ended || live.game.phase !== 'awaiting_continue_decision') return;
+        const end = await this.endEarly(live, SERVER_CONTEXT, 'mutual_end');
+        await this.publish(live, SERVER_CONTEXT, [end.item]);
+        this.finished(live, SERVER_CONTEXT, end.closesAt);
+      });
+    }, this.continueDecisionMs);
+    timer.unref();
+    live.continueTimer = timer;
+    live.continueRequest = continueOrEndRequestPayload(live.game, deadline);
+    return {
+      to: 'room',
+      event: 'continue_or_end_request',
+      payload: live.continueRequest,
+      log: { eventType: 'continue_or_end_request', actorUserId: null },
+    };
+  }
+
+  /**
+   * Holds a disconnected player's seat: marks them disconnected and starts the reconnection
+   * window. Returns the player_disconnected broadcast for the caller to publish.
+   */
+  private holdSeat(live: LiveGame, userId: string): Outbound {
+    this.clearSeatHold(live, userId);
+    const deadline = new Date(Date.now() + this.reconnectWindowMs);
+    const timer = setTimeout(() => {
+      if (live.away.get(userId) !== timer || this.byRoom.get(live.game.roomId) !== live) return;
+      live.away.delete(userId);
+      logger.info({ ...this.logFields(live, { userId, traceId: null }) }, 'reconnection window expired');
+      this.lifecycle
+        .playerTimedOut(live.game.roomId, userId)
+        .catch((err) => logger.error({ err, ...this.logFields(live, { userId, traceId: null }) }, 'player timeout handling failed'));
+    }, this.reconnectWindowMs);
+    timer.unref();
+    live.away.set(userId, timer);
+    live.game.getPlayer(userId).connected = false;
+    return {
+      to: 'room',
+      event: 'player_disconnected',
+      payload: playerDisconnectedPayload(userId, deadline),
+      log: { eventType: 'player_disconnected', actorUserId: userId },
+    };
+  }
+
+  /** Clears the user's seat hold. Returns whether there was one. */
+  private clearSeatHold(live: LiveGame, userId: string): boolean {
+    const timer = live.away.get(userId);
+    if (!timer) return false;
+    clearTimeout(timer);
+    live.away.delete(userId);
+    return true;
+  }
+
+  private clearContinueTimer(live: LiveGame): void {
+    if (live.continueTimer) clearTimeout(live.continueTimer);
+    live.continueTimer = null;
+  }
+
+  /** The 3-hour limit: game_time_warning shortly before, then the game is abandoned. */
+  private armTimeLimit(live: LiveGame): void {
+    const endsAt = new Date(live.startedAt.getTime() + this.timeLimitMs);
+    const warnIn = this.timeLimitMs - this.timeWarningLeadMs;
+    if (warnIn > 0) {
+      live.warningTimer = setTimeout(() => {
+        live.warningTimer = null;
+        this.runTimer(live, 'game time warning', async () => {
+          if (live.ended) return;
+          await this.publish(live, SERVER_CONTEXT, [
+            {
+              to: 'room',
+              event: 'game_time_warning',
+              payload: gameTimeWarningPayload(live.game, endsAt, Math.round(this.timeWarningLeadMs / 60000)),
+              log: { eventType: 'game_time_warning', actorUserId: null },
+            },
+          ]);
+        });
+      }, warnIn);
+      live.warningTimer.unref();
+    }
+    live.limitTimer = setTimeout(() => {
+      live.limitTimer = null;
+      this.runTimer(live, 'game time limit', async () => {
+        if (live.ended) return;
+        const end = await this.endEarly(live, SERVER_CONTEXT, 'time_limit');
+        await this.publish(live, SERVER_CONTEXT, [end.item]);
+        this.finished(live, SERVER_CONTEXT, end.closesAt);
+      });
+    }, this.timeLimitMs);
+    live.limitTimer.unref();
+  }
+
+  /** Every timer of the game: seat holds, the continue decision and the time limit. */
+  private clearTimers(live: LiveGame): void {
+    for (const t of live.away.values()) clearTimeout(t);
+    live.away.clear();
+    this.clearContinueTimer(live);
+    if (live.warningTimer) clearTimeout(live.warningTimer);
+    if (live.limitTimer) clearTimeout(live.limitTimer);
+    live.warningTimer = null;
+    live.limitTimer = null;
+  }
+
+  /** Runs a timer's work in the game's queue, unless the game has been forgotten meanwhile. */
+  private runTimer(live: LiveGame, what: string, fn: () => Promise<void>): void {
+    if (this.byRoom.get(live.game.roomId) !== live) return;
+    this.run(live, SERVER_CONTEXT, fn).catch((err) => logger.error({ err, ...this.logFields(live, SERVER_CONTEXT) }, `${what} failed`));
   }
 
   private async persist(live: LiveGame, ctx: ActionContext, what: string, fn: (trx: Knex.Transaction) => Promise<void>): Promise<void> {
@@ -636,7 +1090,10 @@ export class GameService {
   /** The request a player would have been sent for the current turn, if it is theirs. */
   private pendingPrompt(live: LiveGame, userId: string): { event: string; payload: unknown } | null {
     const game = live.game;
-    if (live.gameOver) return { event: 'game_over', payload: live.gameOver };
+    if (live.ended) return live.ended;
+    if (game.phase === 'awaiting_continue_decision' && live.continueRequest) {
+      return { event: 'continue_or_end_request', payload: live.continueRequest };
+    }
     if (game.currentTurnId !== userId) return null;
     if (game.phase === 'trump_declaration') {
       return { event: 'trump_selection_request', payload: { player_id: userId, round_number: game.currentRoundNumber } };
