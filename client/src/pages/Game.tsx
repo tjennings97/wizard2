@@ -85,7 +85,7 @@ function LeaveGame({ game }: { game: GameView }) {
 }
 
 const nameOf = (game: GameView, id: string | null, me: string) =>
-  id === me ? 'You' : (game.seats.find((s) => s.userId === id)?.displayName ?? 'Someone');
+  id === me ? 'You' : ((id && game.names[id]) ?? 'Someone');
 
 function Board({ game }: { game: GameView }) {
   const { user } = useAuth();
@@ -244,7 +244,7 @@ function TrickArea({ game, me }: { game: GameView; me: string }) {
 }
 
 function statusLine(game: GameView, me: string, turnId: string | null): string {
-  const name = (id: string | null) => (id === me ? 'you' : (game.seats.find((s) => s.userId === id)?.displayName ?? 'someone'));
+  const name = (id: string | null) => (id === me ? 'you' : ((id && game.names[id]) ?? 'someone'));
   switch (game.stage) {
     case 'choosing_trump':
       return game.dealerId === me ? 'Choose the trump suit.' : `Waiting for ${name(game.dealerId)} to choose trump.`;
@@ -398,15 +398,20 @@ function Scoreboard({ game, turnId }: { game: GameView; turnId: string | null })
 
 /** Every scored round: bid / won and the score change per player, with running totals. */
 function RoundTable({ game, history }: { game: GameView; history: RoundResult[] }) {
+  // A column for everyone who played a round: current seats first, then players who left.
+  const seated = new Set(game.seats.map((s) => s.userId));
+  const columns = [...game.seats.map((s) => s.userId)];
+  for (const r of history) for (const p of r.players) if (!columns.includes(p.userId)) columns.push(p.userId);
   return (
     <div className="table-scroll">
       <table className="score-table rounds">
         <thead>
           <tr>
             <th scope="col">Round</th>
-            {game.seats.map((s) => (
-              <th key={s.userId} scope="col">
-                {s.displayName}
+            {columns.map((id) => (
+              <th key={id} scope="col">
+                {game.names[id] ?? 'Someone'}
+                {!seated.has(id) && <span className="muted"> (left)</span>}
               </th>
             ))}
           </tr>
@@ -415,14 +420,21 @@ function RoundTable({ game, history }: { game: GameView; history: RoundResult[] 
           {history.map((r) => (
             <tr key={r.roundNumber}>
               <th scope="row">{r.roundNumber}</th>
-              {r.players.map((p) => (
-                <td key={p.userId}>
-                  <span className="muted">
-                    {p.bid}/{p.tricksWon}
-                  </span>{' '}
-                  <Delta value={p.delta} /> <strong className="num">{p.total}</strong>
-                </td>
-              ))}
+              {columns.map((id) => {
+                const p = r.players.find((q) => q.userId === id);
+                return p ? (
+                  <td key={id}>
+                    <span className="muted">
+                      {p.bid}/{p.tricksWon}
+                    </span>{' '}
+                    <Delta value={p.delta} /> <strong className="num">{p.total}</strong>
+                  </td>
+                ) : (
+                  <td key={id} className="muted">
+                    —
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -473,7 +485,7 @@ function RoundSummary({ game, result }: { game: GameView; result: RoundResult })
           <tbody>
             {result.players.map((p) => (
               <tr key={p.userId}>
-                <th scope="row">{game.seats.find((s) => s.userId === p.userId)?.displayName}</th>
+                <th scope="row">{game.names[p.userId] ?? 'Someone'}</th>
                 <td>{p.bid}</td>
                 <td>{p.tricksWon}</td>
                 <td>
@@ -578,7 +590,7 @@ function GameOver({ game }: { game: GameView }) {
   const left = useSecondsLeft(over.closesAt, 30_000);
   // The server then moves this socket to the lobby (lobby_snapshot), which navigates away.
   const { leave, leaving, error } = useLeave(game.roomId);
-  const name = (id: string) => game.seats.find((s) => s.userId === id)?.displayName ?? 'Someone';
+  const name = (id: string) => game.names[id] ?? 'Someone';
   const standings = [...over.finalScores].sort((a, b) => b.score - a.score);
   const winners = over.winnerIds.map(name);
   const early = over.status === 'incomplete';
