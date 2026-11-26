@@ -35,10 +35,12 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **OPEN** | Host has no connected socket for 120 s | Room is OPEN; host still has no socket; another player is connected | **OPEN** | Promote the connected player with the lowest `join_order` (`role = 'player'`, `left_at IS NULL`); the old host stays a member; update `rooms.host_user_id`; broadcast `host_changed`; broadcast `rooms_updated`. Reconnecting within 120 s cancels the timer |
 | **OPEN** | All players leave | Room is OPEN (spectators may remain) | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed` (`reason: "empty"`) to the room; remaining spectators returned to lobby; broadcast `rooms_updated` |
 | **OPEN** | Host closes room (`DELETE /rooms/{roomId}`) | Requester is host; room is OPEN | **CLOSED** | Cancel inactivity timer; set `rooms.closed_at`; broadcast `room_closed` (`reason: "host_closed"`); all members returned to lobby; broadcast `rooms_updated` |
-| **IN PROGRESS** | Final round scoring complete | — | **COMPLETING** | Write final `game_results`; write `games.state` snapshot; broadcast `game_over`; start 30-second countdown timer |
+| **IN PROGRESS** | Final round scoring complete | — | **COMPLETING** | In one transaction: write the final round's `rounds` / `round_players`, write `game_results`, set `games.status = complete`, `games.ended_at` and the final `games.state`, set `rooms.state = completing`. Broadcast `game_over` (with `closes_at`); start the 30-second countdown timer; broadcast `rooms_updated` (a completing room leaves the lobby list) |
 | **IN PROGRESS** | Player drop reduces game to 2 players and both choose to end | — | **COMPLETING** | Write `games.status = incomplete`; write `game_results` with `outcome = incomplete`; broadcast `game_over`; start 30-second countdown |
-| **COMPLETING** | 30-second countdown timer fires | — | **CLOSED** | Set `rooms.closed_at`; broadcast `room_closed`; all users returned to lobby |
-| **COMPLETING** | All users leave before countdown | — | **CLOSED** | Set `rooms.closed_at` immediately |
+| **COMPLETING** | A member leaves (`POST /rooms/{roomId}/leave`) | Others remain | **COMPLETING** | Set their `room_members.left_at`; broadcast `user_left` (`reason: "voluntary"`). Not a quit: no player-drop rules |
+| **COMPLETING** | 30-second countdown timer fires | — | **CLOSED** | Set `rooms.closed_at` and every remaining member's `left_at`; drop the in-memory game; broadcast `room_closed` (`reason: "game_finished"`); all users returned to lobby; broadcast `rooms_updated` |
+| **COMPLETING** | All users leave before countdown | The last member leaves | **CLOSED** | Set `rooms.closed_at` immediately; cancel the countdown; drop the in-memory game; broadcast `rooms_updated` |
+| **COMPLETING** | Server restarts | — | **CLOSED** | Startup cleanup closes the room before accepting traffic (the countdown timer and the game are gone); the game is already recorded `complete` |
 
 ## Game Lifecycle
 
@@ -49,9 +51,9 @@ This document defines the complete state machines that govern Wizard's room, gam
 | Room IN PROGRESS | Game created | — | **INITIALISING** | Shuffle deck; assign seat order; determine dealer (seat 1 for round 1); write `games` row |
 | **INITIALISING** | Trump card flipped (or dealer declares) | — | **BIDDING** | Record trump suit and source; emit `round_started` with trump; emit `hand_dealt` to each player |
 | **BIDDING** | All players have placed bids | Bid total constraint satisfied if `bid_rule = uneven` | **TRICK PHASE** | Emit `all_bids_placed`; set first lead to player left of dealer |
-| **TRICK PHASE** | All tricks in round played | — | **ROUND END** | Compute scores; write `round_players`; emit `round_complete`; write `games.state` checkpoint |
+| **TRICK PHASE** | All tricks in round played | — | **ROUND END** | Compute scores; write `rounds` and `round_players`; write `games.state` checkpoint; emit `round_complete` |
 | **ROUND END** | More rounds remain | `currentRound < config.roundCount` | **INITIALISING** | Increment round; rotate dealer; shuffle deck; deal |
-| **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` |
+| **ROUND END** | Final round just scored | `currentRound === config.roundCount` | **GAME END** | Write `game_results`; set `games.status = complete`; emit `game_over` (see Room Lifecycle, IN PROGRESS → COMPLETING) |
 | **Any active phase** (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player drop reduces game to 2 players and mutual end chosen | — | **INCOMPLETE** | Set `games.status = incomplete`; write partial `game_results`; emit `game_over` |
 | Any active phase (INITIALISING, TRUMP DETERMINATION, BIDDING PHASE, TRICK PHASE) | Player quits or times out; ≥ 3 players remain after drop | remainingPlayerCount >= 3 | INITIALISING (same round number) | Void current round; remove dropped player; re-deal same round number to remaining players; emit `user_left` to room, then the re-dealt round (`round_started`, `hand_dealt`) |
 | **GAME END** | — | — | (Room → COMPLETING) | Room state machine takes over |
@@ -63,7 +65,7 @@ This document defines the complete state machines that govern Wizard's room, gam
 
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
-| Game INITIALISING | Round begins | `currentRound ≤ config.roundCount` | **ROUND START** | Create fresh Round object (resets tricksWon, bids, and hand to empty for each player); shuffle deck; deal N cards to each player (N = round number); write `rounds` row; emit `hand_dealt` to each player individually |
+| Game INITIALISING | Round begins | `currentRound ≤ config.roundCount` | **ROUND START** | Create fresh Round object (resets tricksWon, bids, and hand to empty for each player); shuffle deck; deal N cards to each player (N = round number); note the start time (the `rounds` row is written when the round is scored, with `started_at` = this time); emit `hand_dealt` to each player individually |
 | **ROUND START** | Top card flipped | Card is a suited card | **TRUMP DETERMINATION** | Set `rounds.trump_suit`; set `rounds.trump_source = flip`; proceed immediately to BIDDING |
 | **ROUND START** | Top card flipped | Card is a Jester | **TRUMP DETERMINATION** | Set `rounds.trump_suit = null`; proceed immediately to BIDDING |
 | **ROUND START** | Top card flipped | Card is a Wizard | **TRUMP DETERMINATION** | Emit `trump_selection_request` to the dealer; wait for dealer declaration (`select_trump`) |
@@ -74,8 +76,8 @@ This document defines the complete state machines that govern Wizard's room, gam
 | **BIDDING PHASE** | Each player places bid | Player's turn; bid is 0–N; if last bidder and `bid_rule = uneven`, bid cannot make total equal trick count | **BIDDING PHASE** (until all bid) | Record bid; emit `bid_placed`; write `game_events` (bid\_placed) |
 | **BIDDING PHASE** | All players have bid | — | **TRICK PHASE** | Emit `all_bids_placed`; set first lead to player left of dealer |
 | BIDDING PHASE | All players have bid | — | TRICK PHASE | Emit all_bids_placed; set first trick lead to player left of dealer; Trick state machine takes over for each trick |
-| **TRICK PHASE** | All N tricks completed | — | **ROUND SCORING** | Compute score deltas; write `round_players`; emit `round_complete` |
-| **ROUND SCORING** | Scores applied | — | (Game → ROUND END) | Write `games.state` checkpoint; Game lifecycle takes over — next state is INITIALISING (if rounds remain) or GAME END (if final round) |
+| **TRICK PHASE** | All N tricks completed | — | **ROUND SCORING** | Compute score deltas; write `rounds` and `round_players`; emit `round_complete` |
+| **ROUND SCORING** | Scores applied | — | (Game → ROUND END) | Write `games.state` checkpoint (same transaction as `rounds` / `round_players`); Game lifecycle takes over — next state is INITIALISING (if rounds remain: the next round is dealt at once, with no server-side pause; clients hold the round summary on screen themselves) or GAME END (if final round) |
 
 ## Trick State Machine
 
@@ -83,12 +85,12 @@ This document defines the complete state machines that govern Wizard's room, gam
 
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
-| Round TRICK PHASE begins | Trick N starts | `currentTrick ≤ roundNumber` | **TRICK START** | Set lead player (left of dealer for trick 1; winner of prior trick thereafter); emit `all_bids_placed` with trick number |
+| Round TRICK PHASE begins | Trick N starts | `currentTrick ≤ roundNumber` | **TRICK START** | Set lead player (left of dealer for trick 1, right after `all_bids_placed`; winner of prior trick thereafter, right after `trick_complete`) |
 | **TRICK START** | Lead player identified | — | **AWAITING PLAY** | Emit `play_request` to lead player; record led suit once first card is played |
 | **AWAITING PLAY** | Current player plays a card | Card is in player's hand; suit-follow rule satisfied (must follow led suit if able; opening Jesters are skipped and the first non-Jester card decides: a Wizard = any card for the rest of the trick, a suited card = its suit must be followed, even if a Wizard is played later) | **CARD PLAYED** | Remove card from player's hand; record card in trick; write `game_events` (card\_played); emit `card_played` to room |
 | **CARD PLAYED** | More players remain to play | `cardsInTrick < playerCount` | **AWAITING PLAY** | Advance turn to next player; emit `play_request` |
 | **CARD PLAYED** | All players have played | `cardsInTrick === playerCount` | **TRICK RESOLUTION** | Apply winner priority rules: first Wizard wins; else highest trump; else highest card of led suit; else first Jester |
-| **TRICK RESOLUTION** | Winner determined | — | **TRICK END** | Increment `tricksWon` for winner; write `game_events` (trick\_completed) with winning card type; emit `trick_complete` |
+| **TRICK RESOLUTION** | Winner determined | — | **TRICK END** | Increment `tricksWon` for winner; write `game_events` (trick\_completed, broadcast as `trick_complete`) with winning card type; emit `trick_complete` |
 | **TRICK END** | More tricks remain in round | `currentTrick < roundNumber` | **TRICK START** | Increment trick number; winner becomes lead player |
 | **TRICK END** | All tricks played | `currentTrick === roundNumber` | (Round → ROUND SCORING) | Round state machine takes over |
 
@@ -143,12 +145,13 @@ No timeout on trump declaration. If the dealer disconnects mid-declaration, the 
 
 | Transition | Checkpoint | What is written |
 | --- | --- | --- |
-| ROUND SCORING complete | Full | `games.state` snapshot; `round_players` rows |
-| GAME END | Full | `games.state`; `game_results`; `games.status = complete` |
+| ROUND SCORING complete | Full | `games.state` snapshot; `rounds` row; `round_players` rows |
+| GAME END | Full | `games.state`; `game_results`; `games.status = complete`, `games.ended_at`; `rooms.state = completing` |
 | INCOMPLETE | Full | `games.state`; `game_results` with `outcome = incomplete`; `games.status = incomplete` |
 | Bid placed | Partial | `game_events` row only |
 | Card played | Partial | `game_events` row only |
 | Trick completed | Partial | `game_events` row only |
+| Round scored, game over (`round_complete`, `game_over`) | Partial | `game_events` row (`round_completed`, `game_completed`), alongside the full checkpoints above |
 | Trump declared | Partial | `game_events` row only |
 | Any other event broadcast to the game's room (`game_starting`, `game_started`, `round_started`, `trump_revealed`, `all_bids_placed`, spectator `user_joined` / `user_left`) | Partial | `game_events` row only, numbered by the game's `seq` for reconnect replay |
 

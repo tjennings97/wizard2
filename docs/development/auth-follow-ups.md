@@ -33,12 +33,12 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 **Why:** Gameplay runs over the socket. If the socket does not validate and refresh the session, a player who only uses the socket expires after 24 hours idle, and a displaced or logged-out user keeps a working socket.
 
-**Status:** done. Items 1, 2 and 4: `server/src/socket/auth.ts`, `server/src/auth/sessionEvents.ts`, tests in `server/src/socket/socket.int.test.ts`. Item 3: `recheckSocketSession` and the game-action handlers in `server/src/socket/index.ts`, tests in `server/src/games/games.int.test.ts`; wired for `select_trump` and `place_bid`, and `play_card` / `choose_continue_or_end` must use the same path when they are built.
+**Status:** done. Items 1, 2 and 4: `server/src/socket/auth.ts`, `server/src/auth/sessionEvents.ts`, tests in `server/src/socket/socket.int.test.ts`. Item 3: `recheckSocketSession` and the game-action handlers in `server/src/socket/index.ts`, tests in `server/src/games/games.int.test.ts`; wired for `select_trump`, `place_bid` and `play_card`, and `choose_continue_or_end` must use the same path when it is built.
 
 **Build:**
 1. **Done.** On connection, read the signed `wizard_session` cookie from the handshake and call `authenticateToken`. On failure emit `session_error` (`code` = the failure code, `fatal: true`) and disconnect.
 2. **Done.** On connection, if `session.inReauthWindow` is true and the user is not reconnecting to a game in progress (`isInActiveGame`), emit `session_error` `{ code: "REAUTH_REQUIRED", fatal: true }` and disconnect.
-3. **Done** for `select_trump` and `place_bid`. Call `authenticateToken` again on game actions (`place_bid`, `play_card`, `select_trump`, `choose_continue_or_end`) so that play slides the session expiry. Throttle per socket (for example, at most once every 5 minutes) to avoid a database query per card.
+3. **Done** for `select_trump`, `place_bid` and `play_card`. Call `authenticateToken` again on game actions (`place_bid`, `play_card`, `select_trump`, `choose_continue_or_end`) so that play slides the session expiry. Throttle per socket (for example, at most once every 5 minutes) to avoid a database query per card.
 4. **Done.** **Displaced sockets:** when a session is invalidated by a new login, a password reset or a logout, every socket using that session must receive `session_error` `{ code: "SESSION_INVALIDATED", fatal: true }` and be disconnected. The auth routes live in the API layer, so add an in-process notification seam (for example, a small typed `EventEmitter` in `server/src/auth/` that emits invalidated session ids) and subscribe to it from the socket layer. Do not import socket code into the auth routes.
 
 **Done when:**

@@ -119,3 +119,53 @@ class TestStartGameRunway:
         register(api)
         room_id = open_room(api)
         assert_error(api.post("/rooms/{}/start".format(room_id)), 400, "NOT_ENOUGH_PLAYERS")
+
+
+@pytest.fixture
+def seat_in_room(db, cleanup):
+    """Seat users (players) in a room in the given state, with a game. Returns the room id."""
+
+    def _seat(user_ids, state: str, game_status: str) -> str:
+        room_id = db.execute(
+            "INSERT INTO rooms (state, host_user_id) VALUES (%s, %s) RETURNING id", (state, user_ids[0])
+        ).fetchone()[0]
+        cleanup.room_ids.append(str(room_id))
+        for i, user_id in enumerate(user_ids):
+            db.execute(
+                "INSERT INTO room_members (room_id, user_id, role, join_order) VALUES (%s, %s, 'player', %s)",
+                (room_id, user_id, i + 1),
+            )
+        game_id = db.execute(
+            "INSERT INTO games (room_id, status) VALUES (%s, %s) RETURNING id", (room_id, game_status)
+        ).fetchone()[0]
+        cleanup.game_ids.append(str(game_id))
+        return str(room_id)
+
+    return _seat
+
+
+class TestLeaveAfterGame:
+    """POST /rooms/{roomId}/leave: a game in progress cannot be left yet (player drop comes later),
+    but once it is over (room COMPLETING) anyone may leave, and the last one out closes the room."""
+
+    def test_player_cannot_leave_a_game_in_progress(self, api, register, seat_in_room):
+        user = register(api)["user"]
+        room_id = seat_in_room([user["id"]], "in_progress", "in_progress")
+        assert_error(api.post("/rooms/{}/leave".format(room_id)), 403, "GAME_ALREADY_STARTED")
+
+    def test_players_leave_a_completing_room_and_the_last_closes_it(self, new_api, register, seat_in_room, db, cleanup):
+        a, b = new_api(), new_api()
+        ids = [register(a)["user"]["id"], register(b)["user"]["id"]]
+        room_id = seat_in_room(ids, "completing", "complete")
+
+        assert a.post("/rooms/{}/leave".format(room_id)).status_code == 204
+        assert db.execute("SELECT state FROM rooms WHERE id = %s", (room_id,)).fetchone()[0] == "completing"
+
+        assert b.post("/rooms/{}/leave".format(room_id)).status_code == 204
+        state, closed_at = db.execute("SELECT state, closed_at FROM rooms WHERE id = %s", (room_id,)).fetchone()
+        assert state == "closed"
+        assert closed_at is not None
+        # Free to enter another room straight away.
+        r = a.post("/rooms", json={})
+        assert r.status_code == 201, r.text
+        cleanup.room_ids.append(r.json()["id"])

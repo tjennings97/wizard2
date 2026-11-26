@@ -1,12 +1,18 @@
+import type { Knex } from 'knex';
+import { db } from '../db/knex';
 import {
   EngineError,
   Game,
   Player,
+  type CardData,
+  type CardPlayed,
   type DeckFactory,
   type GameStateView,
   type RandomSource,
+  type RoundCompleted,
   type RoundStarted,
   type Suit,
+  type Trick,
 } from '../engine';
 import { logger } from '../logger';
 import type { RoomConfig } from '../rooms/rules';
@@ -16,12 +22,25 @@ import {
   gameStartedPayload,
   gameStartingPayload,
   handDealtPayload,
+  gameOverPayload,
   invalidBidPayload,
+  invalidPlayPayload,
   invalidTrumpPayload,
+  playEntries,
+  playRequestPayload,
+  roundCompletePayload,
   roundStartedPayload,
   trumpRevealedPayload,
 } from './payloads';
-import { insertGameEvents, type GameEventRow, type GameEventType, type GamePlayerRow } from './queries';
+import {
+  insertGameEvents,
+  recordGameComplete,
+  recordRound,
+  type GameEventRow,
+  type GameEventType,
+  type GamePlayerRow,
+  type RoundRecord,
+} from './queries';
 
 /**
  * What the game service tells the real-time layer. Implemented by the socket layer
@@ -37,6 +56,24 @@ export interface GameNotifier {
 
 const noopNotifier: GameNotifier = { deliverToRoom: () => {}, deliverToUser: () => {} };
 
+/**
+ * What the game service tells the room service. Implemented by RoomService, which owns the room
+ * lifecycle; the game service never changes a room except for the in_progress → completing move
+ * it writes with the game's results.
+ */
+export interface GameLifecycle {
+  /**
+   * The game has ended, game_over has been broadcast and the room is COMPLETING. Close the room
+   * at `closesAt` (room_closed, everyone back to the lobby).
+   */
+  gameFinished(roomId: string, closesAt: Date): void;
+}
+
+const noopLifecycle: GameLifecycle = { gameFinished: () => {} };
+
+/** How long the room stays COMPLETING (the game-over screen) before it closes. */
+export const COMPLETING_COUNTDOWN_MS = 30 * 1000;
+
 /** Duplicate idempotency keys within this window are acknowledged without reprocessing. */
 export const IDEMPOTENCY_WINDOW_MS = 60 * 1000;
 
@@ -45,8 +82,10 @@ interface LogFields {
   actorUserId: string | null;
   /** Full-context snapshot for the log's `payload` column. Defaults to the sent payload. */
   context?: unknown;
-  /** Defaults to the game's current round number. */
+  /** Defaults to the game's current round number at publish time. */
   roundNumber?: number;
+  /** For trick-level events; null otherwise. */
+  trickNumber?: number;
 }
 
 type Outbound =
@@ -62,6 +101,10 @@ class LiveGame {
   queue: Promise<void> = Promise.resolve();
   /** `${userId}:${idempotencyKey}` → time first seen. */
   readonly keys = new Map<string, number>();
+  /** When the current round was dealt, for rounds.started_at. */
+  roundStartedAt = new Date();
+  /** The game_over payload once the game has ended; re-sent after state_snapshot. */
+  gameOver: unknown = null;
 
   constructor(readonly game: Game) {}
 }
@@ -78,6 +121,8 @@ export interface GameServiceOptions {
   /** Stacked decks in tests. Defaults to a shuffled deck per round. */
   deckFactory?: DeckFactory;
   random?: RandomSource;
+  /** How long the room stays COMPLETING after game_over. Tests shorten it. */
+  countdownMs?: number;
 }
 
 /** Who caused an action, for log lines. Null for server-initiated work. */
@@ -101,17 +146,26 @@ export interface NewGame {
  * broadcast to game_events with its seq, and hands events to the notifier in order.
  * See docs/architecture/game-state-machine.md and docs/api/websocket-events.md.
  *
- * Covers start through the end of bidding; trick play is not wired yet.
+ * Covers start through game_over. Disconnects, quits and player drops are not wired yet.
  */
 export class GameService {
   private notifier: GameNotifier = noopNotifier;
+  private lifecycle: GameLifecycle = noopLifecycle;
   private readonly byRoom = new Map<string, LiveGame>();
+  readonly countdownMs: number;
 
-  constructor(private readonly options: GameServiceOptions = {}) {}
+  constructor(private readonly options: GameServiceOptions = {}) {
+    this.countdownMs = options.countdownMs ?? COMPLETING_COUNTDOWN_MS;
+  }
 
   /** The socket layer is created after the service, so it is set late. */
   setNotifier(notifier: GameNotifier): void {
     this.notifier = notifier;
+  }
+
+  /** Set by the room service, which is created after this one. */
+  setLifecycle(lifecycle: GameLifecycle): void {
+    this.lifecycle = lifecycle;
   }
 
   /**
@@ -150,7 +204,7 @@ export class GameService {
         { to: 'room', event: 'game_starting', payload: gameStartingPayload(game), log: { eventType: 'game_starting', actorUserId: null, context, roundNumber: 0 } },
         { to: 'room', event: 'game_started', payload: gameStartedPayload(game), log: { eventType: 'game_started', actorUserId: null, context, roundNumber: 0 } },
       ];
-      await this.publish(live, ctx, [...announce, ...this.openRound(game, started)]);
+      await this.publish(live, ctx, [...announce, ...this.openRound(live, started)]);
     });
   }
 
@@ -164,7 +218,8 @@ export class GameService {
 
   /**
    * Runs `fn` in the game's queue with the viewer's filtered state, the current seq and the
-   * prompt the viewer still owes (bid_request or trump_selection_request when it is their turn),
+   * prompt the viewer still owes (trump_selection_request, bid_request or play_request when it is
+   * their turn; game_over to everyone once the game has ended),
    * so what it sends is ordered with the game's events. Players get their own view, everyone else
    * the spectator view. Returns false (without calling `fn`) if the room has no live game.
    */
@@ -175,7 +230,7 @@ export class GameService {
   ): Promise<boolean> {
     const live = this.byRoom.get(roomId);
     if (!live) return false;
-    await this.run(live, SERVER_CONTEXT, async () => fn(this.viewFor(live.game, userId), live.seq, this.pendingPrompt(live.game, userId)));
+    await this.run(live, SERVER_CONTEXT, async () => fn(this.viewFor(live.game, userId), live.seq, this.pendingPrompt(live, userId)));
     return true;
   }
 
@@ -290,12 +345,116 @@ export class GameService {
             },
           },
         });
-        // Trick play (play_request to the leader) is not wired yet.
+        out.push(this.playRequest(game));
       } else {
         out.push(this.bidRequest(game));
       }
       await this.publish(live, ctx, out);
     }));
+  }
+
+  async playCard(roomId: string, ctx: ActionContext & { userId: string }, card: unknown, idempotencyKey?: unknown): Promise<void> {
+    const { userId } = ctx;
+    const live = this.liveFor(roomId, userId);
+    await this.run(live, ctx, () => this.once(live, userId, idempotencyKey, async () => {
+      const game = live.game;
+      const round = game.currentRound;
+      // Context for the log, as it stood before the card left the hand.
+      const trick = game.phase === 'trick' ? round?.currentTrick ?? null : null;
+      const before = round && trick
+        ? {
+            playPosition: trick.size + 1,
+            handBeforePlay: game.getPlayer(userId).hand.map((c) => c.toData()),
+            cardsPlayedInTrick: logEntries(trick),
+            tricksWonPerPlayer: tricksWonPerPlayer(game),
+            bidsThisRound: Object.fromEntries(round.bidOrder.map((id) => [id, round.getBid(id)])),
+          }
+        : null;
+
+      let played: CardPlayed;
+      try {
+        played = game.playCard(userId, toCardData(card));
+      } catch (err) {
+        if (!(err instanceof EngineError)) throw err;
+        await this.publish(live, ctx, [
+          { to: 'user', userId, event: 'invalid_play_error', payload: invalidPlayPayload(game, userId, err.code, err.message) },
+        ]);
+        return;
+      }
+
+      // The round the card was played in (still current: the next one is dealt below).
+      const r = game.currentRound!;
+      const playedTrick = r.tricks[played.trickNumber - 1];
+      const roundNumber = r.roundNumber;
+      const trickNumber = played.trickNumber;
+      const out: Outbound[] = [
+        {
+          to: 'room',
+          event: 'card_played',
+          payload: { player_id: userId, card: played.card.toData(), trick_number: trickNumber },
+          log: {
+            eventType: 'card_played',
+            actorUserId: userId,
+            roundNumber,
+            trickNumber,
+            context: {
+              playerId: userId,
+              card: played.card.toData(),
+              ...before,
+              ledSuit: playedTrick.ledSuit,
+              trumpSuit: r.trumpSuit,
+              roundNumber,
+              trickNumber,
+            },
+          },
+        },
+      ];
+      const tc = played.trickCompleted;
+      if (tc) {
+        out.push({
+          to: 'room',
+          event: 'trick_complete',
+          payload: { winner_id: tc.winnerId, cards_played: playEntries(playedTrick), trick_number: tc.trickNumber },
+          log: {
+            eventType: 'trick_completed',
+            actorUserId: null,
+            roundNumber,
+            trickNumber,
+            context: {
+              trickNumber,
+              roundNumber,
+              winnerUserId: tc.winnerId,
+              winningCard: tc.winningCard.toData(),
+              winningCardType: tc.winningCardType,
+              allCardsPlayed: logEntries(playedTrick),
+              tricksWonPerPlayer: tricksWonPerPlayer(game),
+            },
+          },
+        });
+      }
+
+      let closesAt: Date | null = null;
+      if (played.roundCompleted) {
+        const end = await this.endRound(live, ctx, played.roundCompleted);
+        out.push(...end.out);
+        closesAt = end.closesAt;
+      } else {
+        out.push(this.playRequest(game));
+      }
+      await this.publish(live, ctx, out);
+      if (closesAt) {
+        try {
+          this.lifecycle.gameFinished(game.roomId, closesAt);
+        } catch (err) {
+          logger.error({ err, ...this.logFields(live, ctx) }, 'game finished handling failed');
+        }
+      }
+    }));
+  }
+
+  /** Drops the room's game from memory once its room has closed. */
+  forget(roomId: string): void {
+    this.byRoom.delete(roomId);
   }
 
   /** Forgets every game (shutdown and tests). Does not touch the database. */
@@ -306,12 +465,128 @@ export class GameService {
   // --- internals --------------------------------------------------------------------------
 
   /**
+   * After the last trick of a round: round_complete, the round written to rounds and
+   * round_players with the games.state checkpoint, then either the next round's opening events
+   * or, after the final round, the game's results and game_over. A failed write is logged and
+   * the game carries on, as for the event log: the database is the record, not the game.
+   */
+  private async endRound(
+    live: LiveGame,
+    ctx: ActionContext,
+    rc: RoundCompleted,
+  ): Promise<{ out: Outbound[]; closesAt: Date | null }> {
+    const game = live.game;
+    const round = game.currentRound!;
+    const out: Outbound[] = [
+      {
+        to: 'room',
+        event: 'round_complete',
+        payload: roundCompletePayload(game, rc),
+        log: {
+          eventType: 'round_completed',
+          actorUserId: null,
+          roundNumber: rc.roundNumber,
+          context: {
+            roundNumber: rc.roundNumber,
+            results: rc.results.map((x) => ({
+              userId: x.playerId,
+              bid: x.bid,
+              tricksWon: x.tricksWon,
+              scoreDelta: x.scoreDelta,
+              cumulativeScore: rc.scores[x.playerId],
+            })),
+          },
+        },
+      },
+    ];
+    const record: RoundRecord = {
+      gameId: game.gameId,
+      roundNumber: rc.roundNumber,
+      dealerUserId: round.dealerId,
+      trumpSuit: round.trumpSuit,
+      trumpSource: round.trumpSource,
+      startedAt: live.roundStartedAt,
+      players: rc.results.map((x) => ({
+        userId: x.playerId,
+        bid: x.bid,
+        tricksWon: x.tricksWon,
+        scoreDelta: x.scoreDelta,
+        bidPosition: round.bidPosition(x.playerId),
+      })),
+    };
+
+    if (!rc.isFinalRound) {
+      await this.persist(live, ctx, 'round record', (trx) => recordRound(trx, record, game.toGameState()));
+      let started: RoundStarted;
+      try {
+        started = game.startRound();
+      } catch (err) {
+        // Not expected (the deck is built fresh each round). The round's results still go out;
+        // the game waits in round_end until it is abandoned.
+        logger.error({ err, ...this.logFields(live, ctx), roundNumber: rc.roundNumber + 1 }, 'next round deal failed');
+        return { out, closesAt: null };
+      }
+      out.push(...this.openRound(live, started));
+      return { out, closesAt: null };
+    }
+
+    const result = game.endGame();
+    const closesAt = new Date(Date.now() + this.countdownMs);
+    const payload = gameOverPayload(game, result, closesAt, this.countdownMs);
+    live.gameOver = payload;
+    const state = game.toGameState();
+    const winners = new Set(result.winnerIds);
+    await this.persist(live, ctx, 'game result', async (trx) => {
+      await recordRound(trx, record, state);
+      await recordGameComplete(trx, {
+        gameId: game.gameId,
+        roomId: game.roomId,
+        state,
+        results: game.activePlayers.map((p) => ({
+          userId: p.id,
+          finalScore: result.scores[p.id],
+          outcome: winners.has(p.id) ? 'win' : 'loss',
+          roundsPlayed: state.roundHistory.length,
+        })),
+      });
+    });
+    out.push({
+      to: 'room',
+      event: 'game_over',
+      payload,
+      log: {
+        eventType: 'game_completed',
+        actorUserId: null,
+        roundNumber: rc.roundNumber,
+        context: {
+          finalScores: result.scores,
+          winners: result.winnerIds,
+          status: 'complete',
+          roundCount: game.config.roundCount,
+          playerCount: game.activePlayers.length,
+        },
+      },
+    });
+    return { out, closesAt };
+  }
+
+  private async persist(live: LiveGame, ctx: ActionContext, what: string, fn: (trx: Knex.Transaction) => Promise<void>): Promise<void> {
+    try {
+      await db.transaction(fn);
+    } catch (err) {
+      logger.error({ err, ...this.logFields(live, ctx), roundNumber: live.game.currentRoundNumber }, `${what} write failed`);
+    }
+  }
+
+  /**
    * The events that open a dealt round: round_started, hand_dealt to each player, then either
    * trump_selection_request to the dealer (Wizard flipped) or trump_revealed and the first
    * bid_request (suited card, Jester, or no card left to flip).
    */
-  private openRound(game: Game, started: RoundStarted): Outbound[] {
+  private openRound(live: LiveGame, started: RoundStarted): Outbound[] {
+    const game = live.game;
     const round = game.currentRound!;
+    live.roundStartedAt = new Date();
     const trumpCard = started.trumpCard?.toData() ?? null;
     const out: Outbound[] = [
       {
@@ -359,13 +634,21 @@ export class GameService {
   }
 
   /** The request a player would have been sent for the current turn, if it is theirs. */
-  private pendingPrompt(game: Game, userId: string): { event: string; payload: unknown } | null {
+  private pendingPrompt(live: LiveGame, userId: string): { event: string; payload: unknown } | null {
+    const game = live.game;
+    if (live.gameOver) return { event: 'game_over', payload: live.gameOver };
     if (game.currentTurnId !== userId) return null;
     if (game.phase === 'trump_declaration') {
       return { event: 'trump_selection_request', payload: { player_id: userId, round_number: game.currentRoundNumber } };
     }
     if (game.phase === 'bidding') return { event: 'bid_request', payload: bidRequestPayload(game, userId) };
+    if (game.phase === 'trick') return { event: 'play_request', payload: playRequestPayload(game, userId) };
     return null;
+  }
+
+  private playRequest(game: Game): Outbound {
+    const player = game.currentTurnId!;
+    return { to: 'user', userId: player, event: 'play_request', payload: playRequestPayload(game, player) };
   }
 
   private bidRequest(game: Game): Outbound {
@@ -430,7 +713,7 @@ export class GameService {
           event: item.event,
           eventType: item.log.eventType,
           roundNumber: item.log.roundNumber ?? game.currentRoundNumber,
-          trickNumber: null,
+          trickNumber: item.log.trickNumber ?? null,
           actorUserId: item.log.actorUserId,
           payload: item.log.context ?? item.payload,
           sentPayload: item.payload,
@@ -455,4 +738,24 @@ export class GameService {
       }
     }
   }
+}
+
+/** A trick's cards in the event log's camelCase shape. */
+function logEntries(trick: Trick): { playerId: string; card: CardData }[] {
+  return trick.cards.map((c) => ({ playerId: c.playerId, card: c.card.toData() }));
+}
+
+function tricksWonPerPlayer(game: Game): Record<string, number> {
+  return Object.fromEntries(game.activePlayers.map((p) => [p.id, p.tricksWon]));
+}
+
+/**
+ * The card a client named, in the engine's shape. Anything that is not a card comes out as one
+ * nobody holds, so the engine answers CARD_NOT_IN_HAND. Wizards and Jesters have no suit or rank,
+ * whatever the client sent.
+ */
+function toCardData(value: unknown): CardData {
+  const o = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  if (o.type === 'wizard' || o.type === 'jester') return { type: o.type, suit: null, rank: null };
+  return { type: o.type, suit: o.suit, rank: o.rank } as CardData;
 }

@@ -945,6 +945,10 @@ paths:
         removed and cannot rejoin as a player (they may rejoin as a spectator).
         Current round is voided and re-dealt. Host transfer skips spectators;
         if no players remain, the room closes.
+        Not built yet: leaving a game in progress (room `in_progress`) as a player returns
+        `403 GAME_ALREADY_STARTED` until the player-drop rules are wired.
+        Once the game is over (room `completing`, the game-over countdown) anyone may leave;
+        it is not a quit. The last member to leave closes the room at once.
       tags: [Rooms]
       security:
         - sessionCookie: []
@@ -960,6 +964,14 @@ paths:
           description: Left the room successfully.
         '401':
           description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: >
+            `GAME_ALREADY_STARTED`: a player cannot leave a game in progress yet (player-drop
+            rules are not built).
           content:
             application/json:
               schema:

@@ -105,7 +105,7 @@ One game per room per lifecycle. The `state` column holds the latest `GameState`
 
 ## Data Dictionary — rounds
 
-One row per round per game. Rounds are numbered sequentially starting at 1.
+One row per round per game. Rounds are numbered sequentially starting at 1. Written when the round is scored, together with its `round_players` rows and the `games.state` checkpoint, in one transaction; `started_at` is when the round was dealt.
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -164,7 +164,7 @@ Composite UNIQUE: `(game_id, user_id)` — one result row per player per game.
 
 ## Data Dictionary — game\_events
 
-Append-only event log. Never updated or deleted. Primary source for bot training data and audit, and the log a reconnecting client is replayed from. Every event broadcast to a game's room is one row, numbered by the game's `seq` (the envelope `seq` the clients received; see the WebSocket Event Taxonomy). Unicast events (`hand_dealt`, `bid_request`, errors) are not logged. The `payload` JSONB schema varies by `event_type` — see JSONB Payload Schemas.
+Append-only event log. Never updated or deleted. Primary source for bot training data and audit, and the log a reconnecting client is replayed from. Every event broadcast to a game's room is one row, numbered by the game's `seq` (the envelope `seq` the clients received; see the WebSocket Event Taxonomy). Unicast events (`hand_dealt`, `bid_request`, `play_request`, errors) are not logged. The `payload` JSONB schema varies by `event_type` — see JSONB Payload Schemas.
 
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -293,6 +293,8 @@ The `hand` array is included in `GameState` for server-side use only. Clients ne
 
 Rows whose `event_type` is not listed below (`user_joined`, `user_left`, and `trump_revealed`) store the sent payload as `payload`.
 
+Where the broadcast name differs from the `event_type`: `trump_revealed` after a Wizard flip is `trump_declared`; `trick_complete` is `trick_completed`; `round_complete` is `round_completed`; `game_over` is `game_completed`. `card_played` and `trick_completed` rows carry `trick_number`; every other row's is null.
+
 **game\_starting**, **game\_started** (`round_number` 0)
 
 ```json
@@ -354,7 +356,7 @@ Rows whose `event_type` is not listed below (`user_joined`, `user_left`, and `tr
   "handBeforePlay": [ ],
   "ledSuit": "hearts",
   "trumpSuit": "hearts",
-  "cardsPlayedInTrick": [ ],
+  "cardsPlayedInTrick": [{ "playerId": "uuid", "card": { "suit": "hearts", "rank": 4, "type": "suited" } }],
   "tricksWonPerPlayer": { "uuid": 1 },
   "bidsThisRound": { "uuid": 3 },
   "roundNumber": 4,
@@ -383,7 +385,7 @@ Rows whose `event_type` is not listed below (`user_joined`, `user_left`, and `tr
   "winnerUserId": "uuid",
   "winningCard": { "suit": null, "rank": null, "type": "wizard" },
   "winningCardType": "wizard",
-  "allCardsPlayed": [ ],
+  "allCardsPlayed": [{ "playerId": "uuid", "card": { "suit": null, "rank": null, "type": "wizard" } }],
   "tricksWonPerPlayer": { "uuid": 2 }
 }
 ```

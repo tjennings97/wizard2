@@ -268,7 +268,7 @@ label {
   margin: 0 auto;
   padding: 12px 16px 24px;
   display: grid;
-  grid-template-areas: 'bar' 'opponents' 'table' 'me';
+  grid-template-areas: 'bar' 'opponents' 'table' 'me' 'scores';
   gap: 12px;
 }
 .game-bar {
@@ -444,13 +444,226 @@ label {
   font-size: 1.4em;
 }
 
+/* Trick play: the trick on the table, the hand as buttons. */
+:root {
+  --win: #2e7d32;
+  --lose: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --win: #81c784;
+    --lose: #ff8a80;
+  }
+}
+.trick {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.trick-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 72px;
+}
+.trick-card.won .playing-card {
+  box-shadow: 0 0 0 3px var(--turn);
+}
+.trick-name {
+  font-size: 0.8rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 8px;
+  min-width: 44px;
+  min-height: 44px;
+  cursor: default;
+  transition: transform 120ms ease-out, opacity 120ms;
+}
+.card-btn:disabled {
+  opacity: 1;
+}
+.card-btn.legal {
+  cursor: pointer;
+}
+.card-btn.legal .playing-card {
+  border-color: var(--turn);
+  box-shadow: 0 0 0 2px var(--turn);
+}
+.card-btn.legal:active {
+  transform: translateY(-6px);
+}
+.card-btn.unplayable {
+  opacity: 0.35;
+}
+.card-btn:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Scoreboard, round summary, game over. */
+.scoreboard {
+  grid-area: scores;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.scoreboard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.scoreboard-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.scoreboard-head button {
+  min-height: 44px;
+}
+.score-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.score-table th,
+.score-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+.score-table th[scope='row'],
+.score-table thead th:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+.score-table tr.turn th[scope='row'] {
+  box-shadow: inset 3px 0 0 var(--turn);
+  padding-left: 8px;
+}
+.score-table .num {
+  text-align: right;
+}
+.score-table.rounds td {
+  white-space: nowrap;
+}
+.table-scroll {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.delta.pos {
+  color: var(--win);
+  font-weight: 600;
+}
+.delta.neg {
+  color: var(--lose);
+  font-weight: 600;
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 10;
+  animation: fade-in 200ms ease-out;
+}
+.modal {
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 16px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 100%;
+  overflow-y: auto;
+}
+.modal h2 {
+  margin-top: 0;
+}
+.modal-foot,
+.game-over-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+.modal-foot button,
+.game-over-foot button {
+  min-height: 44px;
+}
+.countdown {
+  color: var(--turn);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.game-over .winner {
+  margin-top: 0;
+}
+.standings {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.standings li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.standings li.won {
+  font-weight: 700;
+}
+.standings .order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+.standings li.won .order {
+  background: var(--turn);
+  color: #1d1c1a;
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay {
+    animation: none;
+  }
+  .card-btn {
+    transition: none;
+  }
+}
+
 @media (min-width: 900px) {
   .game {
     grid-template-columns: 220px 1fr;
     grid-template-areas:
       'bar bar'
       'opponents table'
-      'me me';
+      'me me'
+      'scores scores';
   }
   .opponents {
     grid-template-columns: 1fr;

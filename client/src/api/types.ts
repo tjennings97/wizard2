@@ -104,6 +104,23 @@ export type GamePhase =
   | 'completed'
   | 'incomplete';
 
+/** One card in a trick, in play order. */
+export interface PlayEntry {
+  player_id: string;
+  card: Card;
+}
+
+/** A player's score: the running total, or (in scores_this_round) the round's delta. */
+export interface ScoreEntry {
+  player_id: string;
+  score: number;
+}
+
+export interface RoundScoreEntry extends ScoreEntry {
+  bid: number;
+  tricks_won: number;
+}
+
 /** One player in a state_snapshot: only the viewer's own entry has `hand`. */
 export interface PlayerStateView {
   userId: string;
@@ -130,4 +147,9 @@ export interface GameStateView {
   trumpSource: TrumpSource;
   currentTurnUserId: string | null;
   players: PlayerStateView[];
+  /** Tricks of the current round in play order; the last may be in progress (winnerUserId null). */
+  tricksSoFar: { trickNumber: number; leaderUserId: string; cards: { userId: string; card: Card }[]; winnerUserId: string | null }[];
+  /** Scored rounds, oldest first. */
+  roundHistory: { roundNumber: number; players: { userId: string; bid: number; tricksWon: number; scoreDelta: number }[] }[];
+  winnerUserIds: string[];
 }

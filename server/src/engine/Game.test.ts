@@ -226,6 +226,30 @@ describe('Game round flow', () => {
     expect(g.currentRound!.currentTrick!.leaderId).toBe('a');
   });
 
+  it('legalCards: only the current player, only in trick play, filtered by follow-suit', () => {
+    // Round 2, dealer b. Deal: c, a, b (2 each). Flip: diamonds 2.
+    const r2 = stacked([
+      S('hearts', 3), S('clubs', 3), // c
+      S('hearts', 14), W(), // a
+      S('spades', 5), S('clubs', 5), // b
+      S('diamonds', 2),
+    ]);
+    const g = gameWithDecks({ 1: round1(), 2: r2 });
+    g.startRound();
+    autoPlayRound(g);
+    g.startRound();
+    expect(g.legalCards('c')).toEqual([]); // bidding
+    for (const id of ['c', 'a', 'b']) g.placeBid(id, 0);
+    // c leads: anything goes. Nobody else may play.
+    expect(g.legalCards('c').map((c) => c.toData())).toEqual([S('hearts', 3).toData(), S('clubs', 3).toData()]);
+    expect(g.legalCards('a')).toEqual([]);
+    g.playCard('c', S('clubs', 3));
+    // a has no club: every card. b must follow clubs.
+    expect(g.legalCards('a')).toHaveLength(2);
+    g.playCard('a', S('hearts', 14));
+    expect(g.legalCards('b').map((c) => c.toData())).toEqual([S('clubs', 5).toData()]);
+  });
+
   it('enforces turn order, card ownership, and following suit', () => {
     // b: hearts 10, c: hearts 14, a: spades 2 — give a a heart too via round 2 below
     const g = gameWithDecks({ 1: round1() });

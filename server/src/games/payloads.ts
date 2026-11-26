@@ -2,7 +2,7 @@
  * Socket payloads for game events, built from engine results. Pure: no I/O.
  * Names and fields follow docs/api/websocket-events.md (snake_case on the wire).
  */
-import type { CardData, Game, RoundStarted, Suit, TrumpSource } from '../engine';
+import type { CardData, Game, GameResult, RoundCompleted, RoundStarted, Suit, Trick, TrumpSource } from '../engine';
 
 export interface PlayerSummary {
   user_id: string;
@@ -14,6 +14,24 @@ export interface PlayerSummary {
 export interface BidEntry {
   player_id: string;
   bid: number;
+}
+
+/** One card in a trick, in play order. */
+export interface PlayEntry {
+  player_id: string;
+  card: CardData;
+}
+
+/** A player's score. In `cumulative_scores` and `final_scores`, the running total. */
+export interface ScoreEntry {
+  player_id: string;
+  score: number;
+}
+
+/** One player's round in `scores_this_round`: `score` is the round's score delta. */
+export interface RoundScoreEntry extends ScoreEntry {
+  bid: number;
+  tricks_won: number;
 }
 
 export function playerSummaries(game: Game): PlayerSummary[] {
@@ -90,4 +108,52 @@ export function invalidBidPayload(game: Game, userId: string, code: string, reas
 
 export function invalidTrumpPayload(userId: string, code: string, reason: string) {
   return { player_id: userId, code, reason };
+}
+
+export function playEntries(trick: Trick): PlayEntry[] {
+  return trick.cards.map((c) => ({ player_id: c.playerId, card: c.card.toData() }));
+}
+
+/** Cumulative scores in seat order. */
+export function scoreEntries(game: Game, scores: Record<string, number> = game.scores): ScoreEntry[] {
+  return game.activePlayers.map((p) => ({ player_id: p.id, score: scores[p.id] }));
+}
+
+export function playRequestPayload(game: Game, userId: string) {
+  const trick = game.currentRound!.currentTrick!;
+  return {
+    player_id: userId,
+    round_number: game.currentRoundNumber,
+    trick_number: trick.trickNumber,
+    trick_so_far: playEntries(trick),
+    legal_cards: game.legalCards(userId).map((c) => c.toData()),
+  };
+}
+
+export function invalidPlayPayload(game: Game, userId: string, code: string, reason: string) {
+  return { player_id: userId, code, reason, legal_cards: game.legalCards(userId).map((c) => c.toData()) };
+}
+
+export function roundCompletePayload(game: Game, r: RoundCompleted) {
+  // results() is in bidding order; report in seat order like every other score list.
+  const byId = new Map(r.results.map((x) => [x.playerId, x]));
+  return {
+    round_number: r.roundNumber,
+    scores_this_round: game.activePlayers.map((p): RoundScoreEntry => {
+      const x = byId.get(p.id)!;
+      return { player_id: p.id, bid: x.bid, tricks_won: x.tricksWon, score: x.scoreDelta };
+    }),
+    cumulative_scores: scoreEntries(game, r.scores),
+    is_final_round: r.isFinalRound,
+  };
+}
+
+export function gameOverPayload(game: Game, result: GameResult, closesAt: Date, countdownMs: number) {
+  return {
+    game_id: game.gameId,
+    final_scores: scoreEntries(game, result.scores),
+    winner_ids: result.winnerIds,
+    closes_at: closesAt.toISOString(),
+    countdown_seconds: Math.ceil(countdownMs / 1000),
+  };
 }

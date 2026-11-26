@@ -1,14 +1,19 @@
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
-import { SUITS, type Suit } from '../api/types';
-import { Card, SUIT_NAMES, SUIT_SYMBOLS, cardKey } from '../components/Card';
+import { leaveRoom } from '../api/rooms';
+import { SUITS, type Card as CardData, type PlayEntry, type Suit } from '../api/types';
+import { Card, SUIT_NAMES, SUIT_SYMBOLS, cardKey, cardLabel } from '../components/Card';
 import { useAuth } from '../context/AuthContext';
-import { currentBidderId, useGame, type GameView, type SeatView } from '../context/GameContext';
+import { currentTurnId, isLegal, useGame, type GameView, type RoundResult, type SeatView } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
 
+/** How long the round summary stays up before the next round shows (docs/design/ui-foundation.md). */
+const ROUND_SUMMARY_MS = 3000;
+
 /**
- * The game board. Mobile first, one column: opponents on top, the table (trump, status) in the
- * middle, the player's own hand and actions at the bottom. Covers dealing, trump and bidding;
- * trick play comes next.
+ * The game board. Mobile first, one column: opponents on top, the table (trump, the trick) in the
+ * middle, the player's own hand and actions at the bottom, then the scoreboard. The round summary
+ * is an overlay; the game-over screen replaces the board.
  */
 export function GamePage() {
   const { id } = useParams<{ id: string }>();
@@ -23,20 +28,25 @@ export function GamePage() {
       </main>
     );
   }
-  return <Board game={game} />;
+  if (game.gameOver) return <GameOver game={game} />;
+  return (
+    <>
+      <Board game={game} />
+      {game.roundSummary && <RoundSummary game={game} result={game.roundSummary} />}
+    </>
+  );
 }
+
+const nameOf = (game: GameView, id: string | null, me: string) =>
+  id === me ? 'You' : (game.seats.find((s) => s.userId === id)?.displayName ?? 'Someone');
 
 function Board({ game }: { game: GameView }) {
   const { user } = useAuth();
   const me = user?.id ?? '';
-  const bidder = currentBidderId(game);
-  const dealer = game.seats.find((s) => s.userId === game.dealerId);
-  const turnId = game.stage === 'choosing_trump' ? game.dealerId : bidder;
+  const turnId = currentTurnId(game);
   // Opponents in seat order, starting with the seat after mine, so the table reads clockwise.
   const myIndex = game.seats.findIndex((s) => s.userId === me);
-  const others = game.isSpectator
-    ? game.seats
-    : [...game.seats.slice(myIndex + 1), ...game.seats.slice(0, myIndex)];
+  const others = game.isSpectator ? game.seats : [...game.seats.slice(myIndex + 1), ...game.seats.slice(0, myIndex)];
   const mySeat = game.isSpectator ? null : game.seats[myIndex];
   const bidTotal = game.seats.reduce((sum, s) => sum + (s.bid ?? 0), 0);
 
@@ -61,10 +71,10 @@ function Board({ game }: { game: GameView }) {
 
       <section className="table" aria-label="Table">
         <Trump game={game} />
+        <TrickArea game={game} me={me} />
         <p className="status" role="status">
-          {statusLine(game, me, turnId, dealer)}
+          {statusLine(game, me, turnId)}
         </p>
-        {/* The current trick goes here once trick play is wired. */}
       </section>
 
       {mySeat && (
@@ -74,20 +84,26 @@ function Board({ game }: { game: GameView }) {
               <strong>{mySeat.displayName}</strong> <span className="muted">(you)</span>
               {game.dealerId === me && <span className="badge"> Dealer</span>}
             </span>
-            <span>{mySeat.bid === null ? 'No bid yet' : `Bid ${mySeat.bid}`}</span>
+            <span>{bidProgress(mySeat)}</span>
           </div>
           <Actions game={game} />
-          <ul className="hand">
-            {(game.hand ?? []).map((c, i) => (
-              <li key={cardKey(c, i)}>
-                <Card card={c} />
-              </li>
-            ))}
-          </ul>
+          <Hand game={game} />
         </section>
       )}
+
+      <Scoreboard game={game} turnId={turnId} />
     </main>
   );
+}
+
+/** "Bid 3 · Won 1 · Need 2 more", the over/under status from docs/product/prd.md. */
+function bidProgress(seat: SeatView): string {
+  if (seat.bid === null) return 'No bid yet';
+  const base = `Bid ${seat.bid} · Won ${seat.tricksWon}`;
+  const need = seat.bid - seat.tricksWon;
+  if (need > 0) return `${base} · Need ${need} more`;
+  if (need < 0) return `${base} · ${-need} over`;
+  return `${base} · On target`;
 }
 
 function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; isTurn: boolean }) {
@@ -97,7 +113,7 @@ function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; i
         {seat.displayName.slice(0, 1).toUpperCase()}
       </span>
       <span className="seat-name">{seat.displayName}</span>
-      <span className="seat-bid">{seat.bid === null ? '–' : `Bid ${seat.bid}`}</span>
+      <span className="seat-bid">{seat.bid === null ? '–' : `Bid ${seat.bid} · Won ${seat.tricksWon}`}</span>
       <span className="muted seat-meta">
         {seat.handCount} card{seat.handCount === 1 ? '' : 's'}
         {isDealer && ' · Dealer'}
@@ -125,17 +141,37 @@ function Trump({ game }: { game: GameView }) {
   );
 }
 
-function statusLine(game: GameView, me: string, turnId: string | null, dealer: SeatView | undefined): string {
-  const name = (id: string | null) => (id === me ? 'you' : game.seats.find((s) => s.userId === id)?.displayName ?? 'someone');
+/** The trick being played or, until the next card, the one just won (winner highlighted). */
+function TrickArea({ game, me }: { game: GameView; me: string }) {
+  const live = game.trick && game.trick.cards.length > 0 ? game.trick : null;
+  const shown: PlayEntry[] | null = live ? live.cards : (game.lastTrick?.cards ?? null);
+  if (!shown) return null;
+  const winner = live ? null : game.lastTrick!.winnerId;
+  return (
+    <ol className="trick" aria-label={live ? `Trick ${live.trickNumber}` : 'Last trick'}>
+      {shown.map((e, i) => (
+        <li key={cardKey(e.card, i)} className={e.player_id === winner ? 'trick-card won' : 'trick-card'}>
+          <Card card={e.card} size="small" />
+          <span className="trick-name">{nameOf(game, e.player_id, me)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function statusLine(game: GameView, me: string, turnId: string | null): string {
+  const name = (id: string | null) => (id === me ? 'you' : (game.seats.find((s) => s.userId === id)?.displayName ?? 'someone'));
   switch (game.stage) {
     case 'choosing_trump':
-      return game.dealerId === me ? 'Choose the trump suit.' : `Waiting for ${dealer?.displayName ?? 'the dealer'} to choose trump.`;
+      return game.dealerId === me ? 'Choose the trump suit.' : `Waiting for ${name(game.dealerId)} to choose trump.`;
     case 'bidding':
       return turnId === me ? 'Your bid.' : `Waiting for ${name(turnId)} to bid.`;
-    case 'bids_complete':
-      return 'All bids are in. Trick play is coming soon.';
+    case 'playing': {
+      const won = game.lastTrick && !(game.trick && game.trick.cards.length > 0) ? `${nameOf(game, game.lastTrick.winnerId, me)} won the trick. ` : '';
+      return won + (turnId === me ? 'Your turn: play a card.' : `Waiting for ${name(turnId)} to play.`);
+    }
     default:
-      return 'Dealing…';
+      return game.lastTrick ? `${nameOf(game, game.lastTrick.winnerId, me)} won the last trick.` : 'Dealing…';
   }
 }
 
@@ -186,5 +222,253 @@ function Actions({ game }: { game: GameView }) {
       </div>
     );
   }
+  if (game.playRequest) {
+    const all = (game.hand ?? []).length;
+    const legal = game.playRequest.legalCards.length;
+    return (
+      <div className="action-panel">
+        <p className="action-title">Your turn: tap a card to play it.</p>
+        {legal < all && <p className="muted">You must follow the suit led, so only the highlighted cards can be played.</p>}
+        {error}
+      </div>
+    );
+  }
   return error || null;
+}
+
+/** The player's hand. On their turn the legal cards are buttons; the rest are dimmed and disabled. */
+function Hand({ game }: { game: GameView }) {
+  const { playCard } = useGame();
+  const [sent, setSent] = useState<CardData | null>(null);
+  // A new prompt (or an error re-enabling the hand) clears the pending play.
+  useEffect(() => setSent(null), [game.playRequest, game.error]);
+  const myTurn = !!game.playRequest && !sent;
+  return (
+    <ul className="hand">
+      {(game.hand ?? []).map((c, i) => {
+        const legal = myTurn && isLegal(game, c);
+        return (
+          <li key={cardKey(c, i)}>
+            <button
+              type="button"
+              className={game.playRequest ? (isLegal(game, c) ? 'card-btn legal' : 'card-btn unplayable') : 'card-btn'}
+              disabled={!legal}
+              aria-label={legal ? `Play ${cardLabel(c)}` : cardLabel(c)}
+              onClick={() => {
+                setSent(c);
+                playCard(c);
+              }}
+            >
+              <Card card={c} />
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Running scores, with this round's bid and tricks; the round-by-round table on demand. */
+function Scoreboard({ game, turnId }: { game: GameView; turnId: string | null }) {
+  const [full, setFull] = useState(false);
+  const leader = Math.max(...game.seats.map((s) => s.score));
+  return (
+    <section className="scoreboard" aria-label="Scoreboard">
+      <div className="scoreboard-head">
+        <h2>Scores</h2>
+        {game.history.length > 0 && (
+          <button type="button" className="link" onClick={() => setFull((f) => !f)} aria-expanded={full}>
+            {full ? 'Hide rounds' : 'Round by round'}
+          </button>
+        )}
+      </div>
+      <table className="score-table">
+        <thead>
+          <tr>
+            <th scope="col">Player</th>
+            <th scope="col">Bid</th>
+            <th scope="col">Won</th>
+            <th scope="col">Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {game.seats.map((s) => (
+            <tr key={s.userId} className={s.userId === turnId ? 'turn' : undefined}>
+              <th scope="row">
+                {s.displayName}
+                {s.score === leader && game.history.length > 0 && <span className="muted"> · leads</span>}
+              </th>
+              <td>{s.bid ?? '–'}</td>
+              <td>{s.bid === null ? '–' : s.tricksWon}</td>
+              <td className="num">{s.score}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {full && <RoundTable game={game} history={game.history} />}
+    </section>
+  );
+}
+
+/** Every scored round: bid / won and the score change per player, with running totals. */
+function RoundTable({ game, history }: { game: GameView; history: RoundResult[] }) {
+  return (
+    <div className="table-scroll">
+      <table className="score-table rounds">
+        <thead>
+          <tr>
+            <th scope="col">Round</th>
+            {game.seats.map((s) => (
+              <th key={s.userId} scope="col">
+                {s.displayName}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((r) => (
+            <tr key={r.roundNumber}>
+              <th scope="row">{r.roundNumber}</th>
+              {r.players.map((p) => (
+                <td key={p.userId}>
+                  <span className="muted">
+                    {p.bid}/{p.tricksWon}
+                  </span>{' '}
+                  <Delta value={p.delta} /> <strong className="num">{p.total}</strong>
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Delta({ value }: { value: number }) {
+  return <span className={value >= 0 ? 'delta pos' : 'delta neg'}>{value > 0 ? `+${value}` : value}</span>;
+}
+
+/** Seconds left until `iso`, ticking. */
+function useSecondsLeft(iso: string | null, fallbackMs: number): number {
+  const [target] = useState(() => (iso ? Date.parse(iso) : Date.now() + fallbackMs));
+  const end = iso ? Date.parse(iso) : target;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, []);
+  return Math.max(0, Math.ceil((end - now) / 1000));
+}
+
+/** The round just scored, over the board, for a few seconds (tap to close sooner). */
+function RoundSummary({ game, result }: { game: GameView; result: RoundResult }) {
+  const { dismissSummary } = useGame();
+  const left = useSecondsLeft(null, ROUND_SUMMARY_MS);
+  useEffect(() => {
+    const t = setTimeout(dismissSummary, ROUND_SUMMARY_MS);
+    return () => clearTimeout(t);
+  }, [result, dismissSummary]);
+  const last = result.roundNumber >= game.roundCount;
+  return (
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="round-summary-title">
+      <div className="modal">
+        <h2 id="round-summary-title">Round {result.roundNumber} scores</h2>
+        <table className="score-table">
+          <thead>
+            <tr>
+              <th scope="col">Player</th>
+              <th scope="col">Bid</th>
+              <th scope="col">Won</th>
+              <th scope="col">Points</th>
+              <th scope="col">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.players.map((p) => (
+              <tr key={p.userId}>
+                <th scope="row">{game.seats.find((s) => s.userId === p.userId)?.displayName}</th>
+                <td>{p.bid}</td>
+                <td>{p.tricksWon}</td>
+                <td>
+                  <Delta value={p.delta} />
+                </td>
+                <td className="num">{p.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="modal-foot">
+          <span className="countdown">{last ? 'Final scores…' : `Next round in ${left}…`}</span>
+          <button type="button" className="primary" onClick={dismissSummary}>
+            Continue
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Winners, final standings and every round, with the countdown back to the lobby. */
+function GameOver({ game }: { game: GameView }) {
+  const over = game.gameOver!;
+  const left = useSecondsLeft(over.closesAt, 30_000);
+  const [leaving, setLeaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const name = (id: string) => game.seats.find((s) => s.userId === id)?.displayName ?? 'Someone';
+  const standings = [...over.finalScores].sort((a, b) => b.score - a.score);
+  const winners = over.winnerIds.map(name);
+
+  const leave = async () => {
+    setLeaving(true);
+    setError(null);
+    try {
+      // The server then moves this socket to the lobby (lobby_snapshot), which navigates away.
+      await leaveRoom(game.roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not leave the room.');
+      setLeaving(false);
+    }
+  };
+
+  return (
+    <main className="page game-over">
+      <p className="muted">Game over</p>
+      <h1 className="winner">
+        <span aria-hidden="true">♛ </span>
+        {winners.length > 1 ? `${winners.join(' and ')} tie for the win` : `${winners[0]} wins`}
+      </h1>
+
+      <ol className="standings">
+        {standings.map((e, i) => (
+          <li key={e.player_id} className={over.winnerIds.includes(e.player_id) ? 'won' : undefined}>
+            <span className="order">{i + 1}</span>
+            <span className="grow">{name(e.player_id)}</span>
+            <strong className="num">{e.score}</strong>
+          </li>
+        ))}
+      </ol>
+
+      {game.history.length > 0 && (
+        <section aria-label="Round by round">
+          <h2>Round by round</h2>
+          <RoundTable game={game} history={game.history} />
+        </section>
+      )}
+
+      <div className="game-over-foot">
+        <span className="countdown" role="timer">
+          Returning to lobby in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}…
+        </span>
+        <button type="button" className="primary" onClick={leave} disabled={leaving}>
+          Leave now
+        </button>
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </main>
+  );
 }
