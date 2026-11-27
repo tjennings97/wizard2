@@ -3,9 +3,13 @@ invites (auth-follow-ups §4c), roles, and the admin credential reset (§4b "Don
 
 See conftest.py for required environment and server settings.
 """
+import os
 import re
-from datetime import datetime, timedelta
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
+import psycopg
 import pytest
 
 from conftest import Api, registration_body, sha256_hex
@@ -79,6 +83,11 @@ class TestAccess:
         assert_error(player.post("/admin/invites", json={"label": "sneaky"}), 403, "FORBIDDEN")
         after = db.execute("SELECT count(*) FROM invites WHERE created_by = %s", (player.user["id"],)).fetchone()[0]
         assert before == after == 0
+
+    @pytest.mark.parametrize("client", ["anonymous", "player", "admin"])
+    def test_unknown_admin_path_is_a_plain_404(self, api, player, admin, client):
+        c = {"anonymous": api, "player": player, "admin": admin}[client]
+        assert c.get("/admin/does-not-exist").status_code == 404
 
     def test_role_is_read_from_the_database_on_every_request(self, admin, db):
         assert admin.get("/admin/users").status_code == 200
@@ -206,6 +215,17 @@ class TestInviteToRegisterFlow:
         r, _ = register_with(created["code"], cleanup)
         assert_error(r, 422, "INVITE_INVALID")
 
+    def test_invite_seeded_before_normalization_still_works(self, db, admin_id, cleanup):
+        """Invites hashed exactly as written (before codes were normalized) still match."""
+        code = "Legacy-INVITE-" + os.urandom(16).hex()
+        row = db.execute(
+            "INSERT INTO invites (code_hash, created_by, expires_at) VALUES (%s, %s, %s) RETURNING id",
+            (sha256_hex(code), admin_id, datetime.now(timezone.utc) + timedelta(days=1)),
+        ).fetchone()
+        cleanup.invite_ids.append(str(row[0]))
+        r, _ = register_with(code, cleanup)
+        assert r.status_code == 201, r.text
+
     @pytest.mark.parametrize(
         "transform",
         [lambda c: c.upper(), lambda c: normalized(c), lambda c: " " + c.replace("-", " ") + " "],
@@ -229,10 +249,10 @@ class TestUsers:
         r = admin.get("/admin/users", params={"limit": 1, "page": 2}).json()
         assert r["page"] == 2 and r["limit"] == 1 and len(r["data"]) == 1
 
-    def test_list_returns_public_user_fields_only(self, admin, player):
+    def test_list_returns_public_user_fields_without_avatar_svg(self, admin, player):
         users = admin.get("/admin/users", params={"limit": 200}).json()["data"]
-        public = {"id", "username", "displayName", "role", "avatarConfig", "avatarSvg", "createdAt", "requiresCredentialChange"}
-        assert all(set(u) == public for u in users)
+        fields = {"id", "username", "displayName", "role", "avatarConfig", "createdAt", "requiresCredentialChange"}
+        assert all(set(u) == fields for u in users)
 
     def test_role_filter(self, admin, player):
         admins = admin.get("/admin/users", params={"role": "admin", "limit": 200}).json()["data"]
@@ -364,3 +384,44 @@ class TestCredentialReset:
     @pytest.mark.parametrize("user_id", [UNKNOWN_ID, "not-a-uuid"])
     def test_unknown_user_is_404(self, admin, user_id):
         assert_error(admin.post("/admin/users/{}/reset-credentials".format(user_id)), 404, "NOT_FOUND")
+
+    def test_self_reset_is_refused(self, admin, db):
+        r = admin.post("/admin/users/{}/reset-credentials".format(admin.user["id"].upper()))
+        assert_error(r, 400, "SELF_RESET_FORBIDDEN")
+        assert user_row(db, admin.user["id"])[1] is False
+        assert admin.get("/admin/users").status_code == 200
+
+    def test_admin_demoted_mid_request_cannot_reset(self, admin, player, db):
+        """The actor is re-checked under a row lock, after the bcrypt work.
+
+        A second connection holds a lock on the admin's row, so the reset blocks inside its
+        transaction; the admin is demoted and the lock released; the reset must then fail.
+        """
+        path = "/admin/users/{}/reset-credentials".format(player.user["id"])
+        with psycopg.connect(os.environ["DATABASE_URL"]) as locker:
+            locker.execute("SELECT 1 FROM users WHERE id = %s FOR UPDATE", (admin.user["id"],))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(admin.post, path)
+                wait_for_lock_waiter(db, pending)
+                locker.execute("UPDATE users SET role = 'player' WHERE id = %s", (admin.user["id"],))
+                locker.commit()
+                r = pending.result(timeout=15)
+        assert_error(r, 403, "FORBIDDEN")
+        # Nothing about the target changed and they are still signed in.
+        assert user_row(db, player.user["id"])[1] is False
+        assert player.get("/users/me").status_code == 200
+
+
+def wait_for_lock_waiter(db, pending, timeout=10.0):
+    """Waits until some backend is blocked on a row lock in a FOR UPDATE (the request under test)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        assert not pending.done(), "request finished without waiting on the lock: " + pending.result().text
+        waiting = db.execute(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND query ILIKE '%%for update%%' AND datname = current_database()"
+        ).fetchone()[0]
+        if waiting:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the request never waited on the row lock")

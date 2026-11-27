@@ -8,6 +8,7 @@ import {
   revokeInvite,
   setUserRole,
   type Invite,
+  type AdminUser,
   type UserPage,
 } from '../api/admin';
 import type { User } from '../api/types';
@@ -117,8 +118,12 @@ function InvitesSection() {
     const name = invite.label ? `the invite for ${invite.label}` : 'this invite';
     if (!window.confirm(`Revoke ${name}? The code will stop working.`)) return;
     void revoke.run(async () => {
-      await revokeInvite(invite.id);
-      await refresh();
+      try {
+        await revokeInvite(invite.id);
+      } finally {
+        // Also on failure: INVITE_NOT_REVOCABLE means the row is stale (it expired or was used).
+        await refresh();
+      }
     });
   };
 
@@ -200,7 +205,7 @@ function UsersSection({ me }: { me: User }) {
   const [page, setPage] = useState(1);
   const [users, setUsers] = useState<UserPage | null>(null);
   const [filter, setFilter] = useState('');
-  const [reset, setReset] = useState<{ user: User; password: string; passphrase: string } | null>(null);
+  const [reset, setReset] = useState<{ user: AdminUser; password: string; passphrase: string } | null>(null);
   const load = useAction();
   const act = useAction();
 
@@ -208,10 +213,10 @@ function UsersSection({ me }: { me: User }) {
     void load.run(async () => setUsers(await listUsers(page, PAGE_SIZE)));
   }, [load.run, page]);
 
-  const replace = (updated: User) =>
+  const replace = (updated: AdminUser) =>
     setUsers((p) => (p ? { ...p, data: p.data.map((u) => (u.id === updated.id ? updated : u)) } : p));
 
-  const changeRole = (target: User, role: User['role']) => {
+  const changeRole = (target: AdminUser, role: User['role']) => {
     const question =
       role === 'admin'
         ? `Make ${target.displayName} (${target.username}) an admin? They will be able to manage invites, roles and accounts.`
@@ -220,7 +225,7 @@ function UsersSection({ me }: { me: User }) {
     void act.run(async () => replace(await setUserRole(target.id, role)));
   };
 
-  const resetUser = (target: User) => {
+  const resetUser = (target: AdminUser) => {
     if (
       !window.confirm(
         `Reset the password and recovery passphrase for ${target.displayName} (${target.username})? ` +

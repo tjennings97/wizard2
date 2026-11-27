@@ -47,7 +47,7 @@ Admin-issued invite codes for new user registration. Codes expire after 7 days i
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | No | PK, default `gen_random_uuid()` | Surrogate primary key |
-| `code_hash` | `varchar(255)` | No | UNIQUE, NOT NULL | SHA-256 hash of the invite code (lowercase, dashes removed). Raw code shown to admin once only. |
+| `code_hash` | `varchar(255)` | No | UNIQUE, NOT NULL | SHA-256 hash of the invite code (lowercase, dashes removed). Raw code shown to admin once only. Rows written before codes were normalized hold the hash of the code exactly as written; registration matches either form. |
 | `label` | `varchar(128)` | Yes | — | Optional admin-provided label (e.g. intended recipient name) |
 | `created_by` | `uuid` | No | FK → `users.id`, NOT NULL | Admin user who generated the invite |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Invite creation time |

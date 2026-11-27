@@ -280,7 +280,8 @@ paths:
                   type: string
                   description: >
                     As issued by POST /admin/invites. Case, spaces and dashes are ignored, so a
-                    code read out or retyped still matches.
+                    code read out or retyped still matches. (Invites stored before this rule,
+                    hashed exactly as written, also match the code exactly as written.)
                   example: k3vq-7xmd-wq7a-ph2e-r4tn-j6cb-sy
                 username:
                   type: string
@@ -1285,7 +1286,7 @@ paths:
 
 ## Admin Endpoints
 
-All admin endpoints require an authenticated session with `role: admin`. Non-admin requests receive `403 FORBIDDEN`. The role is read from the database on every request, so a promotion or demotion takes effect on the user's next request without a new login. The usual session rules apply first (`401` for a missing or ended session, `401 REAUTH_REQUIRED` in the re-auth window, `403 CREDENTIAL_CHANGE_REQUIRED` while the admin's own credentials await a forced change).
+All admin endpoints require an authenticated session with `role: admin`. Non-admin requests receive `403 FORBIDDEN`. The role is read from the database on every request, so a promotion or demotion takes effect on the user's next request without a new login. The usual session rules apply first (`401` for a missing or ended session, `401 REAUTH_REQUIRED` in the re-auth window, `403 CREDENTIAL_CHANGE_REQUIRED` while the admin's own credentials await a forced change). Role changes and credential resets re-check the acting admin's role under a row lock once the work is done, so an admin demoted while their request is in flight gets `403 FORBIDDEN` and nothing is changed. An unknown path under `/admin` is a plain `404`, as for any other unknown route.
 
 Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/users/{userId}/reset-credentials`) are sent with `Cache-Control: no-store`.
 
@@ -1432,7 +1433,9 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
   /admin/users:
     get:
       summary: List all registered users
-      description: Oldest account first. Returns the public `User` fields only.
+      description: >
+        Oldest account first. Each item is the public `User` without `avatarSvg`, which the
+        admin table does not show and which would make a 200-user page needlessly large.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1463,6 +1466,7 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                 properties:
                   data:
                     type: array
+                    description: User objects without the avatarSvg property.
                     items:
                       $ref: '#/components/schemas/User'
                   total:
@@ -1556,7 +1560,8 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
         Sets requires_credential_change = true and clears password_changed_at and
         recovery_changed_at, so the user must change both on next login (PATCH /users/me).
         Ends every session of the user: their devices get 401 SESSION_INVALIDATED (and sockets
-        session_error) with reason `admin_reset`.
+        session_error) with reason `admin_reset`. An admin cannot reset their own credentials
+        (they change them from their profile with PATCH /users/me).
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1586,8 +1591,17 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                   note:
                     type: string
                     example: The user's credentials are marked temporary. They will be prompted to change their password and recovery passphrase on next login.
+        '400':
+          description: The admin named themselves (SELF_RESET_FORBIDDEN).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: SELF_RESET_FORBIDDEN
+                message: Change your own credentials from your profile.
         '403':
-          description: Not an admin.
+          description: Not an admin (including an admin demoted while the request was in flight).
           content:
             application/json:
               schema:
@@ -1733,6 +1747,7 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 400 | `NOT_ENOUGH_PLAYERS` | Game start attempted with fewer than 3 players. |
 | 400 | `INVITE_NOT_REVOCABLE` | Invite is not pending (accepted, revoked, or past its expiry). |
 | 400 | `SELF_DEMOTION_FORBIDDEN` | Admin attempted to remove their own admin role. |
+| 400 | `SELF_RESET_FORBIDDEN` | Admin attempted to reset their own credentials through the admin route. |
 | 401 | `UNAUTHORIZED` | No valid session cookie present. |
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
 | 401 | `INVALID_CURRENT_PASSWORD` | `currentPassword` is wrong on `PATCH /users/me`. Not a session failure: the session stays valid. |

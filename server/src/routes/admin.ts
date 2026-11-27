@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import type { Knex } from 'knex';
 import { db } from '../db/knex';
 import { asyncHandler } from '../http/asyncHandler';
 import { ApiError } from '../http/errors';
@@ -12,7 +13,7 @@ import {
 } from '../auth/credentials';
 import { requireAuth } from '../auth/middleware';
 import { invalidateUserSessions } from '../auth/sessions';
-import { toPublicUser, type UserRow } from '../auth/users';
+import { toPublicUser, type PublicUser, type UserRow } from '../auth/users';
 
 /**
  * Admin panel routes (docs/api/openapi-spec.md, Admin Endpoints): invites, user roles and
@@ -68,6 +69,33 @@ function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
+/**
+ * A user row in the admin list: the `User` fields minus `avatarSvg`, which the admin table never
+ * shows and which would make a 200-user page needlessly large.
+ */
+type AdminUserDto = Omit<PublicUser, 'avatarSvg'>;
+function toAdminUserDto(row: UserRow): AdminUserDto {
+  const { avatarSvg: _avatarSvg, ...rest } = toPublicUser(row);
+  return rest;
+}
+
+/**
+ * Inside a transaction: locks the acting admin's row and the target's (in id order, so two
+ * requests cannot deadlock) and re-checks the actor's role. The requireAdmin check ran before
+ * the request did its work, and the actor may have been demoted since: two admins demoting each
+ * other at once must not both succeed, and a demoted admin's in-flight reset must not land.
+ * Throws 403 if the actor is no longer an admin, 404 if the target does not exist.
+ */
+async function lockActorAndTarget(trx: Knex.Transaction, actorId: string, targetId: string): Promise<void> {
+  const locked: Pick<UserRow, 'id' | 'role'>[] = await trx('users')
+    .whereIn('id', [actorId, targetId])
+    .orderBy('id')
+    .forUpdate()
+    .select('id', 'role');
+  if (locked.find((u) => u.id === actorId)?.role !== 'admin') throw notAdmin();
+  if (!locked.some((u) => u.id === targetId)) throw userNotFound();
+}
+
 /** Stack after requireAuth. req.user.role comes from the database, never from the cookie. */
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
   next(req.user?.role === 'admin' ? undefined : notAdmin());
@@ -102,11 +130,14 @@ function noStore(res: Response): void {
 
 export function createAdminRouter(): Router {
   const router = Router();
-  router.use(requireAuth, requireAdmin);
+  // On each route rather than router.use, so an unknown /admin path is a plain 404 like any
+  // other unknown route, not a 401 or 403.
+  const admin = [requireAuth, requireAdmin];
 
   // GET /admin/invites?status=
   router.get(
     '/invites',
+    ...admin,
     asyncHandler(async (req, res) => {
       const status = req.query.status;
       if (status !== undefined && !(INVITE_STATUSES as readonly unknown[]).includes(status)) {
@@ -123,6 +154,7 @@ export function createAdminRouter(): Router {
   // POST /admin/invites { label? }
   router.post(
     '/invites',
+    ...admin,
     asyncHandler(async (req, res) => {
       const body = req.body === undefined ? {} : asObject(req.body);
       if (!body) throw validationError({ body: 'Must be a JSON object.' });
@@ -154,6 +186,7 @@ export function createAdminRouter(): Router {
   // DELETE /admin/invites/{inviteId}: revoke a pending invite.
   router.delete(
     '/invites/:inviteId',
+    ...admin,
     asyncHandler(async (req, res) => {
       const { inviteId } = req.params;
       if (!UUID_PATTERN.test(inviteId)) throw inviteNotFound();
@@ -176,6 +209,7 @@ export function createAdminRouter(): Router {
   // GET /admin/users?role=&page=&limit=
   router.get(
     '/users',
+    ...admin,
     asyncHandler(async (req, res) => {
       const fields: Record<string, string> = {};
       const role = req.query.role;
@@ -198,13 +232,14 @@ export function createAdminRouter(): Router {
         .orderBy('id', 'asc')
         .limit(limit)
         .offset((page - 1) * limit);
-      res.status(200).json({ data: rows.map(toPublicUser), total: Number(count), page, limit });
+      res.status(200).json({ data: rows.map(toAdminUserDto), total: Number(count), page, limit });
     }),
   );
 
   // PATCH /admin/users/{userId}/role { role }
   router.patch(
     '/users/:userId/role',
+    ...admin,
     asyncHandler(async (req, res) => {
       const userId = req.params.userId.toLowerCase();
       if (!UUID_PATTERN.test(userId)) throw userNotFound();
@@ -219,15 +254,7 @@ export function createAdminRouter(): Router {
       }
 
       const updated = await db.transaction(async (trx) => {
-        // Lock the actor and the target (in id order, so two requests cannot deadlock) and
-        // re-check the actor: two admins demoting each other at once must not both succeed.
-        const locked: Pick<UserRow, 'id' | 'role'>[] = await trx('users')
-          .whereIn('id', [actorId, userId])
-          .orderBy('id')
-          .forUpdate()
-          .select('id', 'role');
-        if (locked.find((u) => u.id === actorId)?.role !== 'admin') throw notAdmin();
-        if (!locked.some((u) => u.id === userId)) throw userNotFound();
+        await lockActorAndTarget(trx, actorId, userId);
         const [row]: UserRow[] = await trx('users').where({ id: userId }).update({ role }).returning('*');
         return row;
       });
@@ -240,9 +267,16 @@ export function createAdminRouter(): Router {
   // POST /admin/users/{userId}/reset-credentials
   router.post(
     '/users/:userId/reset-credentials',
+    ...admin,
     asyncHandler(async (req, res) => {
-      const { userId } = req.params;
+      const userId = req.params.userId.toLowerCase();
       if (!UUID_PATTERN.test(userId)) throw userNotFound();
+      const actorId = req.user!.id;
+      // An admin changes their own credentials from the profile page. A self-reset would end the
+      // very session making the request (and any game it is playing) for no benefit.
+      if (userId === actorId) {
+        throw new ApiError(400, 'SELF_RESET_FORBIDDEN', 'Change your own credentials from your profile.');
+      }
       if (!(await db('users').where({ id: userId }).first('id'))) throw userNotFound();
 
       const temporaryPassword = generateTemporarySecret();
@@ -251,8 +285,7 @@ export function createAdminRouter(): Router {
       const [passwordHash, recoveryHash] = await Promise.all([hashSecret(temporaryPassword), hashSecret(temporaryPassphrase)]);
 
       await db.transaction(async (trx) => {
-        const locked = await trx('users').where({ id: userId }).forUpdate().first('id');
-        if (!locked) throw userNotFound();
+        await lockActorAndTarget(trx, actorId, userId);
         // Both secrets must be chosen again before the flag clears (auth-follow-ups §4a/§4b).
         await trx('users').where({ id: userId }).update({
           password_hash: passwordHash,
@@ -264,7 +297,7 @@ export function createAdminRouter(): Router {
         await invalidateUserSessions(trx, userId, 'admin_reset');
       });
 
-      logger.info({ userId: req.user!.id, targetUserId: userId }, 'admin reset user credentials');
+      logger.info({ userId: actorId, targetUserId: userId }, 'admin reset user credentials');
       noStore(res);
       res.status(200).json({
         temporaryPassword,

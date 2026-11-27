@@ -206,7 +206,7 @@ The admin panel is a protected section of the main application, accessible only 
 
 **Account reset flow (when user loses both credentials):**
 
-1. Admin locates user record and chooses Reset credentials (with confirmation; not offered on the admin's own row, who uses the profile page instead)
+1. Admin locates user record and chooses Reset credentials (with confirmation; not offered on the admin's own row, and refused by the server for it: admins change their own credentials on the profile page)
 2. The server generates a temporary password and recovery passphrase and ends all of the user's sessions (their devices show the `admin_reset` notice from Flow 1)
 3. Temporary credentials returned once in the response (never stored in plaintext) and shown once with Copy buttons, for the admin to pass on out-of-band
 4. `requires_credential_change = true` flag set on the user record

@@ -72,10 +72,12 @@ authRouter.post(
       });
     }
 
-    const codeHash = sha256(normalizeInviteCode(inviteCode));
+    // Codes from the admin panel are hashed in normalized form (case, spaces and dashes ignored).
+    // Invites seeded before that rule were hashed exactly as written, so match those too.
+    const codeHashes = [...new Set([sha256(normalizeInviteCode(inviteCode)), sha256(inviteCode)])];
 
     // Cheap pre-check so a bad code does not cost two bcrypt hashes. Re-checked under lock below.
-    const preInvite: InviteRow | undefined = await db('invites').where({ code_hash: codeHash }).first();
+    const preInvite: InviteRow | undefined = await db('invites').whereIn('code_hash', codeHashes).first();
     if (!isRedeemable(preInvite)) throw inviteInvalid();
 
     // Hash outside the transaction so the invite row lock is not held across ~0.5s of bcrypt.
@@ -87,7 +89,7 @@ authRouter.post(
     const { user, session } = await db.transaction(async (trx) => {
       // Lock the invite so two concurrent registrations cannot both redeem it.
       const invite: InviteRow | undefined = await trx('invites')
-        .where({ code_hash: codeHash })
+        .whereIn('code_hash', codeHashes)
         .forUpdate()
         .first();
       if (!isRedeemable(invite)) throw inviteInvalid();
