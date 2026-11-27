@@ -161,7 +161,11 @@ npm run dev -w client   # frontend only
    ```bash
    psql "$DATABASE_URL" -c "UPDATE users SET role = 'admin' WHERE username = '<username>'"
    ```
-   On a fresh database with no users at all, follow "First Admin Account" in `docs/operations/deployment-infrastructure.md`.
+   On a fresh database with no users at all, create one instead. It prints a temporary password and passphrase, which the app makes you replace at first sign-in:
+   ```bash
+   npm run create-admin -w server -- <username> "<display name>"
+   ```
+   See "First Admin Account" in `docs/operations/deployment-infrastructure.md` for the production version.
 
 ---
 
@@ -177,6 +181,7 @@ Run these from the repository root:
 | `npm start` | Runs the built server (production mode; also serves `client/dist`) |
 | `npm run migrate:latest -w server` | Applies pending database migrations |
 | `npm run migrate:rollback -w server` | Rolls back the last batch of migrations |
+| `npm run create-admin -w server -- <username> "<display name>"` | Creates an admin with temporary credentials (changed at first sign-in); add `--sql` to print an `INSERT` instead of connecting |
 | `npm test -w server` | Runs the server unit tests (no database needed) |
 | `npm run test:integration -w server` | Runs the server integration tests (Postgres required; see below) |
 
