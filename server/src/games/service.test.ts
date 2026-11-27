@@ -296,3 +296,28 @@ describe('the 3-hour game time limit', () => {
     expect(t.room('game_abandoned')).toHaveLength(0);
   });
 });
+
+describe('playerView (bug report snapshots)', () => {
+  it("is the player's own view: their hand only, other hands hidden", async () => {
+    const t = setup();
+    await t.service.launch(t.game, t.game.startRound());
+    const view = t.service.playerView('r1', 'a')!;
+    expect(view.viewerUserId).toBe('a');
+    const a = view.players.find((p) => p.userId === 'a')!;
+    expect(a.hand).toEqual([S('diamonds', 2).toJSON()]);
+    for (const p of view.players.filter((p) => p.userId !== 'a')) {
+      expect(p.hand).toBeNull();
+      expect(p.handCount).toBe(1);
+    }
+  });
+
+  it('is null for a room with no live game and for someone without a seat', async () => {
+    const t = setup(['a', 'b', 'c', 'd']);
+    expect(t.service.playerView('r1', 'a')).toBeNull();
+    await t.service.launch(t.game, t.game.startRound());
+    expect(t.service.playerView('r1', 'spectator')).toBeNull();
+    await t.service.userLeft('r1', 'd', 'voluntary', { user_id: 'd', role: 'player', reason: 'voluntary' });
+    expect(t.service.playerView('r1', 'd')).toBeNull();
+    expect(t.service.playerView('other-room', 'a')).toBeNull();
+  });
+});

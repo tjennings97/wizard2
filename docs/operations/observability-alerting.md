@@ -589,7 +589,7 @@ This section defines the initial investigation steps for each alert and for comm
 
 When a user submits a bug report:
 
-1. Open the `bug_reports` table in the database and locate the report by its `created_at` timestamp or `user_id`.
+1. Open the `bug_reports` table in the database and locate the report by its `created_at` timestamp or `user_id`. (Each report is also logged at INFO as `bug report submitted`, with `traceId`, `userId`, `roomId`, `gameId`, `reportId` and `severity`.)
 2. Copy the `trace_id` field from the report record.
 3. In Grafana Cloud → Explore → Loki, run: `{env="production", app="wizard"} | json | traceId = "<trace_id>"`
 4. This returns all log entries from that user's session, in chronological order, giving the full server-side view of what happened up to and during the bug.

@@ -101,6 +101,11 @@ def cleanup(db: psycopg.Connection) -> Iterator[Cleanup]:
     c = Cleanup()
     yield c
     users = c.user_ids
+    # Bug reports reference users, rooms and games, so they go first.
+    db.execute(
+        "DELETE FROM bug_reports WHERE user_id = ANY(%s::uuid[]) OR room_id = ANY(%s::uuid[])",
+        (users, c.room_ids),
+    )
     # Games started through the API belong to a recorded room; their event log goes first.
     # (game_events is append-only for the app; test cleanup is the exception.)
     games = "SELECT id FROM games WHERE id = ANY(%s::uuid[]) OR room_id = ANY(%s::uuid[])"

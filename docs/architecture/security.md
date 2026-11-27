@@ -178,6 +178,7 @@ All limits apply per IP address unless noted. Limits are configurable per enviro
 | `POST /login` | 10 requests | 15 minutes | Allows several typos; makes exhausting even a short password list take hours |
 | `POST /register` | 5 requests | 1 hour | Registration is a one-time action; prevents invite-code enumeration |
 | `POST /reset-password` | 5 requests | 1 hour | Recovery passphrase is a second secret; same risk profile as login, slower cadence appropriate |
+| `POST /bug-reports` | 10 requests per user | 1 hour | Prevents report flooding. Keyed by user id (the route requires a session), not IP |
 | `PATCH /users/me` with `currentPassword` | 10 wrong-password (401) responses | 15 minutes | Stops a stolen session from being used to guess the password. Successful changes, validation errors and requests without `currentPassword` (display name only) do not count |
 
 ### Chat message limits

@@ -328,14 +328,14 @@ All SVG layers share a consistent coordinate system and viewBox so that any comb
 
 ## Bug Reporting
 
-**Report a bug button** is available at all times in the application UI, accessible from any screen including during a game.
+**Report a bug button** is available at all times once signed in, at the foot of every screen including during a game. Reports require a session (they are tied to the user and their session's trace ID), so the signed-out screens (login, register, password reset) do not show it.
 
 **Captured context (automatic):**
 
 - Authenticated user ID (if logged in)
 - Current URL and page/screen name
 - Room ID and game ID (if in a room or game)
-- Current game state snapshot (if in a game): round number, trick number, player turn, bid totals
+- Current game state snapshot (if playing in a game): the reporter's own player view, built by the server (round, trick, turn, bids, scores, and their own hand only; never other players' hands)
 - Client-side trace/correlation ID for the current session
 - Timestamp (UTC)
 - Browser and OS metadata (user agent)

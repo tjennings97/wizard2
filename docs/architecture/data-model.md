@@ -189,13 +189,13 @@ Stores user-submitted bug reports with automatic context capture. The `trace_id`
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | No | PK, default `gen_random_uuid()` | Surrogate primary key |
-| `user_id` | `uuid` | Yes | FK → `users.id` | Authenticated user who submitted the report. Null for unauthenticated submissions (not expected, included for safety). |
-| `room_id` | `uuid` | Yes | FK → `rooms.id` | Room the user was in when reporting. Null if not in a room. |
-| `game_id` | `uuid` | Yes | FK → `games.id` | Game the user was in when reporting. Null if not in a game. |
+| `user_id` | `uuid` | Yes | FK → `users.id` | User who submitted the report. `POST /bug-reports` requires a session, so the API always sets it; nullable only for safety. |
+| `room_id` | `uuid` | Yes | FK → `rooms.id` | Room the user was in when reporting, from their active membership (else the client's `roomId`, if that room exists). Null if not in a room. |
+| `game_id` | `uuid` | Yes | FK → `games.id` | Game the user was in when reporting (that room's game, else the client's `gameId`, if that game exists). Null if not in a game. |
 | `trace_id` | `uuid` | No | NOT NULL | Correlation ID from the user's session. Links this report to server log entries. |
 | `description` | `text` | No | NOT NULL | User-written description of the issue |
 | `severity` | `varchar(8)` | Yes | CHECK (`severity` IN ('low','medium','high')) | Optional severity rating provided by user |
-| `context` | `jsonb` | No | NOT NULL, default `'{}'` | Automatically captured context. Schema: `{"url": "...", "page": "...", "round_number": 3, "trick_number": 2, "game_state_summary": {...}, "user_agent": "...", "client_timestamp": "..."}`. |
+| `context` | `jsonb` | No | NOT NULL, default `'{}'` | Automatically captured context. Schema: `{"url": "...", "page": "...", "round_number": 3, "trick_number": 2, "game_state_summary": {...}, "user_agent": "...", "client_timestamp": "..."}`. `game_state_summary` is the reporter's own `game.toPlayerView(userId)` (their hand only; other players' `hand` is null), built by the server for a player seated in a live game, else null. Round and trick numbers come from that view when present, else from the client. `user_agent` is the request's User-Agent header. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Server-side receipt timestamp |
 
 ## Index Strategy
