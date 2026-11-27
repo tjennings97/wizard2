@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router';
+import { BugReport } from './components/BugReport';
 import { useAuth } from './context/AuthContext';
 import { GameProvider } from './context/GameContext';
 import { SocketProvider } from './context/SocketContext';
@@ -52,6 +53,8 @@ export function App() {
     <SocketProvider>
       <GameProvider>
         <AuthenticatedRoutes />
+        {/* Every signed-in screen, including the game (the endpoint needs a session). */}
+        <BugReport />
       </GameProvider>
     </SocketProvider>
   );

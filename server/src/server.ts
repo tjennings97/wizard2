@@ -33,6 +33,6 @@ export function buildServer(options: BuildServerOptions = {}) {
     sessionRecheckMs: options.sessionRecheckMs,
     pingTimeoutMs: options.pingTimeoutMs,
   });
-  app = createApp({ rooms, presence: realtime });
+  app = createApp({ rooms, presence: realtime, games });
   return { httpServer, io, realtime, rooms, games, app, detachSocket: detach };
 }

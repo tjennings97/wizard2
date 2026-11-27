@@ -325,6 +325,17 @@ export class GameService {
     return true;
   }
 
+  /**
+   * The user's own view of the room's live game (game.toPlayerView: their hand only), or null if
+   * the room has no live game or the user holds no seat in it. Read outside the game's queue: a
+   * point-in-time snapshot for bug reports, never sent to a client.
+   */
+  playerView(roomId: string, userId: string): GameStateView | null {
+    const live = this.byRoom.get(roomId);
+    if (!live || !live.game.activePlayers.some((p) => p.id === userId)) return null;
+    return live.game.toPlayerView(userId);
+  }
+
   /** Whether the user holds a seat in the room's live game (has not quit or timed out). */
   isSeated(roomId: string, userId: string): boolean {
     return this.byRoom.get(roomId)?.game.activePlayers.some((p) => p.id === userId) ?? false;

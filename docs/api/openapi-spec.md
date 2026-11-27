@@ -1626,15 +1626,22 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
     post:
       summary: Submit a bug report
       description: >
-        Accepts a user-submitted bug report with automatic context.
-        If the user is authenticated, the report is linked to their account
-        and enriched with the server-side trace ID from their session.
-        Available at all times; no authentication required (but session
-        is used if present to enrich the report).
+        Accepts a user-submitted bug report with automatic context. Requires a
+        session: the report is linked to the user and to the trace ID of their
+        session, which correlates it with the server logs. The usual session
+        checks apply (REAUTH_REQUIRED in the re-auth window unless mid-game;
+        CREDENTIAL_CHANGE_REQUIRED while a credential change is pending).
+        The server works out the reporter's room and game from their active
+        membership (the client's roomId/gameId are a fallback, kept only if
+        those rows exist), takes the user agent from the request header, and,
+        for a player seated in a live game, stores their own
+        game.toPlayerView(userId) as context.game_state_summary. It never stores
+        another player's hand; a client-sent gameStateSummary is ignored.
+        Logged at INFO with the trace ID. Rate limited to 10 reports per hour
+        per user.
       tags: [BugReports]
       security:
         - sessionCookie: []
-        - {}  # Also accepts unauthenticated submissions
       requestBody:
         required: true
         content:
@@ -1660,8 +1667,11 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                     url:
                       type: string
                       format: uri
+                      maxLength: 2048
+                      description: http(s) URL of the page the user was on.
                     page:
                       type: string
+                      maxLength: 64
                       example: game
                     roomId:
                       type: string
@@ -1680,9 +1690,15 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                     gameStateSummary:
                       type: object
                       nullable: true
-                      description: Lightweight snapshot of game state at time of report.
+                      deprecated: true
+                      description: >
+                        Ignored. The server stores the reporter's own player view
+                        instead, so a report can never carry a hand the reporter
+                        did not hold.
                     userAgent:
                       type: string
+                      maxLength: 512
+                      description: Used only if the request has no User-Agent header.
                     clientTimestamp:
                       type: string
                       format: date-time
@@ -1701,13 +1717,28 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                     type: string
                     example: Your report has been submitted. Thank you.
         '400':
-          description: Validation error (missing description or context).
+          description: >
+            Validation error (missing or invalid description, severity or
+            context). details.fields is keyed by field, e.g. `description`,
+            `context.url`, `context.clientTimestamp`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: No valid session (UNAUTHORIZED, SESSION_INVALIDATED or REAUTH_REQUIRED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: CREDENTIAL_CHANGE_REQUIRED.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '429':
-          description: Rate limited (prevent report flooding).
+          description: Rate limited (10 reports per hour per user) to prevent report flooding.
           content:
             application/json:
               schema:
