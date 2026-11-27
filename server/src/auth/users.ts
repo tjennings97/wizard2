@@ -1,3 +1,4 @@
+import { db } from '../db/knex';
 import type { AvatarConfig } from '../shared/avatar';
 
 export type { AvatarConfig };
@@ -39,4 +40,12 @@ export function toPublicUser(row: UserRow): PublicUser {
     createdAt: new Date(row.created_at).toISOString(),
     requiresCredentialChange: row.requires_credential_change,
   };
+}
+
+/** The fields other users see. Null if the user no longer exists. */
+export async function getUserProfile(userId: string): Promise<{ displayName: string; avatarConfig: AvatarConfig } | null> {
+  const row: Pick<UserRow, 'display_name' | 'avatar_config'> | undefined = await db('users')
+    .where({ id: userId })
+    .first('display_name', 'avatar_config');
+  return row ? { displayName: row.display_name, avatarConfig: row.avatar_config } : null;
 }

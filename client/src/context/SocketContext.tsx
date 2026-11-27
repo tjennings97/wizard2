@@ -30,6 +30,7 @@ type Action =
   | { type: 'rooms_updated'; rooms: RoomSummary[] }
   | { type: 'presence_updated'; onlineUsers: UserSummary[] }
   | { type: 'room_snapshot'; room: RoomView }
+  | { type: 'own_avatar_changed'; userId: string; avatarConfig: AvatarConfig }
   | { type: 'user_joined'; userId: string; displayName: string; avatarConfig: AvatarConfig; role: MemberRole }
   | { type: 'user_left'; userId: string }
   | { type: 'host_changed'; roomId: string; hostId: string }
@@ -59,6 +60,17 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       return { ...state, onlineUsers: action.onlineUsers };
     case 'room_snapshot':
       return { ...state, location: 'room', room: action.room, notice: null };
+    case 'own_avatar_changed': {
+      // Avatar changes are not broadcast (avatar-system.md), so the server sends no snapshot for
+      // our own change; patch our entries so our own lobby and room lists show it straight away.
+      const patch = <T extends { userId: string; avatarConfig: AvatarConfig }>(list: T[]) =>
+        list.map((u) => (u.userId === action.userId ? { ...u, avatarConfig: action.avatarConfig } : u));
+      return {
+        ...state,
+        onlineUsers: patch(state.onlineUsers),
+        room: state.room ? { ...state.room, members: patch(state.room.members) } : null,
+      };
+    }
     case 'user_joined': {
       const room = state.room;
       if (!room) return state;
@@ -126,6 +138,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [state, dispatch] = useReducer(reducer, initialState);
+
+  // Our own avatar comes from AuthContext (updated from the PATCH /users/me response).
+  const avatarConfig = user?.avatarConfig ?? null;
+  useEffect(() => {
+    if (userId && avatarConfig) dispatch({ type: 'own_avatar_changed', userId, avatarConfig });
+  }, [userId, avatarConfig]);
 
   useEffect(() => {
     if (!userId) return;

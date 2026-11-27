@@ -1,4 +1,4 @@
-import { avatarBackfill } from './avatarBackfill';
+import { avatarBackfill } from '../../migrations/010_avatar_config_required';
 import { avatarConfigError } from '../shared/avatar';
 
 const valid = { head: 'head-02', skin: 'skin-04', face: 'face-01', hair: 'hair-07' };

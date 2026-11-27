@@ -140,8 +140,10 @@ usersRouter.patch(
     } else {
       logger.info({ userId, traceId }, 'profile updated');
     }
-    if (displayName !== undefined) userEvents.emit('displayNameChanged', userId, user.display_name);
+    // Avatar first: its listener only updates the sockets, and a rename then broadcasts presence
+    // from them, so a request that changes both shows the new name with the new avatar.
     if (avatarConfig !== undefined) userEvents.emit('avatarChanged', userId, user.avatar_config);
+    if (displayName !== undefined) userEvents.emit('displayNameChanged', userId, user.display_name);
     res.status(200).json(toPublicUser(user));
   }),
 );

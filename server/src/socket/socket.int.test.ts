@@ -2,6 +2,8 @@ import request from 'supertest';
 import { db } from '../db/knex';
 import { hashSecret } from '../auth/credentials';
 import type { InvalidationReason } from '../auth/sessionEvents';
+import { userEvents } from '../auth/userEvents';
+import * as socketAuth from './auth';
 import { connect, connectReady, cookieFor, createUser, resetDb, sleep, startServer, TEST_AVATAR, type TestClient, type TestUser } from '../test/helpers';
 
 let server: Awaited<ReturnType<typeof startServer>>;
@@ -255,6 +257,42 @@ describe('displaced sockets', () => {
     // Ann's socket was not reconnected, yet the lobby_snapshot the next arrival gets shows the new avatar.
     const cat = await online(await createUser('Cat'));
     const annEntry = (cat.events('lobby_snapshot')[0].payload.online_users as { userId: string }[]).find((u) => u.userId === ann.id);
+    expect(annEntry).toEqual({ userId: ann.id, displayName: 'Ann', avatarConfig: NEW_AVATAR });
+  });
+
+  it('shows the new name with the new avatar when one request changes both', async () => {
+    const NEW_AVATAR = { head: 'head-03', skin: 'skin-02', face: 'face-05', hair: 'hair-03' };
+    const ann = await createUser('Ann');
+    const bob = await createUser('Bob');
+    await online(ann);
+    const watcher = await online(bob);
+    const from = watcher.length;
+    await api().patch('/api/v1/users/me').set('Cookie', ann.cookie).send({ displayName: 'Annie', avatarConfig: NEW_AVATAR }).expect(200);
+    const update = await watcher.waitFor('presence_updated', undefined, { from });
+    expect(update.payload.online_users.find((u: { userId: string }) => u.userId === ann.id)).toEqual({
+      userId: ann.id,
+      displayName: 'Annie',
+      avatarConfig: NEW_AVATAR,
+    });
+  });
+
+  it('keeps an avatar change saved while a socket is still authenticating', async () => {
+    const NEW_AVATAR = { head: 'head-04', skin: 'skin-03', face: 'face-02', hair: 'hair-05' };
+    const ann = await createUser('Ann');
+    const bob = await createUser('Bob');
+    const original = socketAuth.authenticateSocket;
+    // The change lands after the handshake read the user row but before the socket joined the
+    // user channel, so the avatarChanged event finds no socket to update.
+    const spy = jest.spyOn(socketAuth, 'authenticateSocket').mockImplementationOnce(async (cookie) => {
+      const result = await original(cookie);
+      await db('users').where({ id: ann.id }).update({ avatar_config: JSON.stringify(NEW_AVATAR) });
+      userEvents.emit('avatarChanged', ann.id, NEW_AVATAR);
+      return result;
+    });
+    await online(ann);
+    spy.mockRestore();
+    const watcher = await online(bob);
+    const annEntry = (watcher.events('lobby_snapshot')[0].payload.online_users as { userId: string }[]).find((u) => u.userId === ann.id);
     expect(annEntry).toEqual({ userId: ann.id, displayName: 'Ann', avatarConfig: NEW_AVATAR });
   });
 

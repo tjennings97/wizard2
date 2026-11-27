@@ -56,24 +56,24 @@ const sameAvatar = (a: AvatarConfig, b: AvatarConfig) =>
 /**
  * The current avatar, and the picker behind "Change avatar". Saving sends the whole config; the
  * new avatar shows here straight away, and to others on their next snapshot (no broadcast).
- * If saving fails, the saved avatar stays as it was and the picker keeps the draft to retry.
  */
 function AvatarForm({ current }: { current: AvatarConfig }) {
-  const { updateProfile } = useAuth();
-  const [draft, setDraft] = useState<AvatarConfig | null>(null);
+  const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const { busy, error, fields, onSubmit } = useSubmit(async () => {
-    if (!draft) return;
-    setSaved(null);
-    await updateProfile({ avatarConfig: draft });
-    setDraft(null);
-    setSaved('Avatar saved. Other players see it the next time their lobby or room refreshes.');
-  });
 
   return (
     <section>
       <h2>Avatar</h2>
-      {draft === null ? (
+      {editing ? (
+        <AvatarEditor
+          current={current}
+          onCancel={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            setSaved('Avatar saved. Other players see it the next time their lobby or room refreshes.');
+          }}
+        />
+      ) : (
         <div className="stack">
           <Avatar config={current} size={AVATAR_SIZE.profile} label="Your avatar" />
           <Saved text={saved} />
@@ -81,27 +81,43 @@ function AvatarForm({ current }: { current: AvatarConfig }) {
             type="button"
             onClick={() => {
               setSaved(null);
-              setDraft({ ...current });
+              setEditing(true);
             }}
           >
             Change avatar
           </button>
         </div>
-      ) : (
-        <form onSubmit={onSubmit} className="stack" noValidate>
-          <AvatarPicker value={draft} onChange={setDraft} disabled={busy} error={fields.avatarConfig} />
-          <FormError error={error} />
-          <div className="actions">
-            <button type="button" onClick={() => setDraft(null)} disabled={busy}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={busy || sameAvatar(draft, current)}>
-              {busy ? 'Saving…' : 'Save avatar'}
-            </button>
-          </div>
-        </form>
       )}
     </section>
+  );
+}
+
+/**
+ * Mounted afresh each time the picker opens, so a draft or an error from an earlier attempt
+ * never carries over. If saving fails, the saved avatar stays as it was and the draft is kept
+ * so the player can retry.
+ */
+function AvatarEditor({ current, onCancel, onSaved }: { current: AvatarConfig; onCancel(): void; onSaved(): void }) {
+  const { updateProfile } = useAuth();
+  const [draft, setDraft] = useState<AvatarConfig>(() => ({ ...current }));
+  const { busy, error, fields, onSubmit } = useSubmit(async () => {
+    await updateProfile({ avatarConfig: draft });
+    onSaved();
+  });
+
+  return (
+    <form onSubmit={onSubmit} className="stack" noValidate>
+      <AvatarPicker value={draft} onChange={setDraft} disabled={busy} error={fields.avatarConfig} />
+      <FormError error={error} />
+      <div className="actions">
+        <button type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button type="submit" className="primary" disabled={busy || sameAvatar(draft, current)}>
+          {busy ? 'Saving…' : 'Save avatar'}
+        </button>
+      </div>
+    </form>
   );
 }
 
