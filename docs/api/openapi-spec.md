@@ -1493,6 +1493,109 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /admin/bug-reports:
+    get:
+      summary: List bug reports
+      description: >
+        Newest first. Each item is the stored report with the reporter's
+        username and display name joined in. `context` is returned as stored
+        (see data-model.md, bug_reports.context); its `game_state_summary`
+        holds the reporter's own player view, including their hand, which is
+        why the route is admin-only. Search the server logs by `traceId`.
+      tags: [Admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated list of bug reports.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        createdAt:
+                          type: string
+                          format: date-time
+                        severity:
+                          type: string
+                          enum: [low, medium, high]
+                          nullable: true
+                        description:
+                          type: string
+                        reporter:
+                          type: object
+                          nullable: true
+                          description: >
+                            Null when the report has no user_id. The submit route
+                            always sets it, so this is not expected; accounts with
+                            reports cannot be deleted (user_id is a foreign key).
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            username:
+                              type: string
+                              nullable: true
+                            displayName:
+                              type: string
+                              nullable: true
+                        roomId:
+                          type: string
+                          format: uuid
+                          nullable: true
+                        gameId:
+                          type: string
+                          format: uuid
+                          nullable: true
+                        traceId:
+                          type: string
+                          format: uuid
+                        context:
+                          type: object
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '400':
+          description: Unknown severity, or page / limit not an integer in range (VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /admin/users/{userId}/role:
     patch:
       summary: Update a user's role

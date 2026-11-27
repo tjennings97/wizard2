@@ -16,9 +16,10 @@ import { invalidateUserSessions } from '../auth/sessions';
 import { toPublicUser, type UserRow } from '../auth/users';
 
 /**
- * Admin panel routes (docs/api/openapi-spec.md, Admin Endpoints): invites, user roles and
- * credential resets. Every route requires an authenticated admin. requireAuth reads the role
- * from the database on each request, so a demotion takes effect on the very next request.
+ * Admin panel routes (docs/api/openapi-spec.md, Admin Endpoints): invites, user roles,
+ * credential resets and reading bug reports. Every route requires an authenticated admin.
+ * requireAuth reads the role from the database on each request, so a demotion takes effect on
+ * the very next request.
  */
 
 export const INVITE_STATUSES = ['pending', 'accepted', 'expired', 'revoked'] as const;
@@ -30,6 +31,39 @@ export const INVITE_TTL_DAYS = 7;
 const LABEL_MAX = 128;
 const USERS_PAGE_DEFAULT = 50;
 const USERS_PAGE_MAX = 200;
+
+const BUG_SEVERITIES = ['low', 'medium', 'high'] as const;
+const BUG_REPORTS_PAGE_DEFAULT = 20;
+const BUG_REPORTS_PAGE_MAX = 100;
+
+interface BugReportRow {
+  id: string;
+  created_at: Date;
+  severity: string | null;
+  description: string;
+  user_id: string | null;
+  username: string | null;
+  display_name: string | null;
+  room_id: string | null;
+  game_id: string | null;
+  trace_id: string;
+  context: Record<string, unknown>;
+}
+
+/** The `AdminBugReport` schema: the stored row, with the reporter's names joined in. */
+function toBugReportDto(row: BugReportRow) {
+  return {
+    id: row.id,
+    createdAt: new Date(row.created_at).toISOString(),
+    severity: row.severity,
+    description: row.description,
+    reporter: row.user_id ? { id: row.user_id, username: row.username, displayName: row.display_name } : null,
+    roomId: row.room_id,
+    gameId: row.game_id,
+    traceId: row.trace_id,
+    context: row.context,
+  };
+}
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -112,6 +146,23 @@ function queryInt(raw: unknown, field: string, min: number, max: number, fields:
     return undefined;
   }
   return n;
+}
+
+/**
+ * One page of a list and its total, read in a single repeatable-read transaction so the total
+ * always matches the rows (a row inserted between two separate queries would skew paging).
+ */
+async function readPage<T>(
+  base: (trx: Knex.Transaction) => Knex.QueryBuilder,
+  rows: (q: Knex.QueryBuilder) => Knex.QueryBuilder,
+): Promise<{ total: number; rows: T[] }> {
+  return db.transaction(
+    async (trx) => {
+      const [{ count }] = await base(trx).count<{ count: string }[]>({ count: '*' });
+      return { total: Number(count), rows: (await rows(base(trx))) as T[] };
+    },
+    { isolationLevel: 'repeatable read' },
+  );
 }
 
 /** Responses that carry a one-time secret must not be cached anywhere. */
@@ -211,19 +262,67 @@ export function createAdminRouter(): Router {
       const limit = queryInt(req.query.limit, 'limit', 1, USERS_PAGE_MAX, fields) ?? USERS_PAGE_DEFAULT;
       if (Object.keys(fields).length > 0) throw validationError(fields);
 
-      const base = () => {
-        const q = db('users');
-        if (role !== undefined) q.where({ role: role as Role });
-        return q;
-      };
-      const [{ count }] = await base().count<{ count: string }[]>({ count: '*' });
-      const rows: UserRow[] = await base()
-        .select('*')
-        .orderBy('created_at', 'asc')
-        .orderBy('id', 'asc')
-        .limit(limit)
-        .offset((page - 1) * limit);
-      res.status(200).json({ data: rows.map(toPublicUser), total: Number(count), page, limit });
+      const { total, rows } = await readPage<UserRow>(
+        (trx) => {
+          const q = trx('users');
+          if (role !== undefined) q.where({ role: role as Role });
+          return q;
+        },
+        (q) =>
+          q
+            .select('*')
+            .orderBy('created_at', 'asc')
+            .orderBy('id', 'asc')
+            .limit(limit)
+            .offset((page - 1) * limit),
+      );
+      res.status(200).json({ data: rows.map(toPublicUser), total, page, limit });
+    }),
+  );
+
+  // GET /admin/bug-reports?severity=&page=&limit= (newest first). Context holds the reporter's
+  // own player view (their hand), which is why this is admin-only.
+  router.get(
+    '/bug-reports',
+    ...admin,
+    asyncHandler(async (req, res) => {
+      const fields: Record<string, string> = {};
+      const severity = req.query.severity;
+      if (severity !== undefined && !(BUG_SEVERITIES as readonly unknown[]).includes(severity)) {
+        fields.severity = `Must be one of: ${BUG_SEVERITIES.join(', ')}.`;
+      }
+      const page = queryInt(req.query.page, 'page', 1, Number.MAX_SAFE_INTEGER, fields) ?? 1;
+      const limit = queryInt(req.query.limit, 'limit', 1, BUG_REPORTS_PAGE_MAX, fields) ?? BUG_REPORTS_PAGE_DEFAULT;
+      if (Object.keys(fields).length > 0) throw validationError(fields);
+
+      const { total, rows } = await readPage<BugReportRow>(
+        (trx) => {
+          const q = trx('bug_reports as b');
+          if (severity !== undefined) q.where('b.severity', severity as string);
+          return q;
+        },
+        (q) =>
+          q
+            .leftJoin('users as u', 'u.id', 'b.user_id')
+            .select(
+              'b.id',
+              'b.created_at',
+              'b.severity',
+              'b.description',
+              'b.user_id',
+              'u.username',
+              'u.display_name',
+              'b.room_id',
+              'b.game_id',
+              'b.trace_id',
+              'b.context',
+            )
+            .orderBy('b.created_at', 'desc')
+            .orderBy('b.id', 'desc')
+            .limit(limit)
+            .offset((page - 1) * limit),
+      );
+      res.status(200).json({ data: rows.map(toBugReportDto), total, page, limit });
     }),
   );
 

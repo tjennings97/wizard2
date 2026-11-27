@@ -213,4 +213,11 @@ The admin panel is a protected section of the main application, accessible only 
 5. On the user’s next login, the client intercepts and forces the credential change screen before any other navigation (see Flow 1). The server enforces this too: until the change is made, every route except `GET /users/me`, `PATCH /users/me` and logout returns `403 CREDENTIAL_CHANGE_REQUIRED`
 6. Flag clears once both password and recovery passphrase are updated
 
+**Bug reports:**
+
+1. Admin opens the Bug reports section of the panel: reports newest first, 20 per page, with a severity filter (All / High / Medium / Low)
+2. Each report shows severity, time, description, reporter, page, round and trick (if in a game), and the trace ID with a Copy button
+3. "Full context" opens the URL, room and game ids, browser, the device's send time and, for a report sent mid-game, the reporter's own game view
+4. To see what happened on the server, the admin searches the logs by the trace ID (Observability & Alerting Guide, "Correlating a bug report with server logs")
+
 **Security:** All admin routes are protected by role-check middleware. Admin panel is part of the main React app, not a separate service.

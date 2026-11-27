@@ -2,11 +2,15 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import {
   createInvite,
+  listBugReports,
   listInvites,
   listUsers,
   resetCredentials,
   revokeInvite,
   setUserRole,
+  type AdminBugReport,
+  type BugReportPage,
+  type BugSeverity,
   type Invite,
   type AdminUser,
   type UserPage,
@@ -17,7 +21,8 @@ import { useAuth } from '../context/AuthContext';
 import { useAction } from '../hooks/useAction';
 
 /**
- * /admin: invites, user roles and credential resets (docs/product/ui-ux-flows.md, Flow 10).
+ * /admin: invites, user roles, credential resets (docs/product/ui-ux-flows.md, Flow 10) and the
+ * bug reports users have sent.
  * The server checks the admin role on every request; this page is only linked for admins.
  * Invite codes and temporary credentials are shown once, from the create/reset response.
  */
@@ -34,7 +39,46 @@ export function AdminPage() {
       </header>
       <InvitesSection />
       <UsersSection me={user} />
+      <BugReportsSection />
     </main>
+  );
+}
+
+/**
+ * Loads `fetch` whenever `deps` change (or on retry). A response that arrives after a newer load
+ * started is dropped, error included, so the list always matches the current page and filter.
+ */
+function useLatestLoad<T>(fetch: () => Promise<T>, deps: unknown[]) {
+  const [data, setData] = useState<T | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const load = useAction();
+  useEffect(() => {
+    let current = true;
+    void load.run(async () => {
+      try {
+        const result = await fetch();
+        if (current) setData(result);
+      } catch (err) {
+        if (current) throw err;
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [load.run, attempt, ...deps]);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { data, setData, busy: load.busy, error: load.error, retry };
+}
+
+/** Shown until the first load succeeds: the loading text, or the error with a Retry button. */
+function FirstLoad({ what, error, busy, retry }: { what: string; error: string | null; busy: boolean; retry(): void }) {
+  if (!error) return <p className="muted">Loading {what}…</p>;
+  return (
+    <p className="actions">
+      <button type="button" onClick={retry} disabled={busy}>
+        Retry
+      </button>
+    </p>
   );
 }
 
@@ -203,15 +247,10 @@ const PAGE_SIZE = 50;
 
 function UsersSection({ me }: { me: User }) {
   const [page, setPage] = useState(1);
-  const [users, setUsers] = useState<UserPage | null>(null);
+  const { data: users, setData: setUsers, ...load } = useLatestLoad<UserPage>(() => listUsers(page, PAGE_SIZE), [page]);
   const [filter, setFilter] = useState('');
   const [reset, setReset] = useState<{ user: AdminUser; password: string; passphrase: string } | null>(null);
-  const load = useAction();
   const act = useAction();
-
-  useEffect(() => {
-    void load.run(async () => setUsers(await listUsers(page, PAGE_SIZE)));
-  }, [load.run, page]);
 
   const replace = (updated: AdminUser) =>
     setUsers((p) => (p ? { ...p, data: p.data.map((u) => (u.id === updated.id ? updated : u)) } : p));
@@ -262,7 +301,7 @@ function UsersSection({ me }: { me: User }) {
       <Field label="Find a user" value={filter} onChange={setFilter} type="search" autoComplete="off" hint="Filters this page by username or display name." />
       <ErrorText error={load.error ?? act.error} />
       {users === null ? (
-        <p className="muted">Loading users…</p>
+        <FirstLoad what="users" error={load.error} busy={load.busy} retry={load.retry} />
       ) : (
         <>
           <table className="data-table">
@@ -332,5 +371,123 @@ function UsersSection({ me }: { me: User }) {
         </>
       )}
     </section>
+  );
+}
+
+const BUG_PAGE_SIZE = 20;
+
+/** Bug reports, newest first. Each opens to show the captured context for debugging. */
+function BugReportsSection() {
+  const [page, setPage] = useState(1);
+  const [severity, setSeverity] = useState<BugSeverity | ''>('');
+  const { data: reports, ...load } = useLatestLoad<BugReportPage>(
+    () => listBugReports(page, BUG_PAGE_SIZE, severity || undefined),
+    [page, severity],
+  );
+
+  const pages = reports ? Math.max(1, Math.ceil(reports.total / reports.limit)) : 1;
+
+  return (
+    <section>
+      <h2>Bug reports</h2>
+      <label>
+        Severity
+        <select
+          value={severity}
+          onChange={(e) => {
+            setSeverity(e.target.value as BugSeverity | '');
+            setPage(1);
+          }}
+        >
+          <option value="">All</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+      <ErrorText error={load.error} />
+      {reports === null ? (
+        <FirstLoad what="bug reports" error={load.error} busy={load.busy} retry={load.retry} />
+      ) : (
+        <>
+          <p className="muted">
+            {reports.total} report{reports.total === 1 ? '' : 's'}
+          </p>
+          <ul className="bug-list">
+            {reports.data.map((r) => (
+              <BugReportItem key={r.id} report={r} />
+            ))}
+          </ul>
+          {pages > 1 && (
+            <nav className="actions spaced" aria-label="Bug report pages">
+              <button type="button" disabled={page <= 1 || load.busy} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </button>
+              <span className="muted pager">
+                Page {page} of {pages}
+              </span>
+              <button type="button" disabled={page >= pages || load.busy} onClick={() => setPage((p) => p + 1)}>
+                Next
+              </button>
+            </nav>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+
+function BugReportItem({ report: r }: { report: AdminBugReport }) {
+  const ctx = r.context;
+  const round = typeof ctx.round_number === 'number' ? ctx.round_number : null;
+  const trick = typeof ctx.trick_number === 'number' ? ctx.trick_number : null;
+  const who = r.reporter ? `${r.reporter.displayName ?? '?'} (${r.reporter.username ?? '?'})` : 'Unknown user';
+  return (
+    <li className="card bug-item">
+      <div className="card-head">
+        <span className={`badge sev-${r.severity ?? 'none'}`}>{r.severity ?? 'no severity'}</span>
+        <span className="muted">{formatDate(r.createdAt)}</span>
+      </div>
+      <p className="bug-desc">{r.description}</p>
+      <dl className="facts">
+        <dt>From</dt>
+        <dd>{who}</dd>
+        <dt>Page</dt>
+        <dd>{str(ctx.page) ?? '—'}</dd>
+        {round !== null && (
+          <>
+            <dt>Round</dt>
+            <dd>
+              {round}
+              {trick !== null && `, trick ${trick}`}
+            </dd>
+          </>
+        )}
+      </dl>
+      <CopyValue label="Trace ID" value={r.traceId} />
+      <details>
+        <summary>Full context</summary>
+        <dl className="facts">
+          <dt>URL</dt>
+          <dd>{str(ctx.url) ?? '—'}</dd>
+          <dt>Room</dt>
+          <dd>{r.roomId ?? '—'}</dd>
+          <dt>Game</dt>
+          <dd>{r.gameId ?? '—'}</dd>
+          <dt>Browser</dt>
+          <dd>{str(ctx.user_agent) ?? '—'}</dd>
+          <dt>Sent at</dt>
+          <dd>{formatDate(str(ctx.client_timestamp))} (device clock)</dd>
+        </dl>
+        {ctx.game_state_summary != null && (
+          <>
+            <h3 className="hint">Reporter&apos;s game view</h3>
+            <pre className="json">{JSON.stringify(ctx.game_state_summary, null, 2)}</pre>
+          </>
+        )}
+      </details>
+    </li>
   );
 }

@@ -54,3 +54,31 @@ export const setUserRole = (userId: string, role: User['role']) =>
 
 export const resetCredentials = (userId: string) =>
   apiFetch<TemporaryCredentials>(`/admin/users/${encodeURIComponent(userId)}/reset-credentials`, { method: 'POST' });
+
+export type BugSeverity = 'low' | 'medium' | 'high';
+
+/** GET /admin/bug-reports rows (the `AdminBugReport` schema). */
+export interface AdminBugReport {
+  id: string;
+  createdAt: string;
+  severity: BugSeverity | null;
+  description: string;
+  /** Null when the report has no user_id (not expected: the submit route always sets it). */
+  reporter: { id: string; username: string | null; displayName: string | null } | null;
+  roomId: string | null;
+  gameId: string | null;
+  /** Search the server logs for this (docs/operations/observability-alerting.md). */
+  traceId: string;
+  /** bug_reports.context: url, page, round_number, trick_number, game_state_summary, user_agent, client_timestamp. */
+  context: Record<string, unknown>;
+}
+
+export interface BugReportPage {
+  data: AdminBugReport[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export const listBugReports = (page: number, limit: number, severity?: BugSeverity) =>
+  apiFetch<BugReportPage>(`/admin/bug-reports?page=${page}&limit=${limit}${severity ? `&severity=${severity}` : ''}`);
