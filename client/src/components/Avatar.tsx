@@ -38,14 +38,17 @@ const LAYERS: Readonly<Record<LayerKey, Readonly<Record<string, string>>>> = {
 /** Bottom to top. */
 const LAYER_ORDER: readonly LayerKey[] = ['head', 'face', 'hair'];
 
+// Not Object.hasOwn: it needs Safari / iOS 15.4+, and the build does not polyfill it.
+const has = (obj: object, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
+
 /** The layer's markup, or the default layer's for a slug this build does not know. */
 function layerSvg(key: LayerKey, slug: string | undefined): string {
   const files = LAYERS[key];
-  return slug !== undefined && Object.hasOwn(files, slug) ? files[slug] : files[DEFAULT_AVATAR[key]];
+  return slug !== undefined && has(files, slug) ? files[slug] : files[DEFAULT_AVATAR[key]];
 }
 
 function skinColour(slug: string | undefined): string {
-  return slug !== undefined && Object.hasOwn(SKIN_COLOURS, slug) ? SKIN_COLOURS[slug] : SKIN_COLOURS[DEFAULT_AVATAR.skin];
+  return slug !== undefined && has(SKIN_COLOURS, slug) ? SKIN_COLOURS[slug] : SKIN_COLOURS[DEFAULT_AVATAR.skin];
 }
 
 interface AvatarProps {
