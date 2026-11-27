@@ -89,6 +89,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 ### 4b. Admin credential reset (`POST /admin/users/{userId}/reset-credentials`)
 
+**Status: done.** `server/src/routes/admin.ts`. The server generates both temporary secrets (`generateTemporarySecret` in `server/src/auth/credentials.ts`), and the user's sessions end with the new reason `admin_reset`. Tests: `tests/api/test_admin.py` (`TestCredentialReset`, including the full "Done when" flow through the real endpoint), socket disconnect in `server/src/socket/socket.int.test.ts`. The `PATCH /users/me` rule tests in `tests/api/test_users.py` keep their database-simulated reset, because those tests need a known password.
+
 **Build:** set `requires_credential_change = true`, set `password_changed_at` and `recovery_changed_at` to `NULL` (so the user must change both again, see §4a), set the temporary credentials as the spec describes, and call `invalidateUserSessions` so the user must log in again. Admin routes check `req.user.role === 'admin'`; `requireAuth` re-reads the role from the database on every request.
 
 **Already enforced:** the server enforces the forced change in `authenticate()`. While the flag is true, every route returns `403 CREDENTIAL_CHANGE_REQUIRED` unless it opts in with `allowDuringCredentialChange`; only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` should. Do not opt any other route in.
@@ -96,6 +98,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 **Done when:** (the `PATCH /users/me` half is covered in `tests/api/test_users.py` with a simulated reset; swap `simulate_admin_reset` for the real endpoint) pytest covers an admin reset followed by login (`requiresCredentialChange: true`), a blocked route returning `403 CREDENTIAL_CHANGE_REQUIRED`, `PATCH /users/me` changing only the password (still flagged), then the passphrase (flag cleared), and the blocked route then succeeding.
 
 ### 4c. Admin invites (`/admin/invites`)
+
+**Status: done.** `server/src/routes/admin.ts` (with the role routes and `GET /admin/users`), client `/admin` page in `client/src/pages/Admin.tsx`. Codes are 128-bit lowercase base32 grouped with dashes (`generateInviteCode`); registration normalizes case, spaces and dashes before hashing (`normalizeInviteCode`). Pending invites past expiry are marked `expired` when the list is read. Tests: `tests/api/test_admin.py`.
 
 **Build:**
 - Generate codes with at least 128 bits of randomness (`crypto.randomBytes(16)` or more).

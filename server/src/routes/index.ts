@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { PresenceSource } from '../rooms/queries';
 import type { RoomService } from '../rooms/service';
+import { createAdminRouter } from './admin';
 import { authRouter } from './auth';
 import { healthRouter } from './health';
 import { createLobbyRouter } from './lobby';
@@ -19,5 +20,6 @@ export function createApiRouter(deps: ApiDeps): Router {
   apiRouter.use('/users', usersRouter);
   apiRouter.use('/lobby', createLobbyRouter(deps.presence));
   apiRouter.use('/rooms', createRoomsRouter(deps.rooms));
+  apiRouter.use('/admin', createAdminRouter());
   return apiRouter;
 }

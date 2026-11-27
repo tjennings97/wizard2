@@ -104,7 +104,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 
 - Admin can reset a user's password and recovery passphrase when the user has lost access to both
 - Admin cannot view passwords or passphrases (all hashed)
-  - When resetting credentials, the admin sets a temporary password and recovery passphrase, returned once in the response and never stored in plaintext. The user's account is flagged `requires_credential_change = true`. On next login the client forces a change-password flow before any other action is permitted. The flag clears once the user updates both password and recovery passphrase.
+  - When resetting credentials, the server generates a temporary password and recovery passphrase, returned once in the response and never stored in plaintext; the user's existing sessions end. The user's account is flagged `requires_credential_change = true`. On next login the client forces a change-password flow before any other action is permitted. The flag clears once the user updates both password and recovery passphrase.
 
 ## Lobby
 

@@ -28,6 +28,11 @@ export function LobbyPage() {
     <main className="page">
       <header className="bar">
         <h1>Lobby</h1>
+        {user?.role === 'admin' && (
+          <Link to="/admin" className="button">
+            Admin
+          </Link>
+        )}
         <Link to="/profile" className="button" aria-label={`Profile: ${user?.displayName ?? ''}`}>
           {user?.displayName ?? 'Profile'}
         </Link>

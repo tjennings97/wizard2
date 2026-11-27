@@ -1,8 +1,8 @@
 """Shared fixtures for the REST API tests (pytest + requests).
 
 The tests talk to a running server over HTTP and seed or inspect rows directly in the same
-Postgres database the server uses (invites have no admin API yet, and some cases need expired
-or invalidated rows).
+Postgres database the server uses (seeding is faster than the admin API, and some cases need
+expired or invalidated rows).
 
 Required environment:
   DATABASE_URL       the database the server under test is connected to

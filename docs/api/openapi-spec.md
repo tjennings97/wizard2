@@ -249,6 +249,10 @@ components:
           type: string
           format: uuid
           nullable: true
+        redeemedByUsername:
+          type: string
+          nullable: true
+          description: Username of the user who redeemed the invite. Null until redeemed.
 ```
 
 ## Auth Endpoints
@@ -274,7 +278,11 @@ paths:
               properties:
                 inviteCode:
                   type: string
-                  example: ABC123XYZ
+                  description: >
+                    As issued by POST /admin/invites. Case, spaces and dashes are ignored, so a
+                    code read out or retyped still matches. (Invites stored before this rule,
+                    hashed exactly as written, also match the code exactly as written.)
+                  example: k3vq-7xmd-wq7a-ph2e-r4tn-j6cb-sy
                 username:
                   type: string
                   minLength: 3
@@ -1278,12 +1286,17 @@ paths:
 
 ## Admin Endpoints
 
-All admin endpoints require an authenticated session with `role: admin`. Non-admin requests receive `403 FORBIDDEN`.
+All admin endpoints require an authenticated session with `role: admin`. Non-admin requests receive `403 FORBIDDEN`. The role is read from the database on every request, so a promotion or demotion takes effect on the user's next request without a new login. The usual session rules apply first (`401` for a missing or ended session, `401 REAUTH_REQUIRED` in the re-auth window, `403 CREDENTIAL_CHANGE_REQUIRED` while the admin's own credentials await a forced change). Role changes and credential resets re-check the acting admin's role under a row lock once the work is done, so an admin demoted while their request is in flight gets `403 FORBIDDEN` and nothing is changed. An unknown path under `/admin` is a plain `404`, as for any other unknown route.
+
+Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/users/{userId}/reset-credentials`) are sent with `Cache-Control: no-store`.
 
 ```yaml
   /admin/invites:
     get:
       summary: List all invites
+      description: >
+        Newest first. Pending invites past their expiry are marked `expired` before the list is
+        read. The invite code itself is never stored, so it is never listed.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1303,6 +1316,12 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
                 type: array
                 items:
                   $ref: '#/components/schemas/Invite'
+        '400':
+          description: Unknown status filter (VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Not authenticated.
           content:
@@ -1319,9 +1338,11 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
     post:
       summary: Create a new invite code
       description: >
-        Generates a cryptographically random invite code.
-        The raw code is returned once in the response and never stored.
-        The hash is stored in the database.
+        Generates a cryptographically random invite code: 128 random bits as lowercase base32
+        (26 characters), grouped in fours with dashes. The raw code is returned once in the
+        response and never stored; `invites.code_hash` holds the SHA-256 of the code with the
+        dashes removed. The invite expires 7 days after creation. The label is trimmed, and a
+        blank label is stored as null.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1349,7 +1370,13 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
                   code:
                     type: string
                     description: Raw invite code. Show to admin and discard — not stored.
-                    example: XK9P2MWQRTJ4
+                    example: k3vq-7xmd-wq7a-ph2e-r4tn-j6cb-sy
+        '400':
+          description: Label is not a string of at most 128 characters (VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Not authenticated.
           content:
@@ -1380,7 +1407,9 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
         '204':
           description: Invite revoked.
         '400':
-          description: Invite is not in pending status and cannot be revoked.
+          description: >
+            Invite is not pending (already accepted, revoked, or past its expiry) and cannot be
+            revoked.
           content:
             application/json:
               schema:
@@ -1404,6 +1433,9 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
   /admin/users:
     get:
       summary: List all registered users
+      description: >
+        Oldest account first. Each item is the public `User` without `avatarSvg`, which the
+        admin table does not show and which would make a 200-user page needlessly large.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1434,6 +1466,7 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
                 properties:
                   data:
                     type: array
+                    description: User objects without the avatarSvg property.
                     items:
                       $ref: '#/components/schemas/User'
                   total:
@@ -1442,6 +1475,12 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
                     type: integer
                   limit:
                     type: integer
+        '400':
+          description: Unknown role, or page / limit not an integer in range (VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: Not an admin.
           content:
@@ -1454,7 +1493,10 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
       summary: Update a user's role
       description: >
         Promotes a player to admin or demotes an admin to player.
-        An admin cannot demote themselves (to prevent accidental lockout).
+        An admin cannot demote themselves (to prevent accidental lockout); another admin must.
+        Setting a user's current role again succeeds and changes nothing. The acting admin's role
+        is re-checked under a row lock, so two admins demoting each other at the same moment
+        cannot both succeed: the second gets 403.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1484,7 +1526,9 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
               schema:
                 $ref: '#/components/schemas/User'
         '400':
-          description: Admin attempting to demote themselves.
+          description: >
+            Admin attempting to demote themselves (SELF_DEMOTION_FORBIDDEN), or `role` missing
+            or not one of the enum values (VALIDATION_ERROR).
           content:
             application/json:
               schema:
@@ -1511,7 +1555,13 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
       description: >
         Sets a temporary password and recovery passphrase for the user.
         Admin use only, for cases where a user has lost access to both credentials.
-        Returns the temporary credentials once; user must change them on next login.
+        The server generates both (100 random bits each, lowercase base32 grouped in fours with
+        dashes), stores only their bcrypt hashes, and returns them once; there is no request body.
+        Sets requires_credential_change = true and clears password_changed_at and
+        recovery_changed_at, so the user must change both on next login (PATCH /users/me).
+        Ends every session of the user: their devices get 401 SESSION_INVALIDATED (and sockets
+        session_error) with reason `admin_reset`. An admin cannot reset their own credentials
+        (they change them from their profile with PATCH /users/me).
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1533,14 +1583,25 @@ All admin endpoints require an authenticated session with `role: admin`. Non-adm
                   temporaryPassword:
                     type: string
                     description: One-time temporary password. Share with user securely.
+                    example: m4qz-t7wd-k2pa-x5eh-c3nr
                   temporaryPassphrase:
                     type: string
                     description: One-time temporary recovery passphrase.
+                    example: b6sv-h2gy-q3fm-z4ul-w5ok
                   note:
                     type: string
                     example: The user's credentials are marked temporary. They will be prompted to change their password and recovery passphrase on next login.
+        '400':
+          description: The admin named themselves (SELF_RESET_FORBIDDEN).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: SELF_RESET_FORBIDDEN
+                message: Change your own credentials from your profile.
         '403':
-          description: Not an admin.
+          description: Not an admin (including an admin demoted while the request was in flight).
           content:
             application/json:
               schema:
@@ -1684,13 +1745,14 @@ All error responses use the `Error` schema: `{ code: string, message: string, de
 | 400 | `VALIDATION_ERROR` | Request body or query param failed validation. `details` contains field errors. |
 | 400 | `ROUND_COUNT_EXCEEDS_MAX` | Selected round count is above the maximum for the current player count. |
 | 400 | `NOT_ENOUGH_PLAYERS` | Game start attempted with fewer than 3 players. |
-| 400 | `INVITE_NOT_REVOCABLE` | Invite is not in pending status. |
+| 400 | `INVITE_NOT_REVOCABLE` | Invite is not pending (accepted, revoked, or past its expiry). |
 | 400 | `SELF_DEMOTION_FORBIDDEN` | Admin attempted to remove their own admin role. |
+| 400 | `SELF_RESET_FORBIDDEN` | Admin attempted to reset their own credentials through the admin route. |
 | 401 | `UNAUTHORIZED` | No valid session cookie present. |
 | 401 | `INVALID_CREDENTIALS` | Username or password is incorrect on login. |
 | 401 | `INVALID_CURRENT_PASSWORD` | `currentPassword` is wrong on `PATCH /users/me`. Not a session failure: the session stays valid. |
 | 401 | `INVALID_RECOVERY` | Username not found or recovery passphrase does not match on password reset (one response for both). |
-| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device, a logout, a password reset, or a password / passphrase change. `details.reason` says which (`displaced`, `logout`, `password_reset`, `credential_change`) when it was recorded. The session cookie is not cleared: a stale request must not wipe a cookie the browser has just replaced. |
+| 401 | `SESSION_INVALIDATED` | Session was invalidated by a new login on another device, a logout, a password reset, or a password / passphrase change. `details.reason` says which (`displaced`, `logout`, `password_reset`, `credential_change`, `admin_reset`) when it was recorded. The session cookie is not cleared: a stale request must not wipe a cookie the browser has just replaced. |
 | 401 | `REAUTH_REQUIRED` | Session is within 24 hours of its 30-day cap. The user must log in again before doing anything except finishing a game in progress. The session is still valid and the cookie is not cleared. |
 | 403 | `FORBIDDEN` | Authenticated but not permitted (e.g. non-admin on admin route). |
 | 403 | `CREDENTIAL_CHANGE_REQUIRED` | An admin reset this user's credentials. Only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout` are allowed until both the password and recovery passphrase are changed. |

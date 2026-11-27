@@ -17,6 +17,8 @@ export const logger = pino({
     '*.newPassword',
     '*.recoveryPassphrase',
     '*.inviteCode',
+    '*.temporaryPassword',
+    '*.temporaryPassphrase',
   ],
   ...(config.isProduction
     ? {}

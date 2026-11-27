@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "migrate:latest": "tsx src/db/migrate.ts latest",
     "migrate:rollback": "tsx src/db/migrate.ts rollback",
+    "create-admin": "tsx src/db/createAdmin.ts",
     "test": "jest",
     "test:integration": "jest -c jest.integration.config.js"
   },

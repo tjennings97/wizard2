@@ -1,9 +1,10 @@
 """API tests for PATCH /api/v1/users/me (auth-follow-ups §4a) and the forced credential change
 that it completes (§4b "Done when").
 
-Until the admin reset endpoint exists (POST /admin/users/{userId}/reset-credentials), a reset is
-simulated in the database the way that endpoint will do it: requires_credential_change = true and
-both *_changed_at columns NULL.
+The forced-change cases here simulate an admin reset in the database (requires_credential_change =
+true, both *_changed_at columns NULL) so the user keeps a known password and each PATCH rule can be
+tested on its own. The same flow through the real endpoint (POST /admin/users/{userId}/
+reset-credentials, with its temporary credentials) is in test_admin.py.
 
 See conftest.py for required environment and server settings.
 """
@@ -26,7 +27,7 @@ def user_row(db, user_id):
 
 
 def simulate_admin_reset(db, user_id):
-    """What the admin reset will do, minus the temporary credentials (the user keeps theirs)."""
+    """What the admin reset does, minus the temporary credentials (the user keeps theirs)."""
     db.execute(
         "UPDATE users SET requires_credential_change = true, password_changed_at = NULL, "
         "recovery_changed_at = NULL WHERE id = %s",

@@ -37,8 +37,8 @@ One active session per user at any time. A new login invalidates the prior sessi
 | `trace_id` | `uuid` | No | NOT NULL, default `gen_random_uuid()` | Correlation ID for logs and bug reports. Unique per session. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Session creation time |
 | `expires_at` | `timestamptz` | No | NOT NULL | Sliding expiry: 24 hours after the session's last authenticated activity (HTTP request or socket event), so active players are not logged out mid-game. Moved forward at most once an hour. Never later than `created_at` + 30 days (hard cap). In the last 24 hours before the cap the user must log in again (`401 REAUTH_REQUIRED`) unless they are an active player in a game in progress. |
-| `invalidated_at` | `timestamptz` | Yes | — | Set on logout, when a new login displaces this session, on a password reset, or when the user changes their password or recovery passphrase from another session (that session is replaced by a new one). Null = still valid (if not expired). |
-| `invalidated_reason` | `varchar(32)` | Yes | — | Why the session ended: `displaced`, `logout`, `password_reset` or `credential_change`. Returned as `details.reason` on `401 SESSION_INVALIDATED` and as `reason` on the socket `session_error`. Null while the session is valid, and for sessions ended before the column existed. |
+| `invalidated_at` | `timestamptz` | Yes | — | Set on logout, when a new login displaces this session, on a password reset or an admin credential reset, or when the user changes their password or recovery passphrase from another session (that session is replaced by a new one). Null = still valid (if not expired). |
+| `invalidated_reason` | `varchar(32)` | Yes | — | Why the session ended: `displaced`, `logout`, `password_reset`, `credential_change` or `admin_reset` (an admin credential reset). Returned as `details.reason` on `401 SESSION_INVALIDATED` and as `reason` on the socket `session_error`. Null while the session is valid, and for sessions ended before the column existed. |
 
 ## Data Dictionary — invites
 
@@ -47,14 +47,14 @@ Admin-issued invite codes for new user registration. Codes expire after 7 days i
 | Column | Type | Nullable | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id` | `uuid` | No | PK, default `gen_random_uuid()` | Surrogate primary key |
-| `code_hash` | `varchar(255)` | No | UNIQUE, NOT NULL | SHA-256 hash of the invite code. Raw code shown to admin once only. |
+| `code_hash` | `varchar(255)` | No | UNIQUE, NOT NULL | SHA-256 hash of the invite code (lowercase, dashes removed). Raw code shown to admin once only. Rows written before codes were normalized hold the hash of the code exactly as written; registration matches either form. |
 | `label` | `varchar(128)` | Yes | — | Optional admin-provided label (e.g. intended recipient name) |
 | `created_by` | `uuid` | No | FK → `users.id`, NOT NULL | Admin user who generated the invite |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Invite creation time |
 | `expires_at` | `timestamptz` | No | NOT NULL | 7 days after `created_at` |
 | `redeemed_at` | `timestamptz` | Yes | — | Set when the invite is used to register. Null = not yet redeemed. |
 | `redeemed_by` | `uuid` | Yes | FK → `users.id` | The user who redeemed this invite. Null until redeemed. |
-| `status` | `varchar(16)` | No | NOT NULL, CHECK (`status` IN ('pending','accepted','expired','revoked')), default `'pending'` | Current invite status |
+| `status` | `varchar(16)` | No | NOT NULL, CHECK (`status` IN ('pending','accepted','expired','revoked')), default `'pending'` | Current invite status. A pending invite past `expires_at` is set to `expired` when the admin invite list is read (and can never be redeemed either way: registration checks `expires_at`). |
 
 ## Data Dictionary — rooms
 

@@ -156,6 +156,17 @@ npm run dev -w client   # frontend only
 
 3. **Browser.** The lobby placeholder loads at `/`. The browser dev-tools console logs `connected <socket-id>`. Follow the links to `/room/demo` and `/game/demo`.
 
+
+4. **Admin panel.** The admin panel at `/admin` (linked from the lobby) is only for users with the admin role, and new accounts need an invite that only an admin can create. To make an existing local user an admin, run this against your dev database (the role is read on every request, so reload the page, no new login needed):
+   ```bash
+   psql "$DATABASE_URL" -c "UPDATE users SET role = 'admin' WHERE username = '<username>'"
+   ```
+   On a fresh database with no users at all, create one instead. It prints a temporary password and passphrase, which the app makes you replace at first sign-in:
+   ```bash
+   npm run create-admin -w server -- <username> "<display name>"
+   ```
+   See "First Admin Account" in `docs/operations/deployment-infrastructure.md` for the production version.
+
 ---
 
 ## 7. Common commands
@@ -170,6 +181,7 @@ Run these from the repository root:
 | `npm start` | Runs the built server (production mode; also serves `client/dist`) |
 | `npm run migrate:latest -w server` | Applies pending database migrations |
 | `npm run migrate:rollback -w server` | Rolls back the last batch of migrations |
+| `npm run create-admin -w server -- <username> "<display name>"` | Creates an admin with temporary credentials (changed at first sign-in); add `--sql` to print an `INSERT` instead of connecting |
 | `npm test -w server` | Runs the server unit tests (no database needed) |
 | `npm run test:integration -w server` | Runs the server integration tests (Postgres required; see below) |
 

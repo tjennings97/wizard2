@@ -25,6 +25,7 @@ export const INVALIDATION_MESSAGES: Record<InvalidationReason, string> = {
   logout: 'Session was ended by a logout.',
   password_reset: 'Session was ended by a password reset.',
   credential_change: 'Session was ended by a password or recovery passphrase change.',
+  admin_reset: 'Session was ended by an admin credential reset.',
 };
 
 /** The raw session token from a handshake Cookie header, or null if absent or the signature is wrong. */

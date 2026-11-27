@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext';
 import { GameProvider } from './context/GameContext';
 import { SocketProvider } from './context/SocketContext';
 import { useLocationSync } from './hooks/useLocationSync';
+import { AdminPage } from './pages/Admin';
 import { CredentialChangePage } from './pages/CredentialChange';
 import { GamePage } from './pages/Game';
 import { LobbyPage } from './pages/Lobby';
@@ -20,6 +21,7 @@ function AuthenticatedRoutes() {
       <Route path="/room/:id" element={<RoomPage />} />
       <Route path="/game/:id" element={<GamePage />} />
       <Route path="/profile" element={<ProfilePage />} />
+      <Route path="/admin" element={<AdminPage />} />
       {/* Just signed up or in: the signed-out pages have nothing to show. */}
       <Route path="/register" element={<Navigate to="/" replace />} />
       <Route path="/reset-password" element={<Navigate to="/" replace />} />
