@@ -28,7 +28,7 @@ export interface RoomRow {
 export interface MemberView {
   userId: string;
   displayName: string;
-  avatarConfig: AvatarConfig | null;
+  avatarConfig: AvatarConfig;
   role: MemberRole;
   joinOrder: number;
   isHost: boolean;
@@ -101,7 +101,7 @@ async function activeMembers(conn: Conn, roomId: string, hostUserId: string): Pr
   const rows: {
     user_id: string;
     display_name: string;
-    avatar_config: AvatarConfig | null;
+    avatar_config: AvatarConfig;
     role: MemberRole;
     join_order: number;
   }[] = await conn('room_members as rm')
@@ -191,7 +191,7 @@ export async function activeMembershipFor(userId: string, conn: Conn = db): Prom
 export interface UserSummary {
   userId: string;
   displayName: string;
-  avatarConfig: AvatarConfig | null;
+  avatarConfig: AvatarConfig;
 }
 
 /** Who is in the lobby right now. Answered by the socket layer, which knows who is connected. */

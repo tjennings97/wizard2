@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import { db } from '../db/knex';
-import type { GameState, Suit, TrumpSource } from '../engine';
+import type { AvatarConfig, GameState, Suit, TrumpSource } from '../engine';
 
 type Conn = Knex | Knex.Transaction;
 
@@ -67,7 +67,7 @@ export interface GamePlayerRow {
   id: string;
   username: string;
   displayName: string;
-  avatarConfig: { head: string; skin: string; face: string; hair: string } | null;
+  avatarConfig: AvatarConfig;
 }
 
 /** The room's active players in join order (seat order), with the fields the engine needs. */

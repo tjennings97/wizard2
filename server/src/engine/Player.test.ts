@@ -2,12 +2,13 @@ import { Card } from './Card';
 import { EngineError } from './errors';
 import { Player } from './Player';
 import { UserProps } from './User';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
 const props = (id: string): UserProps => ({
   id,
   username: `user_${id}`,
   displayName: `User ${id}`,
-  avatarConfig: null,
+  avatarConfig: DEFAULT_AVATAR,
   sessionId: `sess_${id}`,
 });
 

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import type {
+  AvatarConfig,
   BidEntry,
   BidRule,
   Card,
@@ -18,6 +19,8 @@ import { useRealtime } from './SocketContext';
 export interface SeatView {
   userId: string;
   displayName: string;
+  /** As when the game started; avatar changes mid-game are not shown (avatar-system.md). */
+  avatarConfig: AvatarConfig;
   seatIndex: number;
   bid: number | null;
   handCount: number;
@@ -209,6 +212,7 @@ function snapshotState(view: GameStateView, seq: number, prev: State): GameView 
     .map((p) => ({
       userId: p.userId,
       displayName: p.displayName,
+      avatarConfig: p.avatarConfig,
       seatIndex: p.seatOrder - 1,
       bid: p.bid,
       handCount: p.handCount,
@@ -300,6 +304,7 @@ function reducer(state: State, action: Action): State {
       seats: action.players.map((p) => ({
         userId: p.user_id,
         displayName: p.display_name,
+        avatarConfig: p.avatar_config,
         seatIndex: p.seat_index,
         bid: null,
         handCount: 0,

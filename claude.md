@@ -101,7 +101,7 @@ Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/
 `users`, `sessions`, `invites`, `rooms`, `room_members`, `games`, `rounds`, `round_players`, `game_results`, `game_events` (append-only event log), `bug_reports`
 
 Key schema notes:
-- `users.avatar_config` — JSONB (four keys: `head`, `skin`, `face`, `hair`)
+- `users.avatar_config` — JSONB, NOT NULL (four keys: `head`, `skin`, `face`, `hair`; each a slug from the catalog in `server/src/shared/avatar.ts`, which the client imports too). No avatar SVG is accepted or stored
 - `games.state` — JSONB checkpoint of `GameState`, written after each round
 - `game_events.payload` — JSONB full context snapshot per event
 - `sessions` stored in Postgres (not Redis); one active session per user
@@ -163,7 +163,7 @@ Key schema notes:
 - **Routing:** React Router v7 (import from `react-router`; `react-router-dom` is not used). Routes: `/` (lobby), `/room/:id`, `/game/:id`, `/profile`, `/admin`
 - **Mobile-first:** `min-width` media queries; touch targets ≥ 44×44px; no hover-only affordances; 375px viewport minimum
 - **Game board layout:** Vertical single-column on mobile (hand at bottom, trick in middle, opponents at top); table-surround on desktop
-- **Avatars:** Four SVG layers (`head`, `skin`, `face`, `hair`; see the Avatar System Specification) composited via `position: absolute` stacking. No server-side image processing.
+- **Avatars:** Four config keys (`head`, `skin`, `face`, `hair`; see the Avatar System Specification). Three bundled SVG layer files (`head`, `face`, `hair`) are stacked via `position: absolute` in a circle; `skin` is the head layer's fill colour, not a file. No server-side image processing.
 
 ## Security
 

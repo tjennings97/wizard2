@@ -4,6 +4,8 @@ import { config } from '../config';
 import { isSessionInvalidated } from '../auth/sessions';
 import { sessionEvents, type InvalidationReason } from '../auth/sessionEvents';
 import { userEvents } from '../auth/userEvents';
+import { getUserProfile } from '../auth/users';
+import type { AvatarConfig } from '../shared/avatar';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, listLobbyRooms, type RoomSummary, type RoomView } from '../rooms/queries';
 import type { RoomService } from '../rooms/service';
@@ -66,6 +68,8 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
     );
   };
   userEvents.on('displayNameChanged', onDisplayName);
+  const onAvatar = (userId: string, avatarConfig: AvatarConfig) => realtime.avatarChanged(userId, avatarConfig);
+  userEvents.on('avatarChanged', onAvatar);
 
   io.on('connection', (socket: AppSocket) => {
     socket.data.seq = 0;
@@ -87,6 +91,7 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
     detach: () => {
       sessionEvents.off('invalidated', onInvalidated);
       userEvents.off('displayNameChanged', onDisplayName);
+      userEvents.off('avatarChanged', onAvatar);
     },
   };
 }
@@ -142,6 +147,14 @@ async function onConnection(realtime: Realtime, rooms: RoomService, socket: AppS
     realtime.rejectSocket(socket, 'SESSION_INVALIDATED', SESSION_ERROR_MESSAGES.SESSION_INVALIDATED);
     return;
   }
+  if (!socket.connected) return;
+
+  // Likewise a rename or avatar change saved while authenticateSocket was querying found no
+  // socket in the user channel, so this one still carries the old profile. Re-read it, unless a
+  // change event has updated the socket since (each replaces socket.data.user), which is newer.
+  const before = socket.data.user;
+  const profile = await getUserProfile(user.id);
+  if (profile && socket.data.user === before) socket.data.user = { userId: user.id, ...profile };
   if (!socket.connected) return;
 
   registerClientEvents(realtime, rooms, socket, timing);

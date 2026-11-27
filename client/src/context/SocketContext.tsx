@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useReducer, useState, type ReactNode } from 'react';
 import type { Socket } from 'socket.io-client';
-import type { MemberRole, RoomConfig, RoomMember, RoomSummary, UserSummary } from '../api/types';
+import type { AvatarConfig, MemberRole, RoomConfig, RoomMember, RoomSummary, UserSummary } from '../api/types';
 import { createSocket, type Envelope } from '../socket/client';
 import { useAuth } from './AuthContext';
 
@@ -30,7 +30,8 @@ type Action =
   | { type: 'rooms_updated'; rooms: RoomSummary[] }
   | { type: 'presence_updated'; onlineUsers: UserSummary[] }
   | { type: 'room_snapshot'; room: RoomView }
-  | { type: 'user_joined'; userId: string; displayName: string; role: MemberRole }
+  | { type: 'own_avatar_changed'; userId: string; avatarConfig: AvatarConfig }
+  | { type: 'user_joined'; userId: string; displayName: string; avatarConfig: AvatarConfig; role: MemberRole }
   | { type: 'user_left'; userId: string }
   | { type: 'host_changed'; roomId: string; hostId: string }
   | { type: 'room_config_updated'; roomId: string; config: RoomConfig }
@@ -59,6 +60,17 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       return { ...state, onlineUsers: action.onlineUsers };
     case 'room_snapshot':
       return { ...state, location: 'room', room: action.room, notice: null };
+    case 'own_avatar_changed': {
+      // Avatar changes are not broadcast (avatar-system.md), so the server sends no snapshot for
+      // our own change; patch our entries so our own lobby and room lists show it straight away.
+      const patch = <T extends { userId: string; avatarConfig: AvatarConfig }>(list: T[]) =>
+        list.map((u) => (u.userId === action.userId ? { ...u, avatarConfig: action.avatarConfig } : u));
+      return {
+        ...state,
+        onlineUsers: patch(state.onlineUsers),
+        room: state.room ? { ...state.room, members: patch(state.room.members) } : null,
+      };
+    }
     case 'user_joined': {
       const room = state.room;
       if (!room) return state;
@@ -68,7 +80,7 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       const member: RoomMember = {
         userId: action.userId,
         displayName: action.displayName,
-        avatarConfig: null,
+        avatarConfig: action.avatarConfig,
         role: action.role,
         joinOrder: room.members.find((m) => m.userId === action.userId)?.joinOrder ?? last + 1,
         isHost: action.userId === room.hostId,
@@ -108,7 +120,7 @@ type Payloads = {
   rooms_updated: { rooms: RoomSummary[] };
   presence_updated: { online_users: UserSummary[] };
   room_snapshot: { room_id: string; config: RoomConfig; members: RoomMember[]; host_id: string };
-  user_joined: { user_id: string; display_name: string; role: MemberRole };
+  user_joined: { user_id: string; display_name: string; avatar_config: AvatarConfig; role: MemberRole };
   user_left: { user_id: string };
   host_changed: { room_id: string; host_id: string };
   room_config_updated: { room_id: string; config: RoomConfig };
@@ -127,6 +139,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [state, dispatch] = useReducer(reducer, initialState);
 
+  // Our own avatar comes from AuthContext (updated from the PATCH /users/me response).
+  const avatarConfig = user?.avatarConfig ?? null;
+  useEffect(() => {
+    if (userId && avatarConfig) dispatch({ type: 'own_avatar_changed', userId, avatarConfig });
+  }, [userId, avatarConfig]);
+
   useEffect(() => {
     if (!userId) return;
     const s = createSocket();
@@ -143,7 +161,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     on('room_snapshot', (p) =>
       dispatch({ type: 'room_snapshot', room: { roomId: p.room_id, hostId: p.host_id, config: p.config, members: p.members } }),
     );
-    on('user_joined', (p) => dispatch({ type: 'user_joined', userId: p.user_id, displayName: p.display_name, role: p.role }));
+    on('user_joined', (p) =>
+      dispatch({ type: 'user_joined', userId: p.user_id, displayName: p.display_name, avatarConfig: p.avatar_config, role: p.role }),
+    );
     on('user_left', (p) => dispatch({ type: 'user_left', userId: p.user_id }));
     on('host_changed', (p) => dispatch({ type: 'host_changed', roomId: p.room_id, hostId: p.host_id }));
     on('room_config_updated', (p) => dispatch({ type: 'room_config_updated', roomId: p.room_id, config: p.config }));

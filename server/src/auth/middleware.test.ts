@@ -11,6 +11,7 @@ jest.mock('./sessions', () => ({
 
 import { authenticate, requireSessionRunway } from './middleware';
 import { authenticateToken, clearSessionCookie, isInActiveGame, slideSession } from './sessions';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
 const mockAuthenticateToken = authenticateToken as jest.MockedFunction<typeof authenticateToken>;
 const mockIsInActiveGame = isInActiveGame as jest.MockedFunction<typeof isInActiveGame>;
@@ -25,8 +26,7 @@ function okResult({ requiresCredentialChange = false, inReauthWindow = false } =
       username: 'alice',
       displayName: 'Alice',
       role: 'player' as const,
-      avatarConfig: null,
-      avatarSvg: null,
+      avatarConfig: DEFAULT_AVATAR,
       createdAt: new Date(0).toISOString(),
       requiresCredentialChange,
     },

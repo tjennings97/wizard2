@@ -6,6 +6,7 @@ import { Card, SUIT_NAMES, SUIT_SYMBOLS, cardKey, cardLabel } from '../component
 import { useAuth } from '../context/AuthContext';
 import { ABANDON_MESSAGES, currentTurnId, isLegal, useGame, type GameView, type RoundResult, type SeatView } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
+import { AVATAR_SIZE, Avatar } from '../components/Avatar';
 
 /** How long the round summary stays up before the next round shows (docs/design/ui-foundation.md). */
 const ROUND_SUMMARY_MS = 3000;
@@ -192,9 +193,7 @@ function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; i
   const cls = ['seat', isTurn && 'turn', !seat.connected && 'away'].filter(Boolean).join(' ');
   return (
     <div className={cls} aria-current={isTurn ? 'true' : undefined}>
-      <span className="avatar" aria-hidden="true">
-        {seat.displayName.slice(0, 1).toUpperCase()}
-      </span>
+      <Avatar config={seat.avatarConfig} size={AVATAR_SIZE.chip} />
       <span className="seat-name">{seat.displayName}</span>
       <span className="seat-bid">{seat.bid === null ? '–' : `Bid ${seat.bid} · Won ${seat.tricksWon}`}</span>
       <span className="muted seat-meta">
@@ -381,8 +380,13 @@ function Scoreboard({ game, turnId }: { game: GameView; turnId: string | null })
           {game.seats.map((s) => (
             <tr key={s.userId} className={s.userId === turnId ? 'turn' : undefined}>
               <th scope="row">
-                {s.displayName}
-                {s.score === leader && game.history.length > 0 && <span className="muted"> · leads</span>}
+                <span className="score-player">
+                  <Avatar config={s.avatarConfig} size={AVATAR_SIZE.scoreboard} />
+                  <span>
+                    {s.displayName}
+                    {s.score === leader && game.history.length > 0 && <span className="muted"> · leads</span>}
+                  </span>
+                </span>
               </th>
               <td>{s.bid ?? '–'}</td>
               <td>{s.bid === null ? '–' : s.tricksWon}</td>

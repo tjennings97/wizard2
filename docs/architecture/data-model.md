@@ -18,8 +18,7 @@ Central entity. Every other table that tracks a person foreign-keys to this tabl
 | `password_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash (work factor 12) of the user's password. |
 | `recovery_hash` | `varchar(255)` | No | NOT NULL | bcrypt hash of the recovery passphrase. Used for password reset without email. |
 | `role` | `varchar(16)` | No | NOT NULL, CHECK (`role` IN ('player','admin')), default `'player'` | Account role. `player` = standard user; `admin` = elevated privileges. |
-| `avatar_config` | `jsonb` | No | NULL | Structured avatar part selections. Schema: {"head": "round", "skin": "medium", "face": "smile-01", "hair": "curly-short-brown"}. Each value is a slug mapping to an SVG layer asset in the frontend. Null means no avatar set.. |
-| `avatar_svg` | `text` | Yes | — | Cached SVG string of the fully composited avatar. Written at registration and on each avatar update. Null until avatar is first set. Rendered directly in the browser — avoids recompositing layers on every load. |
+| `avatar_config` | `jsonb` | No | NOT NULL | The player's avatar: exactly `{"head", "skin", "face", "hair"}`, each a slug from the option catalog in the Avatar System Specification, e.g. `{"head": "head-02", "skin": "skin-04", "face": "face-01", "hair": "hair-07"}`. Required at registration; validated against the catalog on every write. The client draws the avatar from these slugs; no SVG is stored. Migration `010_avatar_config_required` dropped the old `avatar_svg` column and gave every user with a null or invalid config a random valid one. |
 | `requires_credential_change` | `boolean` | No | NOT NULL, default `false` | Set to `true` by an admin when resetting a user's credentials. On next login the server includes this flag and the client forces a change-password flow before any other action. Reset to `false` by `PATCH /users/me` once the user has changed both the password and the recovery passphrase since the reset (both `password_changed_at` and `recovery_changed_at` set). While the flag is `true`, the server allows only `GET /users/me`, `PATCH /users/me` and `POST /auth/logout`; every other authenticated route returns `403 CREDENTIAL_CHANGE_REQUIRED`, so the change cannot be skipped by calling the API directly. |
 | `password_changed_at` | `timestamptz` | Yes | — | When the user last chose their password themselves: `PATCH /users/me` or `POST /auth/reset-password`. Null until then. An admin credential reset sets it back to null. |
 | `recovery_changed_at` | `timestamptz` | Yes | — | When the user last chose their recovery passphrase themselves (`PATCH /users/me`). Null until then. An admin credential reset sets it back to null. |
@@ -232,7 +231,7 @@ Stores user-submitted bug reports with automatic context capture. The `trace_id`
 
 ## JSONB Payload Schemas
 
-Avatar configuration is stored as a free-form `avatar_config` field directly on the `users` table. There are no separate `avatars` or `player_avatars` tables.
+Avatar configuration is stored as `avatar_config` (four catalog slugs, see the `users` table above) directly on the `users` table. There are no separate `avatars` or `player_avatars` tables, and no stored images.
 
 ### rooms.config
 
@@ -281,7 +280,7 @@ Avatar configuration is stored as a free-form `avatar_config` field directly on 
   ],
   "scores": { "uuid": 85 },
   "droppedPlayers": [
-    { "userId": "uuid", "username": "sam", "displayName": "Sam", "avatarConfig": null, "isBot": false, "finalScore": 40 }
+    { "userId": "uuid", "username": "sam", "displayName": "Sam", "avatarConfig": { "head": "head-01", "skin": "skin-03", "face": "face-02", "hair": "hair-05" }, "isBot": false, "finalScore": 40 }
   ],
   "pendingContinue": null,
   "winnerUserIds": []

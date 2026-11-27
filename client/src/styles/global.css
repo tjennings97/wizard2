@@ -9,6 +9,7 @@
   --accent-text: #ffffff;
   --danger: #b3261e;
   --notice-bg: #fff4d6;
+  --avatar-bg: #dde2f3;
   --radius: 10px;
   color-scheme: light;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -26,6 +27,7 @@
     --accent-text: #0d0d0c;
     --danger: #ff8a80;
     --notice-bg: #3b3220;
+    --avatar-bg: #343a52;
     color-scheme: dark;
   }
 }
@@ -251,15 +253,80 @@ section + section {
   font-variant-numeric: tabular-nums;
   min-width: 2ch;
 }
+/* --- Avatars (components/Avatar.tsx, docs/architecture/avatar-system.md) -------------------
+ * Layers stacked bottom to top in a fixed-size circle; width/height come from the component. */
 .avatar {
-  width: 32px;
-  height: 32px;
+  position: relative;
+  display: inline-block;
+  flex: none;
   border-radius: 50%;
-  background: var(--border);
+  overflow: hidden;
+  background: var(--avatar-bg);
+  vertical-align: middle;
+}
+.avatar-layer {
+  position: absolute;
+  inset: 0;
+}
+.avatar-layer svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A fieldset that only groups (no box): the register page's avatar step and each picker row. */
+fieldset.plain,
+.avatar-options {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+fieldset.plain > legend,
+.avatar-options legend {
+  font-weight: 500;
+  padding: 0;
+  margin-bottom: 4px;
+}
+fieldset.plain > .hint {
+  margin: 0 0 8px;
+}
+
+.avatar-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.avatar-picker-preview {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.avatar-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+/* The 64px tile is the touch target; the ring marks the selected option. */
+button.avatar-tile {
+  padding: 0;
+  min-height: 0;
+  line-height: 0;
+  border: 3px solid transparent;
+  border-radius: 50%;
+  background: none;
+}
+button.avatar-tile.selected {
+  border-color: var(--accent);
+}
+button.avatar-tile:disabled {
+  opacity: 0.6;
+}
+
+.score-player {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-weight: 600;
+  gap: 8px;
 }
 
 .badge {

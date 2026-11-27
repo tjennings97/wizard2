@@ -62,13 +62,6 @@ class TestDisplayName:
         assert_error(api.patch("/users/me", json={"username": "someone_else"}), 400, "VALIDATION_ERROR")
         assert api.get("/users/me").json()["username"] == reg["body"]["username"]
 
-    @pytest.mark.parametrize("field", ["avatarConfig", "avatarSvg"])
-    def test_avatar_fields_are_refused_for_now(self, api, register, field):
-        register(api)
-        r = api.patch("/users/me", json={"displayName": "A", field: "<svg onload=alert(1)>"})
-        assert_error(r, 400, "VALIDATION_ERROR")
-        assert field in r.json()["details"]["fields"]
-
     def test_requires_auth(self, api):
         assert_error(api.patch("/users/me", json={"displayName": "A"}), 401, "UNAUTHORIZED")
 

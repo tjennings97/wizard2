@@ -1,19 +1,16 @@
 /** Shapes from docs/api/openapi-spec.md, reused as the nested objects of socket payloads. */
 
-export interface AvatarConfig {
-  head: string;
-  skin: string;
-  face: string;
-  hair: string;
-}
+import type { AvatarConfig } from '../../../server/src/shared/avatar';
+
+/** Four catalog slugs (server/src/shared/avatar.ts, shared with the server). */
+export type { AvatarConfig };
 
 export interface User {
   id: string;
   username: string;
   displayName: string;
   role: 'player' | 'admin';
-  avatarConfig: AvatarConfig | null;
-  avatarSvg: string | null;
+  avatarConfig: AvatarConfig;
   createdAt: string;
   requiresCredentialChange: boolean;
 }
@@ -43,7 +40,7 @@ export interface RoomSummary {
 export interface UserSummary {
   userId: string;
   displayName: string;
-  avatarConfig: AvatarConfig | null;
+  avatarConfig: AvatarConfig;
 }
 
 export interface RoomMember extends UserSummary {
@@ -86,6 +83,7 @@ export interface Card {
 export interface PlayerSummary {
   user_id: string;
   display_name: string;
+  avatar_config: AvatarConfig;
   seat_index: number;
 }
 
@@ -125,6 +123,7 @@ export interface RoundScoreEntry extends ScoreEntry {
 export interface PlayerStateView {
   userId: string;
   displayName: string;
+  avatarConfig: AvatarConfig;
   seatOrder: number;
   hand: Card[] | null;
   handCount: number;

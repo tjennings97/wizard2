@@ -23,6 +23,7 @@ from typing import Callable, Dict, Iterator, List, Optional
 from urllib.parse import unquote
 
 import psycopg
+from psycopg.types.json import Jsonb
 import pytest
 import requests
 
@@ -30,7 +31,8 @@ BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:3000/api/v1").rstrip
 SESSION_COOKIE = "wizard_session"
 DEFAULT_PASSWORD = "correct horse battery"
 DEFAULT_PASSPHRASE = "purple monkey dishwasher"
-AVATAR = {"head": "round", "skin": "medium", "face": "smile-01", "hair": "curly-short-brown"}
+# A valid avatarConfig: one slug per key from the catalog in server/src/shared/avatar.ts.
+AVATAR = {"head": "head-02", "skin": "skin-04", "face": "face-01", "hair": "hair-07"}
 
 
 def sha256_hex(value: str) -> str:
@@ -126,9 +128,9 @@ def cleanup(db: psycopg.Connection) -> Iterator[Cleanup]:
 def admin_id(db: psycopg.Connection, cleanup: Cleanup) -> str:
     """An admin user to own seeded invites. Cannot log in (its hash matches nothing)."""
     row = db.execute(
-        "INSERT INTO users (username, display_name, password_hash, recovery_hash, role) "
-        "VALUES (%s, 'Test Admin', '!', '!', 'admin') RETURNING id",
-        (unique_username("admin"),),
+        "INSERT INTO users (username, display_name, password_hash, recovery_hash, role, avatar_config) "
+        "VALUES (%s, 'Test Admin', '!', '!', 'admin', %s) RETURNING id",
+        (unique_username("admin"), Jsonb(AVATAR)),
     ).fetchone()
     cleanup.user_ids.append(str(row[0]))
     return str(row[0])
@@ -200,7 +202,6 @@ def registration_body(invite_code: str, **overrides) -> Dict:
         "password": DEFAULT_PASSWORD,
         "recoveryPassphrase": DEFAULT_PASSPHRASE,
         "avatarConfig": dict(AVATAR),
-        "avatarSvg": "<svg xmlns='http://www.w3.org/2000/svg'></svg>",
     }
     body.update(overrides)
     return body

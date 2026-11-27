@@ -2,31 +2,41 @@
 
 ## Overview
 
-The Avatar System gives each Wizard player a persistent visual identity displayed in lobbies, scoreboards, and game results. Each player builds a custom avatar by selecting individual parts (head shape, skin tone, face, hair). The browser composites these SVG layers live during the builder, and the final composed SVG is cached alongside the part selections on the `users` table.
+The Avatar System gives each Wizard player a persistent visual identity displayed in lobbies, rooms, game seats and scoreboards. Each player builds an avatar by choosing four parts: head shape, skin tone, face and hair. The choice is stored as four slugs in `users.avatar_config`. The browser draws the avatar from app-provided SVG layer files bundled with the client. No SVG or image is ever uploaded, stored or served by the server.
 
-This spec covers the avatar data model, API contract, frontend rendering, and edge-case handling. It is the authoritative reference for backend and frontend teams implementing the feature.
+This spec covers the avatar data model, API contract, frontend rendering, and edge-case handling. It is the authoritative reference for the avatar feature.
+
+> **Status:** built (`docs/development/remaining-work.md` prompt 7). Catalog: `server/src/shared/avatar.ts`; components: `client/src/components/Avatar.tsx` and `AvatarPicker.tsx`; layer files: `client/src/assets/avatar/`; migration `010_avatar_config_required.ts`. `docs/development/auth-follow-ups.md` §8 records why client SVG was removed.
 
 ## Avatar Configuration
 
-Each player has a single avatar built from four part selections: **head shape**, **skin tone**, **face**, and **hair**. These are stored in the `avatar_config` field on the `users` table as a structured object with four required keys: `head`, `skin`, `face`, and `hair`. The browser composites the selected SVG layers at build time; the resulting SVG string is cached in `avatar_svg` on the same table. There is no separate avatar catalog or player-avatar join table.
+Each player has exactly one avatar, defined by four required keys: `head`, `skin`, `face` and `hair`. Every value is a slug from the option catalog below. There is no separate avatar catalog table or player-avatar join table.
+
+### Option catalog
+
+| Key | Options | Slugs | What the slug chooses |
+| --- | --- | --- | --- |
+| `head` | 4 | `head-01` … `head-04` | Head shape (an SVG layer file) |
+| `skin` | 6 | `skin-01` … `skin-06` | Fill colour applied to the head layer (not a file) |
+| `face` | 6 | `face-01` … `face-06` | Facial features (an SVG layer file) |
+| `hair` | 8 | `hair-01` … `hair-08` | Hairstyle (an SVG layer file) |
+
+- Slugs are two-digit, zero-padded, and match `^(head|skin|face|hair)-\d{2}$`.
+- The catalog lives in one shared module that both the client and the server import, so they always agree on valid slugs. Skin colour values (hex) are defined in that module next to the skin slugs.
+- **Hair colour** is fixed in v1: every hairstyle uses the same colour, set with a single fill value. Hair layers are drawn with a fill (not baked-in colours) so a hair-colour choice can be added later without redrawing them. Adding one would add a fifth key and change this spec.
+- Adding options later is safe. Removing or renaming a slug needs a migration that rewrites stored configs, because the server rejects unknown slugs.
 
 ## Data Model
 
-Avatar data lives directly on the `users` table as two fields.
-
-**`users` table (relevant column)**
-
 ```
-avatarConfig   object (jsonb) — structured avatar part selections.
-               Required keys: head (string), skin (string), face (string), hair (string).
-               Each value is a slug mapping to an SVG layer asset in the frontend.
-               Nullable; null means no avatar set.
-
-avatarSvg      text — cached SVG string of the fully composited avatar.
-               Written at registration and on each avatar update alongside avatarConfig.
-               Null until avatar is first set. Used for all rendering — avoids
-               recompositing layers on every load.
+avatar_config  jsonb, NOT NULL — { head, skin, face, hair }, each a slug from the
+               option catalog. Example:
+               {"head": "head-02", "skin": "skin-04", "face": "face-01", "hair": "hair-07"}
 ```
+
+- Every user has an avatar. `avatar_config` is required at registration and is never null.
+- The `avatar_svg` column is dropped. No composited SVG is cached; the client draws the avatar from the slugs.
+- **Migration (prompt 7):** drop `avatar_svg`; give every existing user whose config is null or contains any slug outside the catalog a random valid config; then make `avatar_config` `NOT NULL`.
 
 ## API Endpoints
 
@@ -34,71 +44,71 @@ Avatar data is read and written via the existing user endpoints. All endpoints r
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/users/me` | Return the authenticated user's profile, including `avatarConfig` |
-| PATCH | `/users/me` | Update the user's profile; pass `avatarConfig` to change avatar |
+| POST | `/auth/register` | `avatarConfig` is required |
+| GET | `/users/me` | Returns the authenticated user's profile, including `avatarConfig` |
+| PATCH | `/users/me` | Pass `avatarConfig` to change the avatar |
 
-**Key request/response shapes**
+- **Register:** `avatarConfig: { head, skin, face, hair }` is required. `avatarSvg` is not part of the API; if a client sends it, it is never stored or returned.
+- **PATCH `/users/me`:** `avatarConfig` may be sent alone or with other mutable fields (`displayName`, password changes). The whole object is replaced; partial configs are rejected. Returns the updated `User` on 200. Idempotent.
+- **Validation (both routes):** `avatarConfig` must be an object with exactly the keys `head`, `skin`, `face` and `hair`, each a string from that key's catalog. A missing key, an extra key, a wrong type or any unknown slug (for example `../x`, `<svg>`, `Round`, or a valid slug under the wrong key such as `head: "hair-01"`) returns `400 VALIDATION_ERROR`.
+- `User` objects (REST and socket payloads) carry `avatarConfig` and no `avatarSvg`.
 
-`GET /users/me` — returns the full `User` object. The `avatarConfig` field contains `{ head, skin, face, hair }`, or `null` if not yet set. The `avatarSvg` field contains the cached SVG string, or `null` if not yet set.
+## Rendering
 
-> **Status:** `PATCH /users/me` does not accept `avatarConfig` or `avatarSvg` yet (400 `VALIDATION_ERROR`); avatar changes ship with the avatar system, after the client-supplied SVG decision in `docs/development/auth-follow-ups.md` §8. Registration uses a placeholder `avatarConfig` until the picker exists.
+Avatars are images only in v1: no frames, badges or overlays.
 
-`PATCH /users/me` — body: `{ avatarConfig: { head, skin, face, hair }, avatarSvg: "<svg>...</svg>" }`. Both fields must be sent together. Returns the updated `User` object on 200. Returns 400 if any required key is missing, a slug is invalid, or avatarSvg is missing when avatarConfig is provided.
+**Assets:** SVG layer files bundled by Vite under `client/src/assets/avatar/` (`head/`, `face/`, `hair/`). They ship with the client build. There is no CDN, no thumbnail rasterisation and no server-side image processing. The same SVGs are used at every size.
 
-The PATCH endpoint is idempotent for avatar updates. `avatarConfig` may be sent alone or alongside other mutable fields (`displayName`, `password`, etc.).
+**Layer stacking:** a fixed-size, square container with `position: relative`. The layers are drawn on top of each other with `position: absolute; inset: 0`, bottom to top:
 
-## Customization & Display
+1. `head` — filled with the `skin` colour (via a CSS custom property, for example `--avatar-skin`)
+2. `face`
+3. `hair` — filled with the fixed hair colour (`--avatar-hair`)
 
-Avatars are images only in v1 — no color pickers, frames, or overlays yet. The display rules below ensure consistency across all surfaces.
-
-**Asset format:** SVG for full-size display; a rasterized WebP thumbnail (48×48 px) for small surfaces where SVG rendering overhead is unnecessary.
+All layer files share one `viewBox` (`0 0 100 100`) so they line up at any size. Real art can replace the placeholder files later without code changes, as long as it keeps the `viewBox` and fills.
 
 **Surfaces and sizes**
 
-| Surface | Asset | Size (CSS) |
-| --- | --- | --- |
-| Avatar gallery / picker | `asset_url` | 96×96 px |
-| Profile drawer | `asset_url` | 128×128 px |
-| Lobby player list | `asset_thumb` | 48×48 px |
-| Scoreboard row | `asset_thumb` | 36×36 px |
-| In-game player label | `asset_thumb` | 32×32 px |
+| Surface | Size (CSS) |
+| --- | --- |
+| Avatar picker preview | 128×128 px |
+| Avatar picker option tiles | 64×64 px (touch target ≥ 44 px) |
+| Profile page | 128×128 px |
+| Room player list | 64×64 px |
+| Lobby presence list | 40×40 px (player chip, `docs/design/ui-foundation.md`) |
+| Game seat | 40×40 px (player chip) |
+| Scoreboard row | 32×32 px |
 
 **Rendering rules**
 
 - Display avatars in a circle crop (`border-radius: 50%`). No square display anywhere in the UI.
-- If an asset fails to load, fall back to the default avatar asset (`slug: "wizard-default"`). Never show a broken image.
-- Avatar images are served from the CDN; do not proxy through the game API server.
-- Use the `asset_thumb` URL for any surface under 64×64 px rendered CSS size to avoid unnecessary bandwidth.
+- **Fallback:** if a config contains a slug the client doesn't know (for example an older client after an option was added), draw the default avatar for that layer: `head-01`, `skin-01`, `face-01`, `hair-01`. Never show a broken image.
 
 ## Frontend Integration
 
-The frontend reads and writes `avatarConfig` via the standard user endpoints. The backend validates the structure; the frontend is responsible for rendering it.
-
 **Data flow**
 
-1. On player login, the `GET /users/me` response includes `avatarConfig` → store as `currentUser.avatarConfig`.
-2. On lobby join, receive the lobby state message which includes each player's avatar data embedded (no second API call needed in-game).
-3. Player builds or changes avatar in the builder UI → browser composites SVG layers live for preview → on confirm, serialize the composed SVG string → call `PATCH /users/me` with `{ avatarConfig: { head, skin, face, hair }, avatarSvg: "<svg>...</svg>" }`, roll back on error.
+1. On login, `GET /users/me` returns `avatarConfig`; it is kept in `AuthContext` with the rest of the current user.
+2. Other players' `avatarConfig` arrives embedded in the existing payloads (`UserSummary` in `lobby_snapshot` / `presence_updated`, `MemberSummary` in `room_snapshot`, `avatar_config` in `user_joined` and in `game_started`'s `PlayerSummary`, the player list in game state). No separate avatar fetch.
+3. The player changes their avatar in the picker → the preview updates live → on confirm, `PATCH /users/me` with `{ avatarConfig }` → on success, update `AuthContext`; on error, keep the previous avatar and show the error.
 
 **Components**
 
-- `<AvatarImage config size />` — renders the cached avatarSvg string with circle crop and fallback. The `config` prop is the raw `avatar_config` value. Used everywhere.
-- `<AvatarPicker />` — layered SVG builder UI; composites parts live for preview; on confirm serializes the SVG and calls `PATCH /users/me` with the new `avatarConfig`.
-- `<AvatarBadge playerId />` — fetches from `avatarStore` by `playerId`; renders `<AvatarImage size="thumb" />`.
+- `<Avatar config size />` — stacks the layers for `config` at `size`, with the circle crop and per-layer fallback. Used on every surface.
+- `<AvatarPicker value onChange />` — one row of option tiles per key, plus a live preview. Used at registration and on `/profile`. At registration it starts from a random valid config.
 
-**State management:** `avatarConfig` lives in the global session store (Zustand / Redux / equivalent). Invalidate and refetch after a successful PATCH.
+State lives in React context (`AuthContext`) only, per `CLAUDE.md`. No separate avatar store.
 
-## Edge Cases & Validation
+## Changing an Avatar
 
-**Missing asset** — If `avatar_config` is null or the referenced asset fails to load, fall back to the default avatar. Never show a broken image; pin the default avatar in the client build config and serve it from the CDN with a long TTL.
+Players set their avatar at registration and may change it at any time on `/profile`.
 
-**Concurrent updates** — Two sessions writing different `avatar_config` values simultaneously: last writer wins (standard column update semantics). No conflict handling needed for v1.
+- **No live broadcast.** Changing an avatar sends no socket event. Other players see the new avatar the next time they load it: the next `lobby_snapshot` or `room_snapshot` they receive, or after reloading the page. The player's own UI updates straight away from the PATCH response.
+- **Games in progress** keep the avatar each player had when the game started, the same as display names.
+- **Concurrent updates:** two sessions writing different configs at the same time → last writer wins. No conflict handling in v1.
 
-**Account ban / config reset** — An admin can set `avatar_config = null` on the users table. The frontend treats a null `avatar_config` as "show default."
+## Edge Cases
 
-**Validation rules summary**
-
-| Field | Rule |
-| --- | --- |
-| `avatarConfig` (PATCH body) | Object with required keys `head`, `skin`, `face`, and `hair` (all strings). Each value must be a valid part slug. Missing or extra keys → 400. |
-| `avatarConfig` (stored) | Nullable; null = no avatar set, render default. |
+- **Null config:** not possible after the prompt 7 migration (`NOT NULL`). There is no admin "reset avatar" action. If one is added, it sets a random valid config, not null.
+- **Bot players** (out of scope) get a valid config when they are built, like any other user.
+- **Unknown slug in a stored row:** prevented by server validation. The client per-layer fallback covers a client build older than the server's catalog.

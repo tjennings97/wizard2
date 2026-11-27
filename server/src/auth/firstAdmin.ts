@@ -1,3 +1,4 @@
+import { randomAvatarConfig, type AvatarConfig } from '../shared/avatar';
 import { generateTemporarySecret, hashSecret } from './credentials';
 import { DISPLAY_NAME_MAX, USERNAME_PATTERN } from './validation';
 
@@ -17,6 +18,8 @@ export interface FirstAdmin {
     recovery_hash: string;
     role: 'admin';
     requires_credential_change: true;
+    /** Random, like a registration's starting avatar; the owner can change it on /profile. */
+    avatar_config: AvatarConfig;
   };
 }
 
@@ -46,6 +49,7 @@ export async function buildFirstAdmin(username: string, displayName: string): Pr
       recovery_hash: recoveryHash,
       role: 'admin',
       requires_credential_change: true,
+      avatar_config: randomAvatarConfig(),
     },
   };
 }
@@ -56,7 +60,7 @@ const sqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 export function firstAdminInsertSql(row: FirstAdmin['row']): string {
   const values = [row.username, row.display_name, row.password_hash, row.recovery_hash].map(sqlString);
   return (
-    'INSERT INTO users (username, display_name, password_hash, recovery_hash, role, requires_credential_change) ' +
-    `VALUES (${values.join(', ')}, 'admin', true);`
+    'INSERT INTO users (username, display_name, password_hash, recovery_hash, role, requires_credential_change, avatar_config) ' +
+    `VALUES (${values.join(', ')}, 'admin', true, ${sqlString(JSON.stringify(row.avatar_config))}::jsonb);`
   );
 }

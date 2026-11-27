@@ -7,6 +7,10 @@ import { db } from '../db/knex';
 import { rotateSession, SESSION_COOKIE } from '../auth/sessions';
 import { SESSION_MAX_LIFETIME_MS } from '../auth/sessionPolicy';
 import { buildServer, type BuildServerOptions } from '../server';
+import type { AvatarConfig } from '../shared/avatar';
+
+/** The avatar every user from createUser gets. */
+export const TEST_AVATAR: AvatarConfig = { head: 'head-02', skin: 'skin-04', face: 'face-01', hair: 'hair-07' };
 
 /** Empties every table except Knex's migration bookkeeping. */
 export async function resetDb(): Promise<void> {
@@ -38,7 +42,7 @@ export async function createUser(
 ): Promise<TestUser> {
   const username = `${displayName.toLowerCase().replace(/[^a-z0-9]/g, '')}_${randomUUID().slice(0, 8)}`;
   const [{ id }] = await db('users')
-    .insert({ username, display_name: displayName, password_hash: 'x', recovery_hash: 'x' })
+    .insert({ username, display_name: displayName, password_hash: 'x', recovery_hash: 'x', avatar_config: TEST_AVATAR })
     .returning('id');
   const session = await db.transaction((trx) => rotateSession(trx, id));
   if (inReauthWindow) {

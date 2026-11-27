@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { PLACEHOLDER_AVATAR } from '../api/avatar';
+import { randomAvatarConfig } from '../../../server/src/shared/avatar';
+import { AvatarPicker } from '../components/AvatarPicker';
 import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
 import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
@@ -9,8 +10,7 @@ const USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;
 
 /**
  * Invite-only registration (POST /auth/register). Signs the user in on success.
- * The avatar step comes with the avatar system (remaining-work prompt 7); until then every
- * account gets a placeholder avatarConfig and no avatarSvg.
+ * The avatar picker starts from a random config (docs/architecture/avatar-system.md).
  */
 export function RegisterPage() {
   const { register } = useAuth();
@@ -21,6 +21,7 @@ export function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
+  const [avatar, setAvatar] = useState(() => randomAvatarConfig());
 
   const { busy, error, fields, onSubmit } = useSubmit(
     () =>
@@ -30,8 +31,7 @@ export function RegisterPage() {
         displayName: displayName.trim(),
         password,
         recoveryPassphrase: passphrase,
-        avatarConfig: PLACEHOLDER_AVATAR,
-        avatarSvg: null,
+        avatarConfig: avatar,
       }),
     () =>
       errorsOf({
@@ -83,6 +83,11 @@ export function RegisterPage() {
           maxLength={64}
           required
         />
+        <fieldset className="plain">
+          <legend>Avatar</legend>
+          <p className="hint">What other players see next to your name. You can change it later on your profile.</p>
+          <AvatarPicker value={avatar} onChange={setAvatar} disabled={busy} error={fields.avatarConfig} />
+        </fieldset>
         <Field
           label="Password"
           type="password"

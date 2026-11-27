@@ -1,7 +1,8 @@
 import { Card, Deck, Game, Player } from '../engine';
 import { bidRequestPayload, bidsSoFar, gameStartedPayload, handDealtPayload, invalidBidPayload, roundStartedPayload } from './payloads';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
-const player = (id: string) => new Player({ id, username: id, displayName: id.toUpperCase(), avatarConfig: null, sessionId: null });
+const player = (id: string) => new Player({ id, username: id, displayName: id.toUpperCase(), avatarConfig: DEFAULT_AVATAR, sessionId: null });
 
 function game(bidRule: 'open' | 'uneven' = 'open'): Game {
   const top = [Card.suited('hearts', 5), Card.suited('spades', 9), Card.wizard(), Card.suited('clubs', 12)];
@@ -23,9 +24,9 @@ describe('game payloads', () => {
       round_count: 3,
       bid_rule: 'open',
       players: [
-        { user_id: 'a', display_name: 'A', seat_index: 0 },
-        { user_id: 'b', display_name: 'B', seat_index: 1 },
-        { user_id: 'c', display_name: 'C', seat_index: 2 },
+        { user_id: 'a', display_name: 'A', avatar_config: DEFAULT_AVATAR, seat_index: 0 },
+        { user_id: 'b', display_name: 'B', avatar_config: DEFAULT_AVATAR, seat_index: 1 },
+        { user_id: 'c', display_name: 'C', avatar_config: DEFAULT_AVATAR, seat_index: 2 },
       ],
     });
   });

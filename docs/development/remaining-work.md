@@ -267,36 +267,49 @@ the full invite → register flow.
 
 ## 7. Avatar system
 
-**Depends on:** 5. **Decided:** auth-follow-ups §8, "client-supplied avatar SVG": the owner chose the recommended option (2026-11-26), as the prompt below assumes.
+**Depends on:** 5. **Decided:** auth-follow-ups §8, "client-supplied avatar SVG": the owner chose the recommended option (2026-11-26), as the prompt below assumes. The option catalog, skin and hair fills, the mandatory config, sizes and the "no live broadcast" rule were also decided on 2026-11-26 and are written into avatar-system.md.
 
 ```
 Follow the preamble in docs/development/remaining-work.md.
 
-Implement the avatar system per docs/architecture/avatar-system.md: four
-layers (head, skin, face, hair), each value a slug that maps to a frontend
-SVG layer asset, stored in users.avatar_config.
+Implement the avatar system per docs/architecture/avatar-system.md, which
+was updated with the owner's decisions and is the spec for this work: four
+keys (head, skin, face, hair), each a slug from the option catalog there,
+stored in users.avatar_config. Skin is a fill colour on the head layer, and
+hair colour is fixed in v1.
 
 Decision (owner chose the recommended option in auth-follow-ups §8): the
 server no longer accepts or stores client SVG.
-- New migration dropping users.avatar_svg; stop accepting avatarSvg on
-  register and PATCH /users/me.
-- Validate every slug against the app's option list (shared from one module
-  so client and server agree); reject anything else with 400
-  VALIDATION_ERROR.
-- Update avatar-system.md, data-model.md, openapi-spec.md, prd.md and
-  system-architecture.md, which all describe the cached SVG.
+- New migration: drop users.avatar_svg; give every user whose avatar_config
+  is null or holds a slug outside the catalog a random valid config; then
+  make avatar_config NOT NULL.
+- Stop accepting avatarSvg on register and PATCH /users/me. avatarConfig is
+  required at registration and accepted on PATCH /users/me.
+- Validate every slug against the catalog (one shared module that client
+  and server both import); reject anything else with 400 VALIDATION_ERROR.
+- Remove PLACEHOLDER_AVATAR (client/src/api/avatar.ts) and every avatarSvg
+  reference (for example the AdminUser / AdminUserDto omits).
+- Update data-model.md, openapi-spec.md, prd.md and system-architecture.md,
+  which still describe the cached SVG and a nullable avatar_config.
 
 Build:
-1. Placeholder SVG layer files for each option under client/src/assets/
-   (option counts per avatar-system.md).
-2. Avatar component that stacks the four layers with position: absolute in a
-   fixed-size container, with a fallback for a null config.
-3. Avatar picker at registration and on /profile.
+1. Placeholder SVG layer files for head, face and hair under
+   client/src/assets/avatar/ (counts, viewBox and fills per avatar-system.md).
+2. Avatar component that stacks the layers with position: absolute in a
+   fixed-size circle, with the per-layer fallback for unknown slugs.
+3. Avatar picker at registration (starting from a random config) and on
+   /profile.
 4. Show avatars in the lobby presence list, room player list, game seats and
-   scoreboard.
+   scoreboard, at the sizes in avatar-system.md.
+
+An avatar change is not broadcast; others see it on their next snapshot or
+reload (avatar-system.md, "Changing an Avatar"). Don't add socket events.
 
 Tests: pytest from §8 "Done when" (markup in avatarSvg is never stored or
-returned; ../x, <svg>, Round are rejected).
+returned; ../x, <svg>, Round are rejected), plus: a missing avatarConfig at
+registration is rejected; a valid slug under the wrong key is rejected;
+PATCH /users/me round-trips a valid config. Jest for the migration backfill
+if practical.
 ```
 
 ## 8. Bug reporting

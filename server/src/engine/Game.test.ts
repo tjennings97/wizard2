@@ -5,6 +5,7 @@ import { EngineError, NotImplementedError } from './errors';
 import { Game, GameOptions } from './Game';
 import { Player } from './Player';
 import { UserProps } from './User';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
 const S = Card.suited;
 const W = Card.wizard;
@@ -14,7 +15,7 @@ const props = (id: string): UserProps => ({
   id,
   username: id,
   displayName: id.toUpperCase(),
-  avatarConfig: null,
+  avatarConfig: DEFAULT_AVATAR,
   sessionId: null,
 });
 const players = (...ids: string[]) => ids.map((id) => new Player(props(id)));
@@ -436,7 +437,7 @@ describe('Game player drops', () => {
     const { d: _d, ...remaining } = scoresBefore;
     expect(g.scores).toEqual(remaining);
     expect(g.toGameState().droppedPlayers).toEqual([
-      { userId: 'd', username: 'd', displayName: 'D', avatarConfig: null, isBot: false, finalScore: scoresBefore.d },
+      { userId: 'd', username: 'd', displayName: 'D', avatarConfig: DEFAULT_AVATAR, isBot: false, finalScore: scoresBefore.d },
     ]);
   });
 

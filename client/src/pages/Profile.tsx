@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
+import type { AvatarConfig } from '../api/types';
+import { AVATAR_SIZE, Avatar } from '../components/Avatar';
+import { AvatarPicker } from '../components/AvatarPicker';
 import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
 import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
 
 /**
- * /profile: display name, password and recovery passphrase (PATCH /users/me). Changing a secret
- * signs out every other device; this one keeps going on a new session.
- * The avatar picker arrives with the avatar system (remaining-work prompt 7).
+ * /profile: avatar, display name, password and recovery passphrase (PATCH /users/me). Changing a
+ * secret signs out every other device; this one keeps going on a new session.
  */
 export function ProfilePage() {
   const { user } = useAuth();
@@ -24,6 +26,7 @@ export function ProfilePage() {
         <dt>Username</dt>
         <dd>{user.username}</dd>
       </dl>
+      <AvatarForm current={user.avatarConfig} />
       <DisplayNameForm current={user.displayName} />
       <PasswordForm />
       <PassphraseForm />
@@ -45,6 +48,77 @@ function FormError({ error }: { error: string | null }) {
       {error}
     </p>
   ) : null;
+}
+
+const sameAvatar = (a: AvatarConfig, b: AvatarConfig) =>
+  a.head === b.head && a.skin === b.skin && a.face === b.face && a.hair === b.hair;
+
+/**
+ * The current avatar, and the picker behind "Change avatar". Saving sends the whole config; the
+ * new avatar shows here straight away, and to others on their next snapshot (no broadcast).
+ */
+function AvatarForm({ current }: { current: AvatarConfig }) {
+  const [editing, setEditing] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  return (
+    <section>
+      <h2>Avatar</h2>
+      {editing ? (
+        <AvatarEditor
+          current={current}
+          onCancel={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            setSaved('Avatar saved. Other players see it the next time their lobby or room refreshes.');
+          }}
+        />
+      ) : (
+        <div className="stack">
+          <Avatar config={current} size={AVATAR_SIZE.profile} label="Your avatar" />
+          <Saved text={saved} />
+          <button
+            type="button"
+            onClick={() => {
+              setSaved(null);
+              setEditing(true);
+            }}
+          >
+            Change avatar
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Mounted afresh each time the picker opens, so a draft or an error from an earlier attempt
+ * never carries over. If saving fails, the saved avatar stays as it was and the draft is kept
+ * so the player can retry.
+ */
+function AvatarEditor({ current, onCancel, onSaved }: { current: AvatarConfig; onCancel(): void; onSaved(): void }) {
+  const { updateProfile } = useAuth();
+  const [draft, setDraft] = useState<AvatarConfig>(() => ({ ...current }));
+  const { busy, error, fields, onSubmit } = useSubmit(async () => {
+    await updateProfile({ avatarConfig: draft });
+    onSaved();
+  });
+
+  return (
+    <form onSubmit={onSubmit} className="stack" noValidate>
+      <AvatarPicker value={draft} onChange={setDraft} disabled={busy} error={fields.avatarConfig} />
+      <FormError error={error} />
+      <div className="actions">
+        <button type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button type="submit" className="primary" disabled={busy || sameAvatar(draft, current)}>
+          {busy ? 'Saving…' : 'Save avatar'}
+        </button>
+      </div>
+    </form>
+  );
 }
 
 function DisplayNameForm({ current }: { current: string }) {

@@ -36,7 +36,7 @@ export interface PlayerState {
   userId: string;
   username: string;
   displayName: string;
-  avatarConfig: AvatarConfig | null;
+  avatarConfig: AvatarConfig;
   /** 1-based seat among active players. */
   seatOrder: number;
   isBot: boolean;
@@ -75,7 +75,7 @@ export interface DroppedPlayerState {
   userId: string;
   username: string;
   displayName: string;
-  avatarConfig: AvatarConfig | null;
+  avatarConfig: AvatarConfig;
   isBot: boolean;
   /** Cumulative score when they left. */
   finalScore: number;

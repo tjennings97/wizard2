@@ -13,7 +13,7 @@ import {
 } from '../auth/credentials';
 import { requireAuth } from '../auth/middleware';
 import { invalidateUserSessions } from '../auth/sessions';
-import { toPublicUser, type PublicUser, type UserRow } from '../auth/users';
+import { toPublicUser, type UserRow } from '../auth/users';
 
 /**
  * Admin panel routes (docs/api/openapi-spec.md, Admin Endpoints): invites, user roles and
@@ -69,15 +69,6 @@ function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-/**
- * A user row in the admin list: the `User` fields minus `avatarSvg`, which the admin table never
- * shows and which would make a 200-user page needlessly large.
- */
-type AdminUserDto = Omit<PublicUser, 'avatarSvg'>;
-function toAdminUserDto(row: UserRow): AdminUserDto {
-  const { avatarSvg: _avatarSvg, ...rest } = toPublicUser(row);
-  return rest;
-}
 
 /**
  * Inside a transaction: locks the acting admin's row and the target's (in id order, so two
@@ -232,7 +223,7 @@ export function createAdminRouter(): Router {
         .orderBy('id', 'asc')
         .limit(limit)
         .offset((page - 1) * limit);
-      res.status(200).json({ data: rows.map(toAdminUserDto), total: Number(count), page, limit });
+      res.status(200).json({ data: rows.map(toPublicUser), total: Number(count), page, limit });
     }),
   );
 

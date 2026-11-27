@@ -2,11 +2,12 @@
  * Socket payloads for game events, built from engine results. Pure: no I/O.
  * Names and fields follow docs/api/websocket-events.md (snake_case on the wire).
  */
-import type { CardData, Game, GameResult, RoundCompleted, RoundStarted, Suit, Trick, TrumpSource } from '../engine';
+import type { AvatarConfig, CardData, Game, GameResult, RoundCompleted, RoundStarted, Suit, Trick, TrumpSource } from '../engine';
 
 export interface PlayerSummary {
   user_id: string;
   display_name: string;
+  avatar_config: AvatarConfig;
   /** 0-based seat, as in user_joined. Seat 0 deals round 1. */
   seat_index: number;
 }
@@ -35,7 +36,12 @@ export interface RoundScoreEntry extends ScoreEntry {
 }
 
 export function playerSummaries(game: Game): PlayerSummary[] {
-  return game.activePlayers.map((p, i) => ({ user_id: p.id, display_name: p.displayName, seat_index: i }));
+  return game.activePlayers.map((p, i) => ({
+    user_id: p.id,
+    display_name: p.displayName,
+    avatar_config: { ...p.avatarConfig },
+    seat_index: i,
+  }));
 }
 
 export function gameStartingPayload(game: Game) {

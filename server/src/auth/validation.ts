@@ -1,5 +1,5 @@
 import { ApiError } from '../http/errors';
-import type { AvatarConfig } from './users';
+import { avatarConfigError, type AvatarConfig } from '../shared/avatar';
 
 // Limits from the auth request schemas in docs/api/openapi-spec.md.
 export const USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;
@@ -8,8 +8,6 @@ export const SECRET_MIN = 8;
 // bcrypt only uses the first 72 bytes of its input. Rejecting longer secrets avoids silently
 // ignoring the tail (and stops very large bodies from reaching bcrypt).
 export const SECRET_MAX_BYTES = 72;
-const AVATAR_KEYS = ['head', 'skin', 'face', 'hair'] as const;
-const AVATAR_SLUG_MAX = 64;
 
 type FieldErrors = Record<string, string>;
 
@@ -65,38 +63,16 @@ export class BodyValidator {
     return value;
   }
 
+  /** A whole avatarConfig: exactly the four keys, each a slug from the shared catalog. */
   avatarConfig(field = 'avatarConfig'): AvatarConfig {
     const value = this.body[field];
-    const fallback: AvatarConfig = { head: '', skin: '', face: '', hair: '' };
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      this.errors[field] = 'Must be an object with head, skin, face and hair.';
-      return fallback;
+    const error = avatarConfigError(value);
+    if (error !== null) {
+      this.errors[field] = error;
+      return { head: '', skin: '', face: '', hair: '' };
     }
-    const obj = value as Record<string, unknown>;
-    const extra = Object.keys(obj).filter((k) => !(AVATAR_KEYS as readonly string[]).includes(k));
-    const bad = AVATAR_KEYS.filter((k) => {
-      const v = obj[k];
-      return typeof v !== 'string' || v.length === 0 || v.length > AVATAR_SLUG_MAX;
-    });
-    if (extra.length > 0 || bad.length > 0) {
-      this.errors[field] = 'Must be an object with exactly head, skin, face and hair (non-empty strings).';
-      return fallback;
-    }
-    return { head: obj.head as string, skin: obj.skin as string, face: obj.face as string, hair: obj.hair as string };
-  }
-
-  /** Required key whose value is a string or null. */
-  nullableString(field: string): string | null {
-    if (!(field in this.body)) {
-      this.errors[field] = 'Required (may be null).';
-      return null;
-    }
-    const value = this.body[field];
-    if (value !== null && typeof value !== 'string') {
-      this.errors[field] = 'Must be a string or null.';
-      return null;
-    }
-    return value;
+    const obj = value as AvatarConfig;
+    return { head: obj.head, skin: obj.skin, face: obj.face, hair: obj.hair };
   }
 
   done(): void {

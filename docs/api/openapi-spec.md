@@ -45,20 +45,30 @@ components:
 
     AvatarConfig:
       type: object
+      description: >
+        A player's avatar: one slug per key from the option catalog in
+        docs/architecture/avatar-system.md (shared code: server/src/shared/avatar.ts). Exactly these
+        four keys; a missing or extra key, a non-string, an unknown slug, or a valid slug under the
+        wrong key (head: hair-01) is rejected with 400 VALIDATION_ERROR.
       required: [head, skin, face, hair]
+      additionalProperties: false
       properties:
         head:
           type: string
-          example: round
+          enum: [head-01, head-02, head-03, head-04]
+          example: head-02
         skin:
           type: string
-          example: medium
+          enum: [skin-01, skin-02, skin-03, skin-04, skin-05, skin-06]
+          example: skin-04
         face:
           type: string
-          example: smile-01
+          enum: [face-01, face-02, face-03, face-04, face-05, face-06]
+          example: face-01
         hair:
           type: string
-          example: curly-short-brown
+          enum: [hair-01, hair-02, hair-03, hair-04, hair-05, hair-06, hair-07, hair-08]
+          example: hair-07
 
     User:
       type: object
@@ -77,10 +87,6 @@ components:
           enum: [player, admin]
         avatarConfig:
           $ref: '#/components/schemas/AvatarConfig'
-        avatarSvg:
-          type: string
-          nullable: true
-          description: Cached SVG string of the fully composited avatar. Null if not yet set.
         createdAt:
           type: string
           format: date-time
@@ -274,7 +280,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [inviteCode, username, displayName, password, recoveryPassphrase, avatarConfig, avatarSvg]
+              required: [inviteCode, username, displayName, password, recoveryPassphrase, avatarConfig]
               properties:
                 inviteCode:
                   type: string
@@ -305,12 +311,9 @@ paths:
                   description: Used to reset password if forgotten. Stored hashed. Must differ from password.
                 avatarConfig:
                   $ref: '#/components/schemas/AvatarConfig'
-                avatarSvg:
-                  type: string
-                  nullable: true
-                  description: >
-                    Serialized SVG string of the fully composited avatar, produced by the
-                    builder UI. The key is required; the value may be null if not yet set.
+              description: >
+                The server never accepts client SVG: an avatarSvg field, like any other unknown
+                field, is ignored and never stored or returned.
       responses:
         '201':
           description: Account created successfully.
@@ -509,8 +512,10 @@ paths:
         since the admin reset, in one request or two; a user who changes only one stays flagged.
 
 
-        Avatar fields (avatarConfig, avatarSvg) are not accepted yet and return 400; they arrive
-        with the avatar system (docs/architecture/avatar-system.md).
+        avatarConfig replaces the whole avatar (partial configs are rejected). The change is not
+        broadcast: other players see it in their next lobby or room snapshot
+        (docs/architecture/avatar-system.md, "Changing an Avatar"). avatarSvg is not part of the
+        API; like any other unknown field it is ignored, and on its own it is "nothing to update".
       tags: [Users]
       security:
         - sessionCookie: []
@@ -526,6 +531,8 @@ paths:
                   minLength: 1
                   maxLength: 64
                   description: Trimmed before it is stored.
+                avatarConfig:
+                  $ref: '#/components/schemas/AvatarConfig'
                 password:
                   type: string
                   minLength: 8
@@ -552,7 +559,7 @@ paths:
         '400':
           description: >
             VALIDATION_ERROR: a field is invalid, nothing to update, currentPassword missing when
-            changing a secret, a new secret equal to the current one, or an avatar field sent.
+            changing a secret, a new secret equal to the current one, or an invalid avatarConfig.
           content:
             application/json:
               schema:
@@ -1434,8 +1441,7 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
     get:
       summary: List all registered users
       description: >
-        Oldest account first. Each item is the public `User` without `avatarSvg`, which the
-        admin table does not show and which would make a 200-user page needlessly large.
+        Oldest account first. Each item is the public `User`.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1466,7 +1472,6 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                 properties:
                   data:
                     type: array
-                    description: User objects without the avatarSvg property.
                     items:
                       $ref: '#/components/schemas/User'
                   total:

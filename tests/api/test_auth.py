@@ -286,7 +286,7 @@ class TestRegister:
         assert user["displayName"] == body["displayName"]
         assert user["role"] == "player"
         assert user["avatarConfig"] == body["avatarConfig"]
-        assert user["avatarSvg"] == body["avatarSvg"]
+        assert "avatarSvg" not in user
         assert user["requiresCredentialChange"] is False
         assert "password_hash" not in user and "passwordHash" not in user
         assert "recovery_hash" not in user and "recoveryHash" not in user
@@ -314,10 +314,6 @@ class TestRegister:
         # The issued cookie is a working session.
         assert len(active_sessions(db, user["id"])) == 1
         assert api.post("/auth/logout").status_code == 204
-
-    def test_avatar_svg_may_be_null(self, api, register):
-        user = register(api, avatarSvg=None)["user"]
-        assert user["avatarSvg"] is None
 
     @pytest.mark.parametrize(
         "invite_kwargs",
@@ -386,8 +382,9 @@ class TestRegister:
         r = api.post("/auth/register", json={})
         assert_error(r, 400, "VALIDATION_ERROR")
         fields = r.json()["details"]["fields"]
-        for f in ["inviteCode", "username", "displayName", "password", "recoveryPassphrase", "avatarConfig", "avatarSvg"]:
+        for f in ["inviteCode", "username", "displayName", "password", "recoveryPassphrase", "avatarConfig"]:
             assert f in fields
+        assert "avatarSvg" not in fields
 
     def test_rate_limited_after_5_per_hour(self, api):
         for _ in range(5):

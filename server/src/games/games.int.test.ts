@@ -2,7 +2,7 @@ import request from 'supertest';
 import { db } from '../db/knex';
 import { Card, Deck, Game, type DeckFactory } from '../engine';
 import * as socketAuth from '../socket/auth';
-import { connect, connectReady, createUser, resetDb, sleep, startServer, type TestClient, type TestUser } from '../test/helpers';
+import { connect, connectReady, createUser, resetDb, sleep, startServer, TEST_AVATAR, type TestClient, type TestUser } from '../test/helpers';
 
 /**
  * The next test's decks, by round number. Unset rounds get a fixed deck whose flip is a suited
@@ -137,7 +137,7 @@ describe('starting a game', () => {
       room_id: t.roomId,
       round_count: 20,
       bid_rule: 'open',
-      players: t.players.map((p, i) => ({ user_id: p.id, display_name: p.displayName, seat_index: i })),
+      players: t.players.map((p, i) => ({ user_id: p.id, display_name: p.displayName, avatar_config: TEST_AVATAR, seat_index: i })),
     });
     expect((await p2.waitFor('round_started')).payload).toEqual({
       round_number: 1,
