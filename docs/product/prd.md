@@ -106,6 +106,11 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 - Admin cannot view passwords or passphrases (all hashed)
   - When resetting credentials, the server generates a temporary password and recovery passphrase, returned once in the response and never stored in plaintext; the user's existing sessions end. The user's account is flagged `requires_credential_change = true`. On next login the client forces a change-password flow before any other action is permitted. The flag clears once the user updates both password and recovery passphrase.
 
+**Bug reports:**
+
+- Admin can read submitted bug reports in the admin panel, newest first, filtered by severity
+- Each report shows its captured context and trace ID, for finding the matching server logs
+
 ## Lobby
 
 The lobby is the default landing page for authenticated users. It displays all active rooms and allows users to open, join, or spectate games.

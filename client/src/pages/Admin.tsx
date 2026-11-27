@@ -2,11 +2,15 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import {
   createInvite,
+  listBugReports,
   listInvites,
   listUsers,
   resetCredentials,
   revokeInvite,
   setUserRole,
+  type AdminBugReport,
+  type BugReportPage,
+  type BugSeverity,
   type Invite,
   type AdminUser,
   type UserPage,
@@ -17,7 +21,8 @@ import { useAuth } from '../context/AuthContext';
 import { useAction } from '../hooks/useAction';
 
 /**
- * /admin: invites, user roles and credential resets (docs/product/ui-ux-flows.md, Flow 10).
+ * /admin: invites, user roles, credential resets (docs/product/ui-ux-flows.md, Flow 10) and the
+ * bug reports users have sent.
  * The server checks the admin role on every request; this page is only linked for admins.
  * Invite codes and temporary credentials are shown once, from the create/reset response.
  */
@@ -34,6 +39,7 @@ export function AdminPage() {
       </header>
       <InvitesSection />
       <UsersSection me={user} />
+      <BugReportsSection />
     </main>
   );
 }
@@ -332,5 +338,125 @@ function UsersSection({ me }: { me: User }) {
         </>
       )}
     </section>
+  );
+}
+
+const BUG_PAGE_SIZE = 20;
+
+/** Bug reports, newest first. Each opens to show the captured context for debugging. */
+function BugReportsSection() {
+  const [page, setPage] = useState(1);
+  const [severity, setSeverity] = useState<BugSeverity | ''>('');
+  const [reports, setReports] = useState<BugReportPage | null>(null);
+  const load = useAction();
+
+  useEffect(() => {
+    void load.run(async () => setReports(await listBugReports(page, BUG_PAGE_SIZE, severity || undefined)));
+  }, [load.run, page, severity]);
+
+  const pages = reports ? Math.max(1, Math.ceil(reports.total / reports.limit)) : 1;
+
+  return (
+    <section>
+      <h2>Bug reports</h2>
+      <label>
+        Severity
+        <select
+          value={severity}
+          onChange={(e) => {
+            setSeverity(e.target.value as BugSeverity | '');
+            setPage(1);
+          }}
+        >
+          <option value="">All</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+      <ErrorText error={load.error} />
+      {reports === null ? (
+        <p className="muted">Loading bug reports…</p>
+      ) : (
+        <>
+          <p className="muted">
+            {reports.total} report{reports.total === 1 ? '' : 's'}
+          </p>
+          <ul className="bug-list">
+            {reports.data.map((r) => (
+              <BugReportItem key={r.id} report={r} />
+            ))}
+          </ul>
+          {pages > 1 && (
+            <nav className="actions spaced" aria-label="Bug report pages">
+              <button type="button" disabled={page <= 1 || load.busy} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </button>
+              <span className="muted pager">
+                Page {page} of {pages}
+              </span>
+              <button type="button" disabled={page >= pages || load.busy} onClick={() => setPage((p) => p + 1)}>
+                Next
+              </button>
+            </nav>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+
+function BugReportItem({ report: r }: { report: AdminBugReport }) {
+  const ctx = r.context;
+  const round = typeof ctx.round_number === 'number' ? ctx.round_number : null;
+  const trick = typeof ctx.trick_number === 'number' ? ctx.trick_number : null;
+  const who = r.reporter ? `${r.reporter.displayName ?? '?'} (${r.reporter.username ?? '?'})` : 'Deleted user';
+  return (
+    <li className="card bug-item">
+      <div className="card-head">
+        <span className={`badge sev-${r.severity ?? 'none'}`}>{r.severity ?? 'no severity'}</span>
+        <span className="muted">{formatDate(r.createdAt)}</span>
+      </div>
+      <p className="bug-desc">{r.description}</p>
+      <dl className="facts">
+        <dt>From</dt>
+        <dd>{who}</dd>
+        <dt>Page</dt>
+        <dd>{str(ctx.page) ?? '—'}</dd>
+        {round !== null && (
+          <>
+            <dt>Round</dt>
+            <dd>
+              {round}
+              {trick !== null && `, trick ${trick}`}
+            </dd>
+          </>
+        )}
+      </dl>
+      <CopyValue label="Trace ID" value={r.traceId} />
+      <details>
+        <summary>Full context</summary>
+        <dl className="facts">
+          <dt>URL</dt>
+          <dd>{str(ctx.url) ?? '—'}</dd>
+          <dt>Room</dt>
+          <dd>{r.roomId ?? '—'}</dd>
+          <dt>Game</dt>
+          <dd>{r.gameId ?? '—'}</dd>
+          <dt>Browser</dt>
+          <dd>{str(ctx.user_agent) ?? '—'}</dd>
+          <dt>Sent at</dt>
+          <dd>{formatDate(str(ctx.client_timestamp))} (device clock)</dd>
+        </dl>
+        {ctx.game_state_summary != null && (
+          <>
+            <h3 className="hint">Reporter&apos;s game view</h3>
+            <pre className="json">{JSON.stringify(ctx.game_state_summary, null, 2)}</pre>
+          </>
+        )}
+      </details>
+    </li>
   );
 }
