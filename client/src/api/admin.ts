@@ -63,7 +63,7 @@ export interface AdminBugReport {
   createdAt: string;
   severity: BugSeverity | null;
   description: string;
-  /** Null only if the reporting account no longer exists. */
+  /** Null when the report has no user_id (not expected: the submit route always sets it). */
   reporter: { id: string; username: string | null; displayName: string | null } | null;
   roomId: string | null;
   gameId: string | null;

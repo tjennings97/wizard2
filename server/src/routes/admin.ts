@@ -148,6 +148,23 @@ function queryInt(raw: unknown, field: string, min: number, max: number, fields:
   return n;
 }
 
+/**
+ * One page of a list and its total, read in a single repeatable-read transaction so the total
+ * always matches the rows (a row inserted between two separate queries would skew paging).
+ */
+async function readPage<T>(
+  base: (trx: Knex.Transaction) => Knex.QueryBuilder,
+  rows: (q: Knex.QueryBuilder) => Knex.QueryBuilder,
+): Promise<{ total: number; rows: T[] }> {
+  return db.transaction(
+    async (trx) => {
+      const [{ count }] = await base(trx).count<{ count: string }[]>({ count: '*' });
+      return { total: Number(count), rows: (await rows(base(trx))) as T[] };
+    },
+    { isolationLevel: 'repeatable read' },
+  );
+}
+
 /** Responses that carry a one-time secret must not be cached anywhere. */
 function noStore(res: Response): void {
   res.set('Cache-Control', 'no-store');
@@ -245,19 +262,21 @@ export function createAdminRouter(): Router {
       const limit = queryInt(req.query.limit, 'limit', 1, USERS_PAGE_MAX, fields) ?? USERS_PAGE_DEFAULT;
       if (Object.keys(fields).length > 0) throw validationError(fields);
 
-      const base = () => {
-        const q = db('users');
-        if (role !== undefined) q.where({ role: role as Role });
-        return q;
-      };
-      const [{ count }] = await base().count<{ count: string }[]>({ count: '*' });
-      const rows: UserRow[] = await base()
-        .select('*')
-        .orderBy('created_at', 'asc')
-        .orderBy('id', 'asc')
-        .limit(limit)
-        .offset((page - 1) * limit);
-      res.status(200).json({ data: rows.map(toPublicUser), total: Number(count), page, limit });
+      const { total, rows } = await readPage<UserRow>(
+        (trx) => {
+          const q = trx('users');
+          if (role !== undefined) q.where({ role: role as Role });
+          return q;
+        },
+        (q) =>
+          q
+            .select('*')
+            .orderBy('created_at', 'asc')
+            .orderBy('id', 'asc')
+            .limit(limit)
+            .offset((page - 1) * limit),
+      );
+      res.status(200).json({ data: rows.map(toPublicUser), total, page, limit });
     }),
   );
 
@@ -276,32 +295,34 @@ export function createAdminRouter(): Router {
       const limit = queryInt(req.query.limit, 'limit', 1, BUG_REPORTS_PAGE_MAX, fields) ?? BUG_REPORTS_PAGE_DEFAULT;
       if (Object.keys(fields).length > 0) throw validationError(fields);
 
-      const base = () => {
-        const q = db('bug_reports as b');
-        if (severity !== undefined) q.where('b.severity', severity as string);
-        return q;
-      };
-      const [{ count }] = await base().count<{ count: string }[]>({ count: '*' });
-      const rows: BugReportRow[] = await base()
-        .leftJoin('users as u', 'u.id', 'b.user_id')
-        .select(
-          'b.id',
-          'b.created_at',
-          'b.severity',
-          'b.description',
-          'b.user_id',
-          'u.username',
-          'u.display_name',
-          'b.room_id',
-          'b.game_id',
-          'b.trace_id',
-          'b.context',
-        )
-        .orderBy('b.created_at', 'desc')
-        .orderBy('b.id', 'desc')
-        .limit(limit)
-        .offset((page - 1) * limit);
-      res.status(200).json({ data: rows.map(toBugReportDto), total: Number(count), page, limit });
+      const { total, rows } = await readPage<BugReportRow>(
+        (trx) => {
+          const q = trx('bug_reports as b');
+          if (severity !== undefined) q.where('b.severity', severity as string);
+          return q;
+        },
+        (q) =>
+          q
+            .leftJoin('users as u', 'u.id', 'b.user_id')
+            .select(
+              'b.id',
+              'b.created_at',
+              'b.severity',
+              'b.description',
+              'b.user_id',
+              'u.username',
+              'u.display_name',
+              'b.room_id',
+              'b.game_id',
+              'b.trace_id',
+              'b.context',
+            )
+            .orderBy('b.created_at', 'desc')
+            .orderBy('b.id', 'desc')
+            .limit(limit)
+            .offset((page - 1) * limit),
+      );
+      res.status(200).json({ data: rows.map(toBugReportDto), total, page, limit });
     }),
   );
 

@@ -44,6 +44,44 @@ export function AdminPage() {
   );
 }
 
+/**
+ * Loads `fetch` whenever `deps` change (or on retry). A response that arrives after a newer load
+ * started is dropped, error included, so the list always matches the current page and filter.
+ */
+function useLatestLoad<T>(fetch: () => Promise<T>, deps: unknown[]) {
+  const [data, setData] = useState<T | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const load = useAction();
+  useEffect(() => {
+    let current = true;
+    void load.run(async () => {
+      try {
+        const result = await fetch();
+        if (current) setData(result);
+      } catch (err) {
+        if (current) throw err;
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [load.run, attempt, ...deps]);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { data, setData, busy: load.busy, error: load.error, retry };
+}
+
+/** Shown until the first load succeeds: the loading text, or the error with a Retry button. */
+function FirstLoad({ what, error, busy, retry }: { what: string; error: string | null; busy: boolean; retry(): void }) {
+  if (!error) return <p className="muted">Loading {what}…</p>;
+  return (
+    <p className="actions">
+      <button type="button" onClick={retry} disabled={busy}>
+        Retry
+      </button>
+    </p>
+  );
+}
+
 const formatDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 
@@ -209,15 +247,10 @@ const PAGE_SIZE = 50;
 
 function UsersSection({ me }: { me: User }) {
   const [page, setPage] = useState(1);
-  const [users, setUsers] = useState<UserPage | null>(null);
+  const { data: users, setData: setUsers, ...load } = useLatestLoad<UserPage>(() => listUsers(page, PAGE_SIZE), [page]);
   const [filter, setFilter] = useState('');
   const [reset, setReset] = useState<{ user: AdminUser; password: string; passphrase: string } | null>(null);
-  const load = useAction();
   const act = useAction();
-
-  useEffect(() => {
-    void load.run(async () => setUsers(await listUsers(page, PAGE_SIZE)));
-  }, [load.run, page]);
 
   const replace = (updated: AdminUser) =>
     setUsers((p) => (p ? { ...p, data: p.data.map((u) => (u.id === updated.id ? updated : u)) } : p));
@@ -268,7 +301,7 @@ function UsersSection({ me }: { me: User }) {
       <Field label="Find a user" value={filter} onChange={setFilter} type="search" autoComplete="off" hint="Filters this page by username or display name." />
       <ErrorText error={load.error ?? act.error} />
       {users === null ? (
-        <p className="muted">Loading users…</p>
+        <FirstLoad what="users" error={load.error} busy={load.busy} retry={load.retry} />
       ) : (
         <>
           <table className="data-table">
@@ -347,12 +380,10 @@ const BUG_PAGE_SIZE = 20;
 function BugReportsSection() {
   const [page, setPage] = useState(1);
   const [severity, setSeverity] = useState<BugSeverity | ''>('');
-  const [reports, setReports] = useState<BugReportPage | null>(null);
-  const load = useAction();
-
-  useEffect(() => {
-    void load.run(async () => setReports(await listBugReports(page, BUG_PAGE_SIZE, severity || undefined)));
-  }, [load.run, page, severity]);
+  const { data: reports, ...load } = useLatestLoad<BugReportPage>(
+    () => listBugReports(page, BUG_PAGE_SIZE, severity || undefined),
+    [page, severity],
+  );
 
   const pages = reports ? Math.max(1, Math.ceil(reports.total / reports.limit)) : 1;
 
@@ -376,7 +407,7 @@ function BugReportsSection() {
       </label>
       <ErrorText error={load.error} />
       {reports === null ? (
-        <p className="muted">Loading bug reports…</p>
+        <FirstLoad what="bug reports" error={load.error} busy={load.busy} retry={load.retry} />
       ) : (
         <>
           <p className="muted">
@@ -412,7 +443,7 @@ function BugReportItem({ report: r }: { report: AdminBugReport }) {
   const ctx = r.context;
   const round = typeof ctx.round_number === 'number' ? ctx.round_number : null;
   const trick = typeof ctx.trick_number === 'number' ? ctx.trick_number : null;
-  const who = r.reporter ? `${r.reporter.displayName ?? '?'} (${r.reporter.username ?? '?'})` : 'Deleted user';
+  const who = r.reporter ? `${r.reporter.displayName ?? '?'} (${r.reporter.username ?? '?'})` : 'Unknown user';
   return (
     <li className="card bug-item">
       <div className="card-head">

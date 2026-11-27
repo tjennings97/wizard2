@@ -1550,15 +1550,20 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                         reporter:
                           type: object
                           nullable: true
-                          description: Null only if the reporting account no longer exists.
+                          description: >
+                            Null when the report has no user_id. The submit route
+                            always sets it, so this is not expected; accounts with
+                            reports cannot be deleted (user_id is a foreign key).
                           properties:
                             id:
                               type: string
                               format: uuid
                             username:
                               type: string
+                              nullable: true
                             displayName:
                               type: string
+                              nullable: true
                         roomId:
                           type: string
                           format: uuid
