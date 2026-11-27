@@ -295,6 +295,146 @@ section + section {
   opacity: 1;
 }
 
+/* --- Admin (pages/Admin.tsx) ---------------------------------------------------------------
+ * Data tables: each row is a stacked card on phones, a normal table from 640px. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 16px;
+}
+.data-table thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.data-table tr {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+.data-table td {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+.data-table td[data-label]::before {
+  content: attr(data-label);
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 5.5rem;
+  flex-shrink: 0;
+}
+.data-table td.row-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.data-table td.row-actions:empty {
+  display: none;
+}
+.badge.pending,
+.badge.admin {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.badge.revoked,
+.badge.expired {
+  color: var(--muted);
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.secret {
+  background: var(--notice-bg);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.secret p {
+  margin: 0;
+}
+.copy-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.copy-value > .muted {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+}
+.copy-value code {
+  flex: 1;
+  min-width: 0;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.pager {
+  align-self: center;
+  text-align: center;
+  flex: 1;
+}
+
+@media (min-width: 640px) {
+  .data-table thead {
+    position: static;
+    width: auto;
+    height: auto;
+    clip: auto;
+  }
+  .data-table thead th {
+    text-align: left;
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-weight: 500;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .data-table tr {
+    display: table-row;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+  .data-table td {
+    display: table-cell;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .data-table td[data-label]::before {
+    content: none;
+  }
+  .data-table td.row-actions {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .data-table td.row-actions button + button {
+    margin-left: 8px;
+  }
+  .data-table td.row-actions:empty {
+    display: table-cell;
+  }
+}
+
 @media (min-width: 640px) {
   .cards {
     display: grid;

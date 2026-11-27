@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { db } from '../db/knex';
 import { hashSecret } from '../auth/credentials';
+import type { InvalidationReason } from '../auth/sessionEvents';
 import { connect, connectReady, cookieFor, createUser, resetDb, sleep, startServer, type TestClient, type TestUser } from '../test/helpers';
 
 let server: Awaited<ReturnType<typeof startServer>>;
@@ -128,7 +129,7 @@ describe('displaced sockets', () => {
     return username;
   }
 
-  async function expectDisplaced(c: TestClient, reason: 'displaced' | 'logout' | 'password_reset' | 'credential_change') {
+  async function expectDisplaced(c: TestClient, reason: InvalidationReason) {
     const err = await c.waitFor('session_error');
     expect(err.payload).toEqual({ code: 'SESSION_INVALIDATED', message: expect.any(String), fatal: true, reason });
     await c.waitForDisconnect();
@@ -190,6 +191,18 @@ describe('displaced sockets', () => {
     await sleep(100);
     expect(fresh.socket.connected).toBe(true);
     expect(fresh.events('session_error')).toHaveLength(0);
+  });
+
+  it('disconnects the user\'s sockets on an admin credential reset; the admin\'s stay', async () => {
+    const admin = await createUser('Admin');
+    await db('users').where({ id: admin.id }).update({ role: 'admin' });
+    const ann = await createUser('Ann');
+    const annSocket = await online(ann);
+    const adminSocket = await online(admin);
+    await api().post(`/api/v1/admin/users/${ann.id}/reset-credentials`).set('Cookie', admin.cookie).expect(200);
+    await expectDisplaced(annSocket, 'admin_reset');
+    await sleep(100);
+    expect(adminSocket.socket.connected).toBe(true);
   });
 
   it('keeps sockets on a display name change and shows the new name in lobby presence', async () => {

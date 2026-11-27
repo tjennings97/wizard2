@@ -25,7 +25,7 @@ interface AuthValue {
   /**
    * The server ended the session (401 or a fatal session_error): show the login screen.
    * `reason` is the session_error reason for SESSION_INVALIDATED (displaced, logout,
-   * password_reset, credential_change).
+   * password_reset, credential_change, admin_reset).
    * CREDENTIAL_CHANGE_REQUIRED keeps the user signed in and shows the forced change screen instead.
    */
   endSession(code: string, reason?: string): void;
@@ -47,6 +47,7 @@ const INVALIDATED_NOTICES: Record<string, string> = {
   logout: 'You logged out in another tab.',
   password_reset: 'You were signed out because your password was reset.',
   credential_change: 'You were signed out because your password or recovery passphrase was changed.',
+  admin_reset: 'You were signed out because an admin reset your password. Sign in with the temporary password they gave you.',
 };
 
 function noticeFor(code: string, reason?: string): string | null {

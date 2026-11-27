@@ -4,7 +4,7 @@ import { db } from '../db/knex';
 import { logger } from '../logger';
 import { ApiError } from '../http/errors';
 import { requestTraceId } from '../http/trace';
-import { burnVerifyTime, hashSecret, sha256, verifySecret } from '../auth/credentials';
+import { burnVerifyTime, hashSecret, normalizeInviteCode, sha256, verifySecret } from '../auth/credentials';
 import { authenticate } from '../auth/middleware';
 import { loginLimiter, registerLimiter, resetPasswordLimiter } from '../auth/rateLimits';
 import {
@@ -72,7 +72,7 @@ authRouter.post(
       });
     }
 
-    const codeHash = sha256(inviteCode);
+    const codeHash = sha256(normalizeInviteCode(inviteCode));
 
     // Cheap pre-check so a bad code does not cost two bcrypt hashes. Re-checked under lock below.
     const preInvite: InviteRow | undefined = await db('invites').where({ code_hash: codeHash }).first();

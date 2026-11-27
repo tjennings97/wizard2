@@ -26,6 +26,7 @@ Three separate sub-flows share the landing page entry point: login, invite-code 
 | `reason: "logout"` | “You logged out in another tab.” |
 | `reason: "password_reset"` | “You were signed out because your password was reset.” |
 | `reason: "credential_change"` (changed on another device) | “You were signed out because your password or recovery passphrase was changed.” |
+| `reason: "admin_reset"` | “You were signed out because an admin reset your password. Sign in with the temporary password they gave you.” |
 | `401 REAUTH_REQUIRED` (REST or socket `session_error`) — the **re-auth prompt** | “Please sign in again to continue.” with the username pre-filled and the password field focused |
 
 The `reason` comes from REST `details.reason` or the socket `session_error`. A fatal socket `session_error` tears down the socket and applies the same mapping. For `credential_change` the client first checks `GET /users/me` (immediately, then after 1 s and 3 s): another tab on the same browser may have made the change and its new cookie may still be landing. Only a `401` there signs the user out; a network or server error keeps them signed in and reconnects the socket, whose handshake decides. The re-auth prompt is shown when the session is within 24 hours of its 30-day cap: on app load (`GET /users/me`), on any request, or when the socket connects, unless the user is an active player in a game in progress, who finishes the game first. Signing in again issues a fresh 30-day session and returns the user to the URL they were on. On app load the client does not know who the user is, so the pre-filled username is the last one that signed in on this device (kept in browser storage; left empty if storage is unavailable).
@@ -189,25 +190,25 @@ The admin panel is a protected section of the main application, accessible only 
 
 1. Admin navigates to Admin Panel (role-checked by middleware)
 2. Admin enters optional recipient label and clicks Generate Code
-3. Code displayed once — admin copies and shares out-of-band (text, voice, etc.)
+3. Code displayed once, with a Copy button — admin copies and shares out-of-band (text, voice, etc.). Codes are lowercase and grouped with dashes; registration ignores case, spaces and dashes
 4. Code record stored: label, created, expiry (7 days), status = pending
 5. Admin can revoke any pending invite at any time (status → revoked)
 6. Expired unclaimed codes auto-transition to expired status; cannot be redeemed
 
-**Invite table columns:** Code · Label · Created · Expires · Status (pending / accepted / expired / revoked)
+**Invite table columns:** Label · Status (pending / accepted / expired / revoked) · Created · Expires · Used by. The code is not a column: only its hash is stored, so it can be shown only at creation. A Revoke button (with confirmation) appears on pending invites.
 
 **Role management flow:**
 
-1. Admin views user list
-2. Selects a user → Upgrade to Admin
+1. Admin views user list (paged, with a filter by username or display name)
+2. Selects a user → Make admin (or Remove admin, for another admin)
 3. Confirmation prompt → role updated
-4. Admin cannot remove their own admin role (lockout prevention); another admin must do so
+4. Admin cannot remove their own admin role (lockout prevention); another admin must do so. The panel shows no Remove admin button on the admin's own row
 
 **Account reset flow (when user loses both credentials):**
 
-1. Admin locates user record
-2. Admin sets a temporary password and recovery passphrase
-3. Temporary credentials returned once in the response (never stored in plaintext)
+1. Admin locates user record and chooses Reset credentials (with confirmation; not offered on the admin's own row, who uses the profile page instead)
+2. The server generates a temporary password and recovery passphrase and ends all of the user's sessions (their devices show the `admin_reset` notice from Flow 1)
+3. Temporary credentials returned once in the response (never stored in plaintext) and shown once with Copy buttons, for the admin to pass on out-of-band
 4. `requires_credential_change = true` flag set on the user record
 5. On the user’s next login, the client intercepts and forces the credential change screen before any other navigation (see Flow 1). The server enforces this too: until the change is made, every route except `GET /users/me`, `PATCH /users/me` and logout returns `403 CREDENTIAL_CHANGE_REQUIRED`
 6. Flag clears once both password and recovery passphrase are updated

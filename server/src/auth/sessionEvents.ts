@@ -13,8 +13,9 @@ import type { Knex } from 'knex';
  * Why the sessions ended. Sent to the displaced sockets so the client can say what happened.
  * credential_change: the user changed their password or recovery passphrase (PATCH /users/me);
  * the device that made the change gets a new session, every other one is signed out.
+ * admin_reset: an admin reset the user's credentials (POST /admin/users/{userId}/reset-credentials).
  */
-export type InvalidationReason = 'displaced' | 'logout' | 'password_reset' | 'credential_change';
+export type InvalidationReason = 'displaced' | 'logout' | 'password_reset' | 'credential_change' | 'admin_reset';
 
 interface SessionEventMap {
   /** Session ids that were just invalidated, and why. */
