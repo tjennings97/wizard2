@@ -156,6 +156,13 @@ npm run dev -w client   # frontend only
 
 3. **Browser.** The lobby placeholder loads at `/`. The browser dev-tools console logs `connected <socket-id>`. Follow the links to `/room/demo` and `/game/demo`.
 
+
+4. **Admin panel.** The admin panel at `/admin` (linked from the lobby) is only for users with the admin role, and new accounts need an invite that only an admin can create. To make an existing local user an admin, run this against your dev database (the role is read on every request, so reload the page, no new login needed):
+   ```bash
+   psql "$DATABASE_URL" -c "UPDATE users SET role = 'admin' WHERE username = '<username>'"
+   ```
+   On a fresh database with no users at all, follow "First Admin Account" in `docs/operations/deployment-infrastructure.md`.
+
 ---
 
 ## 7. Common commands

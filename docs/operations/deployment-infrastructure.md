@@ -161,6 +161,52 @@ Both schedules run concurrently. Manual backups may be triggered at any time, ca
 
 **Note on point-in-time recovery.** Railway offers point-in-time recovery as a separate feature. Its availability on the Hobby plan should be verified in the Railway dashboard on first setup.
 
+## First Admin Account
+
+Registration needs an invite, invites are created by an admin in the admin panel, and `invites.created_by` must name an existing user. A fresh database therefore has no way in through the app, so the first admin is inserted by hand, once, before anyone else can be invited. Every later account (including `smoke_test` below) is created with an invite from that admin.
+
+The first admin is created with **temporary** credentials and `requires_credential_change = true`, the same state as an admin credential reset. At first sign-in the app forces them to choose their own password and recovery passphrase before it allows anything else, so the temporary values are never used past that one sign-in.
+
+1. On a machine with the repository checked out and dependencies installed (`npm ci`), save the script below as `first-admin.js` **outside** the repository (it must not be committed) and run it from the repository root, so it can load `bcrypt`. Pass the owner's username (3–32 lowercase letters, digits or underscores) and display name:
+
+   ```bash
+   node /path/to/first-admin.js owner "Owner Name" > first-admin.sql
+   ```
+
+   ```js
+   // first-admin.js: prints temporary credentials (stderr) and an INSERT for the first admin (stdout).
+   const { randomBytes } = require("crypto");
+   const bcrypt = require(require.resolve("bcrypt", { paths: [process.cwd()] }));
+
+   const [username, displayName] = process.argv.slice(2);
+   if (!/^[a-z0-9_]{3,32}$/.test(username || "")) throw new Error("username: 3-32 lowercase letters, digits or underscores");
+   if (!displayName || displayName.trim().length === 0 || displayName.length > 64) throw new Error("display name: 1-64 characters");
+
+   const sql = (s) => "'" + s.replace(/'/g, "''") + "'";
+   const password = randomBytes(12).toString("base64url");
+   const passphrase = randomBytes(12).toString("base64url");
+
+   Promise.all([bcrypt.hash(password, 12), bcrypt.hash(passphrase, 12)]).then(([passwordHash, recoveryHash]) => {
+     console.error("Temporary password:   " + password);
+     console.error("Temporary passphrase: " + passphrase);
+     console.log(
+       "INSERT INTO users (username, display_name, password_hash, recovery_hash, role, requires_credential_change) VALUES (" +
+         [sql(username), sql(displayName.trim()), sql(passwordHash), sql(recoveryHash), "'admin'", "true"].join(", ") +
+         ");",
+     );
+   });
+   ```
+
+   The temporary password and passphrase are printed to the terminal; the SQL file holds only bcrypt hashes (work factor 12, as the app uses).
+
+2. Apply the SQL to the production database. It is reachable only on Railway's private network, so open a shell to it through the Railway CLI (`railway connect wizard-db`) and run `\i first-admin.sql`. Migrations must already have been applied (see OD-2).
+3. Sign in at the production URL with the username and the temporary password. The app goes straight to the forced change screen: set a new password and recovery passphrase. The admin panel (`/admin`) is then available.
+4. Delete `first-admin.sql` and `first-admin.js`, and clear the terminal scrollback that showed the temporary credentials.
+
+Further admins are promoted from the admin panel (Users → Make admin), never by SQL. Keep at least two admins once there are other trusted users: if the only admin loses both their password and recovery passphrase, no one in the app can reset them. The fix is then to repeat this procedure with a new username.
+
+**Local development.** Locally there is no need for temporary credentials: register a user with a seeded invite or use an existing one, then promote it with `UPDATE users SET role = 'admin' WHERE username = '<username>';` (see `docs/development/getting-started.md`).
+
 ## Smoke Test Account
 
 A dedicated account exists in the production environment for smoke test execution. It is a standard registered user account.
@@ -173,7 +219,7 @@ A dedicated account exists in the production environment for smoke test executio
 
 **Purpose.** The account is used exclusively by the `ci-smoke.yml` workflow to execute the post-deploy smoke test suite. It performs only read-only or non-destructive actions as defined in the Test Plan.
 
-**Provisioning.** The `smoke_test` account must be created manually in the production environment before the first production deployment. Its credentials are stored as GitHub Actions secrets and injected into the smoke test workflow at runtime. The account must never be used for any purpose other than automated smoke tests.
+**Provisioning.** The `smoke_test` account must be created manually in the production environment before the first production deployment, by registering it with an invite from the first admin (see First Admin Account). Its credentials are stored as GitHub Actions secrets and injected into the smoke test workflow at runtime. The account must never be used for any purpose other than automated smoke tests.
 
 ## Observability
 
