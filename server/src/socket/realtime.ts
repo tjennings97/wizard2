@@ -12,6 +12,7 @@ import {
 import type { MemberRole, RoomClosedReason, RoomConfig } from '../rooms/rules';
 import type { RoomNotifier, UserLeftReason } from '../rooms/service';
 import type { InvalidationReason } from '../auth/sessionEvents';
+import type { AvatarConfig } from '../shared/avatar';
 import type { GameNotifier, GameService } from '../games/service';
 
 export interface SocketData {
@@ -226,6 +227,7 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
     await this.roomBroadcast(room.id, 'user_joined', userId, {
       user_id: userId,
       display_name: member.displayName,
+      avatar_config: member.avatarConfig,
       role: member.role,
       seat_index: seatIndex,
       ...counts(room),
@@ -283,6 +285,15 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
       if (!room || room.state !== 'open') continue;
       for (const s of this.socketsIn(roomChannel(roomId))) this.sendRoomSnapshot(s, room);
     }
+  }
+
+  /**
+   * A user changed their avatar (PATCH /users/me). Nothing is broadcast (avatar-system.md,
+   * "Changing an Avatar"): their sockets carry the new config, so the next lobby_snapshot or
+   * presence_updated shows it. Room snapshots read members from the database already.
+   */
+  avatarChanged(userId: string, avatarConfig: AvatarConfig): void {
+    for (const s of this.socketsIn(userChannel(userId))) s.data.user = { ...s.data.user, avatarConfig: { ...avatarConfig } };
   }
 
   async lobbyChanged(): Promise<void> {

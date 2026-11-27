@@ -4,6 +4,7 @@ import { config } from '../config';
 import { isSessionInvalidated } from '../auth/sessions';
 import { sessionEvents, type InvalidationReason } from '../auth/sessionEvents';
 import { userEvents } from '../auth/userEvents';
+import type { AvatarConfig } from '../shared/avatar';
 import { logger } from '../logger';
 import { activeMembershipFor, getRoomView, listLobbyRooms, type RoomSummary, type RoomView } from '../rooms/queries';
 import type { RoomService } from '../rooms/service';
@@ -66,6 +67,8 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
     );
   };
   userEvents.on('displayNameChanged', onDisplayName);
+  const onAvatar = (userId: string, avatarConfig: AvatarConfig) => realtime.avatarChanged(userId, avatarConfig);
+  userEvents.on('avatarChanged', onAvatar);
 
   io.on('connection', (socket: AppSocket) => {
     socket.data.seq = 0;
@@ -87,6 +90,7 @@ export function attachSocket(httpServer: HttpServer, rooms: RoomService, options
     detach: () => {
       sessionEvents.off('invalidated', onInvalidated);
       userEvents.off('displayNameChanged', onDisplayName);
+      userEvents.off('avatarChanged', onAvatar);
     },
   };
 }

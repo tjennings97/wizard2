@@ -7,6 +7,7 @@ import { Round } from '../Round';
 import { DECK_TYPES, Ruleset, getRuleset } from '.';
 import { STANDARD_RULESET } from './standard';
 import { Trick } from '../Trick';
+import { DEFAULT_AVATAR } from '../../shared/avatar';
 
 describe('Ruleset registry', () => {
   it('lists the supported deck types', () => {
@@ -78,7 +79,7 @@ describe('Engine classes delegate to the ruleset', () => {
       gameId: 'g',
       roomId: 'r',
       players: ['a', 'b', 'c'].map(
-        (id) => new Player({ id, username: id, displayName: id, avatarConfig: null, sessionId: null }),
+        (id) => new Player({ id, username: id, displayName: id, avatarConfig: DEFAULT_AVATAR, sessionId: null }),
       ),
       config: { roundCount: 1 },
       deckFactory: (ruleset) => {

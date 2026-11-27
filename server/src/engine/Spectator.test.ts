@@ -1,12 +1,13 @@
 import { Player } from './Player';
 import { Spectator } from './Spectator';
 import { User, UserProps } from './User';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
 const props = (id: string): UserProps => ({
   id,
   username: `user_${id}`,
   displayName: `User ${id}`,
-  avatarConfig: null,
+  avatarConfig: DEFAULT_AVATAR,
   sessionId: `sess_${id}`,
 });
 

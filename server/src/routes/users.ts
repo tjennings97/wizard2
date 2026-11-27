@@ -28,13 +28,15 @@ usersRouter.get('/me', meAuth, (req, res) => {
 // 401 but not a session code, so the client does not treat it as being signed out.
 const wrongCurrentPassword = () => new ApiError(401, 'INVALID_CURRENT_PASSWORD', 'Current password is incorrect.');
 
-const PATCHABLE = ['displayName', 'password', 'recoveryPassphrase'] as const;
+// avatarSvg is not part of the API (docs/architecture/avatar-system.md): like any other unknown
+// field it is ignored, never stored or returned.
+const PATCHABLE = ['displayName', 'avatarConfig', 'password', 'recoveryPassphrase'] as const;
 
 /** True once the user has chosen both secrets themselves since the last admin reset. */
 const bothSecretsChanged = (row: Pick<UserRow, 'password_changed_at' | 'recovery_changed_at'>): boolean =>
   row.password_changed_at !== null && row.recovery_changed_at !== null;
 
-// PATCH /users/me: display name, password and recovery passphrase (docs/api/openapi-spec.md).
+// PATCH /users/me: display name, avatar, password and recovery passphrase (docs/api/openapi-spec.md).
 // Changing either secret requires currentPassword, rotates the session (every other device is
 // signed out; this one gets a new cookie), and may clear requires_credential_change.
 usersRouter.patch(
@@ -46,15 +48,6 @@ usersRouter.patch(
       req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
     const has = (field: string) => field in body;
 
-    // Avatar changes arrive with the avatar system (auth-follow-ups §8 decides whether
-    // avatarSvg is accepted at all). Refuse rather than silently ignore them.
-    for (const field of ['avatarConfig', 'avatarSvg']) {
-      if (has(field)) {
-        throw new ApiError(400, 'VALIDATION_ERROR', `Invalid request body: ${field}.`, {
-          fields: { [field]: 'Avatar changes are not supported yet.' },
-        });
-      }
-    }
     if (!PATCHABLE.some(has)) {
       throw new ApiError(400, 'VALIDATION_ERROR', 'Nothing to update.', {
         fields: { body: `Send at least one of ${PATCHABLE.join(', ')}.` },
@@ -63,6 +56,7 @@ usersRouter.patch(
 
     const v = new BodyValidator(body);
     const displayName = has('displayName') ? v.displayName() : undefined;
+    const avatarConfig = has('avatarConfig') ? v.avatarConfig() : undefined;
     const password = has('password') ? v.newSecret('password') : undefined;
     const recoveryPassphrase = has('recoveryPassphrase') ? v.newSecret('recoveryPassphrase') : undefined;
     const changingSecret = password !== undefined || recoveryPassphrase !== undefined;
@@ -116,6 +110,7 @@ usersRouter.patch(
       const now = trx.fn.now();
       const update: Record<string, unknown> = {};
       if (displayName !== undefined) update.display_name = displayName;
+      if (avatarConfig !== undefined) update.avatar_config = avatarConfig;
       if (passwordHash !== undefined) Object.assign(update, { password_hash: passwordHash, password_changed_at: now });
       if (recoveryHash !== undefined) Object.assign(update, { recovery_hash: recoveryHash, recovery_changed_at: now });
 
@@ -146,6 +141,7 @@ usersRouter.patch(
       logger.info({ userId, traceId }, 'profile updated');
     }
     if (displayName !== undefined) userEvents.emit('displayNameChanged', userId, user.display_name);
+    if (avatarConfig !== undefined) userEvents.emit('avatarChanged', userId, user.avatar_config);
     res.status(200).json(toPublicUser(user));
   }),
 );

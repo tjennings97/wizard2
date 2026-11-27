@@ -64,7 +64,6 @@ authRouter.post(
     const password = v.newSecret('password');
     const recoveryPassphrase = v.newSecret('recoveryPassphrase');
     const avatarConfig = v.avatarConfig();
-    const avatarSvg = v.nullableString('avatarSvg');
     v.done();
     if (recoveryPassphrase === password) {
       throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request body: recoveryPassphrase.', {
@@ -103,7 +102,6 @@ authRouter.post(
             password_hash: passwordHash,
             recovery_hash: recoveryHash,
             avatar_config: avatarConfig,
-            avatar_svg: avatarSvg,
           })
           .returning('*');
       } catch (err) {

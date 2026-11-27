@@ -97,7 +97,7 @@ src/
 
 **Mobile-first layout:** CSS uses `min-width` media queries (mobile base, desktop enhancement). Touch targets are at least 44×44px. No hover-only interactions. Game board layout is a vertical single-column on mobile (current player hand at bottom, trick area in middle, opponent indicators at top), and a table-surround layout on desktop.
 
-**Avatar rendering:** Four SVG layers (`head`, `skin`, `face`, `hair`, per the Avatar System Specification) loaded by asset path and composited via CSS `position: absolute` stacking inside a fixed-size container. Avatar config (four keys) is resolved to file paths client-side, and the composited SVG is cached in `users.avatar_svg`. No image processing on the server.
+**Avatar rendering:** Avatar config is four slugs (`head`, `skin`, `face`, `hair`, per the Avatar System Specification). The client stacks three bundled SVG layer files (`head`, `face`, `hair`) with CSS `position: absolute` inside a fixed-size circle; `skin` is the head layer's fill colour. The option catalog lives in one module that client and server both import (`server/src/shared/avatar.ts`), and the server validates every slug against it. No SVG is accepted from clients or stored, and there is no image processing on the server.
 
 **Performance:** Code-split by route. Avatar SVGs are lightweight and inline-rendered. Socket events update only the relevant slice of `GameContext`, minimising re-renders.
 
@@ -158,7 +158,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `user_lef
 
 | Table | Key columns | Notes |
 | --- | --- | --- |
-| `users` | id, username, display\_name, password\_hash, recovery\_hash, role, avatar\_config (JSONB), created\_at | `role`: player / admin |
+| `users` | id, username, display\_name, password\_hash, recovery\_hash, role, avatar\_config (JSONB, NOT NULL), created\_at | `role`: player / admin |
 | `sessions` | id, user\_id, token\_hash, created\_at, expires\_at, invalidated\_at | One active session per user; new login invalidates prior |
 | `invites` | id, code\_hash, label, created\_by, created\_at, expires\_at, redeemed\_at, status | status: pending / accepted / expired / revoked |
 | `rooms` | id, state, host\_user\_id, config (JSONB), created\_at, closed\_at | config: round\_count, bid\_rule, deck\_type |

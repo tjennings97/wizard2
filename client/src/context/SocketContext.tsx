@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useReducer, useState, type ReactNode } from 'react';
 import type { Socket } from 'socket.io-client';
-import type { MemberRole, RoomConfig, RoomMember, RoomSummary, UserSummary } from '../api/types';
+import type { AvatarConfig, MemberRole, RoomConfig, RoomMember, RoomSummary, UserSummary } from '../api/types';
 import { createSocket, type Envelope } from '../socket/client';
 import { useAuth } from './AuthContext';
 
@@ -30,7 +30,7 @@ type Action =
   | { type: 'rooms_updated'; rooms: RoomSummary[] }
   | { type: 'presence_updated'; onlineUsers: UserSummary[] }
   | { type: 'room_snapshot'; room: RoomView }
-  | { type: 'user_joined'; userId: string; displayName: string; role: MemberRole }
+  | { type: 'user_joined'; userId: string; displayName: string; avatarConfig: AvatarConfig; role: MemberRole }
   | { type: 'user_left'; userId: string }
   | { type: 'host_changed'; roomId: string; hostId: string }
   | { type: 'room_config_updated'; roomId: string; config: RoomConfig }
@@ -68,7 +68,7 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       const member: RoomMember = {
         userId: action.userId,
         displayName: action.displayName,
-        avatarConfig: null,
+        avatarConfig: action.avatarConfig,
         role: action.role,
         joinOrder: room.members.find((m) => m.userId === action.userId)?.joinOrder ?? last + 1,
         isHost: action.userId === room.hostId,
@@ -108,7 +108,7 @@ type Payloads = {
   rooms_updated: { rooms: RoomSummary[] };
   presence_updated: { online_users: UserSummary[] };
   room_snapshot: { room_id: string; config: RoomConfig; members: RoomMember[]; host_id: string };
-  user_joined: { user_id: string; display_name: string; role: MemberRole };
+  user_joined: { user_id: string; display_name: string; avatar_config: AvatarConfig; role: MemberRole };
   user_left: { user_id: string };
   host_changed: { room_id: string; host_id: string };
   room_config_updated: { room_id: string; config: RoomConfig };
@@ -143,7 +143,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     on('room_snapshot', (p) =>
       dispatch({ type: 'room_snapshot', room: { roomId: p.room_id, hostId: p.host_id, config: p.config, members: p.members } }),
     );
-    on('user_joined', (p) => dispatch({ type: 'user_joined', userId: p.user_id, displayName: p.display_name, role: p.role }));
+    on('user_joined', (p) =>
+      dispatch({ type: 'user_joined', userId: p.user_id, displayName: p.display_name, avatarConfig: p.avatar_config, role: p.role }),
+    );
     on('user_left', (p) => dispatch({ type: 'user_left', userId: p.user_id }));
     on('host_changed', (p) => dispatch({ type: 'host_changed', roomId: p.room_id, hostId: p.host_id }));
     on('room_config_updated', (p) => dispatch({ type: 'room_config_updated', roomId: p.room_id, config: p.config }));

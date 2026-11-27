@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt';
 import { buildFirstAdmin, firstAdminInsertSql, validateFirstAdmin } from './firstAdmin';
+import { avatarConfigError } from '../shared/avatar';
 
 describe('validateFirstAdmin', () => {
   it('accepts an app-valid username and trims the display name', () => {
@@ -23,6 +24,7 @@ describe('buildFirstAdmin', () => {
     expect(admin.row.password_hash).toMatch(/^\$2b\$12\$/);
     expect(await bcrypt.compare(admin.temporaryPassword, admin.row.password_hash)).toBe(true);
     expect(await bcrypt.compare(admin.temporaryPassphrase, admin.row.recovery_hash)).toBe(true);
+    expect(avatarConfigError(admin.row.avatar_config)).toBeNull();
   });
 });
 
@@ -34,12 +36,14 @@ describe('firstAdminInsertSql', () => {
     recovery_hash: '$2b$12$def',
     role: 'admin' as const,
     requires_credential_change: true as const,
+    avatar_config: { head: 'head-02', skin: 'skin-04', face: 'face-01', hair: 'hair-07' },
   };
 
   it('escapes quotes and contains hashes only', () => {
     expect(firstAdminInsertSql(row)).toBe(
-      'INSERT INTO users (username, display_name, password_hash, recovery_hash, role, requires_credential_change) ' +
-        "VALUES ('owner', 'O''Brien', '$2b$12$abc', '$2b$12$def', 'admin', true);",
+      'INSERT INTO users (username, display_name, password_hash, recovery_hash, role, requires_credential_change, avatar_config) ' +
+        "VALUES ('owner', 'O''Brien', '$2b$12$abc', '$2b$12$def', 'admin', true, " +
+        `'{"head":"head-02","skin":"skin-04","face":"face-01","hair":"hair-07"}'::jsonb);`,
     );
   });
 });

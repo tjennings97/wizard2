@@ -22,8 +22,8 @@ export interface CreatedInvite {
   code: string;
 }
 
-/** GET /admin/users rows: the User fields without avatarSvg. */
-export type AdminUser = Omit<User, 'avatarSvg'>;
+/** GET /admin/users rows: the public User fields. */
+export type AdminUser = User;
 
 export interface UserPage {
   data: AdminUser[];

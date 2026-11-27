@@ -101,7 +101,7 @@ Event names and payloads are defined in the WebSocket Event Taxonomy ([docs/api/
 `users`, `sessions`, `invites`, `rooms`, `room_members`, `games`, `rounds`, `round_players`, `game_results`, `game_events` (append-only event log), `bug_reports`
 
 Key schema notes:
-- `users.avatar_config` — JSONB (four keys: `head`, `skin`, `face`, `hair`)
+- `users.avatar_config` — JSONB, NOT NULL (four keys: `head`, `skin`, `face`, `hair`; each a slug from the catalog in `server/src/shared/avatar.ts`, which the client imports too). No avatar SVG is accepted or stored
 - `games.state` — JSONB checkpoint of `GameState`, written after each round
 - `game_events.payload` — JSONB full context snapshot per event
 - `sessions` stored in Postgres (not Redis); one active session per user

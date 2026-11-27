@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
 import { useAction } from '../hooks/useAction';
+import { AVATAR_SIZE, Avatar } from '../components/Avatar';
 
 const STATE_LABELS: Record<RoomSummary['state'], string> = {
   open: 'Open',
@@ -117,9 +118,7 @@ export function LobbyPage() {
         <ul className="people">
           {onlineUsers.map((u) => (
             <li key={u.userId}>
-              <span className="avatar" aria-hidden="true">
-                {u.displayName.slice(0, 1).toUpperCase()}
-              </span>
+              <Avatar config={u.avatarConfig} size={AVATAR_SIZE.chip} />
               {u.displayName}
               {u.userId === user?.id && <span className="muted"> (you)</span>}
             </li>

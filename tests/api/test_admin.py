@@ -249,7 +249,7 @@ class TestUsers:
         r = admin.get("/admin/users", params={"limit": 1, "page": 2}).json()
         assert r["page"] == 2 and r["limit"] == 1 and len(r["data"]) == 1
 
-    def test_list_returns_public_user_fields_without_avatar_svg(self, admin, player):
+    def test_list_returns_public_user_fields(self, admin, player):
         users = admin.get("/admin/users", params={"limit": 200}).json()["data"]
         fields = {"id", "username", "displayName", "role", "avatarConfig", "createdAt", "requiresCredentialChange"}
         assert all(set(u) == fields for u in users)

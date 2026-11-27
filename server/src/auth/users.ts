@@ -1,9 +1,6 @@
-export interface AvatarConfig {
-  head: string;
-  skin: string;
-  face: string;
-  hair: string;
-}
+import type { AvatarConfig } from '../shared/avatar';
+
+export type { AvatarConfig };
 
 /** A row of the users table. password_hash and recovery_hash must never leave the server. */
 export interface UserRow {
@@ -13,8 +10,7 @@ export interface UserRow {
   password_hash: string;
   recovery_hash: string;
   role: 'player' | 'admin';
-  avatar_config: AvatarConfig | null;
-  avatar_svg: string | null;
+  avatar_config: AvatarConfig;
   requires_credential_change: boolean;
   /** When the user last chose their password / passphrase; NULL after an admin reset. */
   password_changed_at: Date | null;
@@ -28,8 +24,7 @@ export interface PublicUser {
   username: string;
   displayName: string;
   role: 'player' | 'admin';
-  avatarConfig: AvatarConfig | null;
-  avatarSvg: string | null;
+  avatarConfig: AvatarConfig;
   createdAt: string;
   requiresCredentialChange: boolean;
 }
@@ -41,7 +36,6 @@ export function toPublicUser(row: UserRow): PublicUser {
     displayName: row.display_name,
     role: row.role,
     avatarConfig: row.avatar_config,
-    avatarSvg: row.avatar_svg,
     createdAt: new Date(row.created_at).toISOString(),
     requiresCredentialChange: row.requires_credential_change,
   };

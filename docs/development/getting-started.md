@@ -242,6 +242,7 @@ server/
     routes/             Express routers, mounted under /api/v1
     socket/             Socket.io server setup and event handlers
     engine/             Game engine: pure TypeScript, no I/O (empty for now)
+    shared/             Pure modules the client imports too (avatar option catalog); no imports, no I/O
     db/
       knex.ts           Knex instance and connection check
       migrate.ts        Migration runner used by the migrate:* scripts
@@ -254,10 +255,12 @@ client/
     main.tsx            Mounts React, opens the socket
     App.tsx             Route table
     pages/              Lobby, Room, Game placeholders
+    components/         Shared UI, e.g. Avatar and AvatarPicker
+    assets/avatar/      SVG layer files for avatars (head/, face/, hair/)
     socket/client.ts    Single shared Socket.io client
 ```
 
-The architecture has four layers, and each layer may only call the layers below it: **routes/socket → engine → db**. The engine must never import from `db/`, `socket/`, or `routes/`. For the full design, see [System Architecture](../architecture/system-architecture.md).
+The architecture has four layers, and each layer may only call the layers below it: **routes/socket → engine → db**. The engine must never import from `db/`, `socket/`, or `routes/`. Any layer, and the client, may import `server/src/shared/`, which must stay pure TypeScript with no imports of its own. For the full design, see [System Architecture](../architecture/system-architecture.md).
 
 ---
 

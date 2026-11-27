@@ -7,6 +7,7 @@
 import { Card, Deck, Game, Player, type DeckFactory } from '../engine';
 import * as queries from './queries';
 import { GameService, type GameLifecycle } from './service';
+import { DEFAULT_AVATAR } from '../shared/avatar';
 
 jest.mock('../logger', () => {
   const noop = () => undefined;
@@ -65,7 +66,7 @@ function setup(ids: string[] = ['a', 'b', 'c'], roundCount = 1) {
   const game = new Game({
     gameId: 'g1',
     roomId: 'r1',
-    players: ids.map((id) => new Player({ id, username: id, displayName: id.toUpperCase(), avatarConfig: null, sessionId: null })),
+    players: ids.map((id) => new Player({ id, username: id, displayName: id.toUpperCase(), avatarConfig: DEFAULT_AVATAR, sessionId: null })),
     config: { roundCount },
     deckFactory,
   });
@@ -258,7 +259,7 @@ describe('the 3-hour game time limit', () => {
     const game = new Game({
       gameId: 'g1',
       roomId: 'r1',
-      players: ['a', 'b', 'c'].map((id) => new Player({ id, username: id, displayName: id, avatarConfig: null, sessionId: null })),
+      players: ['a', 'b', 'c'].map((id) => new Player({ id, username: id, displayName: id, avatarConfig: DEFAULT_AVATAR, sessionId: null })),
       config: { roundCount: 1 },
       deckFactory: wizardFlip,
     });

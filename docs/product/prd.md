@@ -314,7 +314,7 @@ Avatars are composited client-side from layered SVG files. No image uploads are 
 
 All SVG layers share a consistent coordinate system and viewBox so that any combination renders correctly.
 
-**Storage:** Avatar configuration is stored on the user record as an object with four string keys (`head`, `skin`, `face`, `hair`), plus the composited SVG cached in `avatar_svg`. No uploaded image is stored.
+**Storage:** Avatar configuration is stored on the user record as an object with four keys (`head`, `skin`, `face`, `hair`), each a slug from the app's option catalog. It is required, and the server rejects any slug outside the catalog. No image or SVG is uploaded or stored; the browser draws the avatar from the slugs.
 
 **Configuration:** Users set their avatar at registration and may update it at any time from account settings.
 

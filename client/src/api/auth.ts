@@ -15,7 +15,6 @@ export interface RegisterBody {
   password: string;
   recoveryPassphrase: string;
   avatarConfig: AvatarConfig;
-  avatarSvg: string | null;
 }
 
 export const register = (body: RegisterBody) =>
@@ -31,6 +30,8 @@ export const resetPassword = (username: string, recoveryPassphrase: string, newP
 /** PATCH /users/me. A password or passphrase change needs currentPassword and rotates the session. */
 export interface ProfileUpdate {
   displayName?: string;
+  /** The whole config; replaces the stored one. */
+  avatarConfig?: AvatarConfig;
   password?: string;
   recoveryPassphrase?: string;
   currentPassword?: string;

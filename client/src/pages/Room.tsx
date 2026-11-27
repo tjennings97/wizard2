@@ -4,6 +4,7 @@ import { MAX_PLAYERS, MAX_SPECTATORS, MIN_PLAYERS_TO_START, maxRounds, type BidR
 import { useAuth } from '../context/AuthContext';
 import { useRealtime } from '../context/SocketContext';
 import { useAction } from '../hooks/useAction';
+import { AVATAR_SIZE, Avatar } from '../components/Avatar';
 
 export function RoomPage() {
   const { id } = useParams<{ id: string }>();
@@ -38,9 +39,7 @@ export function RoomPage() {
   const memberRow = (m: RoomMember, label: string) => (
     <li key={m.userId}>
       <span className="order">{label}</span>
-      <span className="avatar" aria-hidden="true">
-        {m.displayName.slice(0, 1).toUpperCase()}
-      </span>
+      <Avatar config={m.avatarConfig} size={AVATAR_SIZE.room} />
       <span className="grow">
         {m.displayName}
         {m.userId === user?.id && <span className="muted"> (you)</span>}
