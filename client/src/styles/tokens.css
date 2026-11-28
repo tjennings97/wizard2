@@ -36,6 +36,11 @@
   --card-back-stripe: #173a2b;
   --wizard-gold: #c9a84c;
   --jester-violet: #9b59b6;
+  /* Wizard and Jester label ink on the cream face (AA on --card-face). */
+  --wizard-ink: #806210;
+  --jester-ink: #7a3e96;
+  /* Light text on a card back (the cards-in-hand count). */
+  --card-back-text: #ffffff;
 
   /* Text */
   --text-primary: #f0ead6;
@@ -50,6 +55,8 @@
   --color-danger-fill: #b83b3b;
   --color-warning: #d4a030;
   --color-info: #6aa0e8;
+  /* Text on the danger fill. */
+  --text-on-danger: #ffffff;
 
   /* Borders */
   --border-subtle: #2e3f30;
@@ -58,6 +65,8 @@
   /* Table */
   --felt: #1d4733;
   --felt-text: #f0ead6;
+  /* A red suit named in text on the felt (trump label); --card-red is too dark there. */
+  --felt-red: #ff9b9b;
   --rail: #4a3020;
   --rail-dark: #2e1d12;
   --avatar-bg: #2f4a36;

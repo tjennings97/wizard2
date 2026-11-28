@@ -144,7 +144,7 @@ a.button.ghost {
 button.danger {
   background: var(--color-danger-fill);
   border-color: var(--color-danger-fill);
-  color: #fff;
+  color: var(--text-on-danger);
 }
 @media (hover: hover) {
   button:hover:not(:disabled),
@@ -435,6 +435,11 @@ section + section {
   z-index: 30;
   pointer-events: none;
 }
+.toast-region {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .toast {
   pointer-events: auto;
   display: flex;
@@ -518,14 +523,34 @@ section + section {
 .banners > * {
   margin: 0;
 }
-.profile-link .avatar {
-  margin-left: -6px;
+/* Phones: the profile link is just the avatar (its aria-label names it), so the header stays on
+   one row. From 480px the name shows beside it. */
+.profile-link {
+  padding-inline: var(--space-2);
 }
 .profile-name {
-  max-width: 10ch;
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+@media (min-width: 480px) {
+  .profile-link {
+    padding-inline: 20px;
+  }
+  .profile-link .avatar {
+    margin-left: -6px;
+  }
+  .profile-name {
+    position: static;
+    width: auto;
+    height: auto;
+    clip: auto;
+    max-width: 10ch;
+    text-overflow: ellipsis;
+  }
 }
 
 /* Something new in a live list slides in; nothing already there moves (React keeps its node). */
@@ -713,7 +738,8 @@ section + section {
 }
 
 /* Not the host: the same controls, greyed, with a waiting line. */
-.host-panel.waiting .stack {
+/* Dim the controls only; the hint text keeps full contrast. */
+.host-panel.waiting :is(select, .toggle, button) {
   opacity: 0.6;
 }
 .waiting-line {
@@ -1185,7 +1211,7 @@ button.avatar-tile:disabled {
   background-color: var(--card-back);
   background-image: repeating-linear-gradient(45deg, var(--card-back-stripe) 0 2px, transparent 2px 5px);
   border: 1.5px solid var(--card-face);
-  color: #fff;
+  color: var(--card-back-text);
   font-size: 0.65rem;
   font-weight: 700;
   line-height: 18px;
@@ -1267,7 +1293,7 @@ button.avatar-tile:disabled {
   opacity: 0.75;
 }
 .trump-text strong.red {
-  color: #ff9b9b;
+  color: var(--felt-red);
 }
 
 /* The trick: each card in front of the player who played it. */
@@ -1493,12 +1519,12 @@ button.avatar-tile:disabled {
 }
 .playing-card.wizard {
   border: 2px solid var(--wizard-gold);
-  color: #806210;
+  color: var(--wizard-ink);
   background-image: radial-gradient(circle at 50% 45%, rgb(201 168 76 / 0.22), transparent 65%);
 }
 .playing-card.jester {
   border: 2px solid var(--jester-violet);
-  color: #7a3e96;
+  color: var(--jester-ink);
   background-image: radial-gradient(circle at 50% 45%, rgb(155 89 182 / 0.18), transparent 65%);
 }
 .playing-card.back {
@@ -1926,24 +1952,7 @@ main > section.panel > h2:first-child {
 .room > section + section {
   margin-top: 0;
 }
-/* Phones: the profile link is just the avatar (its aria-label names it), so the header stays on one row. */
-@media (max-width: 479.98px) {
-  .profile-name {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .profile-link {
-    padding-inline: var(--space-2);
-  }
-  .profile-link .avatar {
-    margin-left: 0;
-  }
-}
-/* The waiting panel is already greyed as a whole; don't fade its disabled controls a second time. */
-.host-panel.waiting :disabled {
+/* The waiting panel's controls are already greyed; don't fade them a second time for being disabled. */
+.host-panel.waiting .toggle button:disabled {
   opacity: 1;
 }

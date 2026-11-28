@@ -78,6 +78,7 @@ All layer files share one `viewBox` (`0 0 100 100`) so they line up at any size.
 | Lobby presence list | 40×40 px (player chip, `docs/design/ui-foundation.md`) |
 | Game seat | 40×40 px (player chip) |
 | Scoreboard row | 32×32 px |
+| Lobby header profile link | 28×28 px |
 
 **Rendering rules**
 

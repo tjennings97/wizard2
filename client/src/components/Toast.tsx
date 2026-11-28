@@ -58,19 +58,27 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(() => ({ toast }), [toast]);
+  const renderToast = (t: ToastItem) => (
+    <div key={t.id} className={`toast ${t.variant}${t.leaving ? ' leaving' : ''}`}>
+      <p>{t.message}</p>
+      <button type="button" className="ghost" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
+  );
   return (
     <ToastContext.Provider value={value}>
       {children}
+      {/* Two live regions that are always in the page, so screen readers announce what is added to
+          them (a region that mounts already filled is often skipped). Errors interrupt; the rest
+          wait their turn. */}
       <div className="toasts">
-        {items.map((t) => (
-          // Errors interrupt (alert); the rest wait their turn (status).
-          <div key={t.id} className={`toast ${t.variant}${t.leaving ? ' leaving' : ''}`} role={t.variant === 'error' ? 'alert' : 'status'}>
-            <p>{t.message}</p>
-            <button type="button" className="ghost" onClick={() => dismiss(t.id)} aria-label="Dismiss">
-              <span aria-hidden="true">×</span>
-            </button>
-          </div>
-        ))}
+        <div className="toast-region" role="alert" aria-live="assertive">
+          {items.filter((t) => t.variant === 'error').map(renderToast)}
+        </div>
+        <div className="toast-region" role="status" aria-live="polite">
+          {items.filter((t) => t.variant !== 'error').map(renderToast)}
+        </div>
       </div>
     </ToastContext.Provider>
   );

@@ -15,6 +15,13 @@ const STATE_LABELS: Record<RoomSummary['state'], string> = {
   closed: 'Closed',
 };
 
+/** Why a room in this state can't be joined as a player (an open room can, unless it's full). */
+const NOT_JOINABLE: Partial<Record<RoomSummary['state'], string>> = {
+  in_progress: 'Game in progress',
+  completing: 'Game finishing',
+  closed: 'Room closed',
+};
+
 /**
  * The lobby (docs/design/ui-foundation.md, "Lobby"): open rooms on the left (~65%) and who's in the
  * lobby on the right (~35%), stacked on phones. Both lists update live; new rooms slide in.
@@ -52,7 +59,7 @@ export function LobbyPage() {
             </Link>
           )}
           <Link to="/profile" className="button ghost profile-link" aria-label={`Profile: ${user?.displayName ?? ''}`}>
-            <Avatar config={user?.avatarConfig} size={28} />
+            <Avatar config={user?.avatarConfig} size={AVATAR_SIZE.header} />
             <span className="profile-name">{user?.displayName ?? 'Profile'}</span>
           </Link>
           <button type="button" className="ghost" onClick={() => void logout()}>
@@ -140,7 +147,7 @@ function RoomCard({ room: r, disabled, onJoin }: { room: RoomSummary; disabled: 
   const canPlay = r.state === 'open' && !full;
   const canWatch = (r.state === 'open' || r.state === 'in_progress') && r.spectatorCount < r.maxSpectators;
   // Said on the card, not in a tooltip: a phone can't hover.
-  const why = canPlay ? null : r.state === 'in_progress' ? 'Game in progress' : full ? 'Table full' : null;
+  const why = canPlay ? null : (NOT_JOINABLE[r.state] ?? (full ? 'Table full' : null));
   return (
     <li className="card room-card">
       <div className="card-head">
