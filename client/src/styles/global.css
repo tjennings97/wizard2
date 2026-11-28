@@ -537,17 +537,21 @@ button.avatar-tile:disabled {
   padding: 12px 16px 24px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: 'bar' 'notices' 'table' 'status' 'me' 'scores';
+  /* Only rows that always have content: an empty row would still get a gap on each side. */
+  grid-template-areas: 'head' 'table' 'key' 'status' 'me' 'scores';
   gap: 12px;
 }
-.game-notices {
-  grid-area: notices;
+.game.watching {
+  grid-template-areas: 'head' 'table' 'key' 'status' 'scores';
+}
+/* The game bar, then any banners (time limit, notices). */
+.game-head {
+  grid-area: head;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .game-bar {
-  grid-area: bar;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
@@ -581,8 +585,9 @@ button.avatar-tile:disabled {
   isolation: isolate;
   width: 100%;
   max-width: 560px;
-  height: clamp(340px, 56vh, 480px);
-  height: clamp(340px, 56svh, 480px);
+  /* At least 380px: below that the top and bottom trick cards reach the trump in the middle. */
+  height: clamp(380px, 56vh, 480px);
+  height: clamp(380px, 56svh, 480px);
   margin: 0 auto;
   color: var(--felt-text);
 }
@@ -638,15 +643,27 @@ button.avatar-tile:disabled {
   border-color: var(--turn);
 }
 .seat.turn .avatar {
+  box-shadow: 0 0 0 2px var(--turn);
+}
+/* A ring in the turn colour that swells and fades around the avatar. */
+.seat.turn .seat-avatar::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 3px solid var(--turn);
+  pointer-events: none;
   animation: turn-pulse 1.4s ease-in-out infinite;
 }
 @keyframes turn-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 2px var(--turn);
+    transform: scale(1);
+    opacity: 0.9;
   }
   50% {
-    box-shadow: 0 0 0 5px rgb(240 180 41 / 0.45);
+    transform: scale(1.12);
+    opacity: 0.35;
   }
 }
 .seat-avatar {
@@ -767,9 +784,6 @@ button.avatar-tile:disabled {
 .trump-text strong.red {
   color: #ffb3b3;
 }
-.trump-detail {
-  opacity: 0.8;
-}
 
 /* The trick: each card in front of the player who played it. */
 .trick {
@@ -790,6 +804,25 @@ button.avatar-tile:disabled {
 .trick-card .playing-card {
   box-shadow: 0 3px 8px rgb(0 0 0 / 0.35);
 }
+/* A card from a player who has left: no seat to show whose it is, so a name under it. */
+.trick-card.gone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.trick-card.gone .playing-card {
+  opacity: 0.75;
+}
+.trick-name {
+  font-size: 0.65rem;
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgb(0 0 0 / 0.45);
+  border-radius: 4px;
+  padding: 0 4px;
+}
 .trick-card.won .playing-card {
   box-shadow:
     0 0 0 3px var(--turn),
@@ -800,6 +833,31 @@ button.avatar-tile:disabled {
     opacity: 0;
     transform: translate(-50%, -50%) scale(0.85);
   }
+}
+
+/* The key to the seat markers, under the table. */
+.table-key {
+  grid-area: key;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 16px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.table-key > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.table-key .dealer-chip,
+.table-key .card-count {
+  position: static;
+}
+.table-key .badge.away {
+  font-size: 0.65rem;
+  padding: 0 4px;
 }
 
 /* Whose move it is, under the table. Your own move is a gold pill. */
@@ -1165,12 +1223,20 @@ button.avatar-tile:disabled {
   .game {
     grid-template-columns: minmax(0, 1fr) 320px;
     grid-template-areas:
-      'bar bar'
-      'notices notices'
+      'head head'
       'table scores'
+      'key scores'
       'status scores'
       'me scores';
     grid-template-rows: auto auto auto auto 1fr;
+  }
+  .game.watching {
+    grid-template-areas:
+      'head head'
+      'table scores'
+      'key scores'
+      'status scores';
+    grid-template-rows: auto auto auto 1fr;
   }
   .scoreboard {
     align-self: start;
@@ -1179,9 +1245,8 @@ button.avatar-tile:disabled {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .seat.turn .avatar {
+  .seat.turn .seat-avatar::after {
     animation: none;
-    box-shadow: 0 0 0 3px var(--turn);
   }
   .trick-card {
     animation: none;

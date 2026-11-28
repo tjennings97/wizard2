@@ -95,7 +95,7 @@ src/
 
 **Routing:** React Router v7. Routes: `/` (lobby), `/room/:id` (room/pre-game), `/game/:id` (active game), `/profile` (history and settings), `/admin` (admin panel, role-guarded).
 
-**Mobile-first layout:** CSS uses `min-width` media queries (mobile base, desktop enhancement). Touch targets are at least 44×44px. No hover-only interactions. Game board layout is a vertical single-column on mobile (current player hand at bottom, trick area in middle, opponent indicators at top), and a table-surround layout on desktop.
+**Mobile-first layout:** CSS uses `min-width` media queries (mobile base, desktop enhancement). Touch targets are at least 44×44px. No hover-only interactions. Game board layout is a round table on every screen size: players sit around an oval felt (the viewer at the bottom, the rest clockwise in seat order, spaced evenly around the rim), trump lies in the middle and each played card lands in front of the player who played it; the viewer's hand and actions sit below the table. The oval is portrait on mobile and landscape on wider screens, and it seats the 10-player maximum at every size. From 1100px the scoreboard sits beside the table.
 
 **Avatar rendering:** Avatar config is four slugs (`head`, `skin`, `face`, `hair`, per the Avatar System Specification). The client stacks three bundled SVG layer files (`head`, `face`, `hair`) with CSS `position: absolute` inside a fixed-size circle; `skin` is the head layer's fill colour. The option catalog lives in one module that client and server both import (`server/src/shared/avatar.ts`), and the server validates every slug against it. No SVG is accepted from clients or stored, and there is no image processing on the server.
 
