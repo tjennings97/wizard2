@@ -440,8 +440,9 @@ reduced-motion handling) and docs/product/ui-ux-flows.md.
 
 - Global tokens and mobile-first CSS in client/src/styles; min-width media
   queries, 375px minimum, touch targets ≥ 44×44px, no hover-only affordances.
-- Game board: vertical single column on mobile; table-surround layout on
-  desktop.
+- Game board: a round table on every screen size (players around an oval,
+  you at the bottom, trick cards in front of their players), seating up to
+  10 players on mobile and desktop.
 - Card, Scoreboard and Avatar presentation per the brief.
 - Respect prefers-reduced-motion.
 

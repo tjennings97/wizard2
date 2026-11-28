@@ -513,8 +513,8 @@ button.avatar-tile:disabled {
 }
 
 /* --- Game board ---------------------------------------------------------------------------
- * Mobile: one column, opponents on top, the table in the middle, your hand at the bottom.
- * Desktop: the opponents sit around a table surface. */
+ * Everyone sits around an oval table (you at the bottom); your hand and actions sit under it.
+ * Mobile: one column, the scoreboard last. Wide screens: the scoreboard beside the table. */
 :root {
   --felt: #2f6b4f;
   --felt-text: #f3f1ea;
@@ -532,15 +532,26 @@ button.avatar-tile:disabled {
 }
 
 .game {
-  max-width: 1100px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 12px 16px 24px;
   display: grid;
-  grid-template-areas: 'bar' 'opponents' 'table' 'me' 'scores';
+  grid-template-columns: minmax(0, 1fr);
+  /* Only rows that always have content: an empty row would still get a gap on each side. */
+  grid-template-areas: 'head' 'table' 'key' 'status' 'me' 'scores';
   gap: 12px;
 }
+.game.watching {
+  grid-template-areas: 'head' 'table' 'key' 'status' 'scores';
+}
+/* The game bar, then any banners (time limit, notices). */
+.game-head {
+  grid-area: head;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .game-bar {
-  grid-area: bar;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
@@ -548,69 +559,321 @@ button.avatar-tile:disabled {
   font-size: 0.95rem;
 }
 
-.opponents {
-  grid-area: opponents;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 8px;
+/* The round table. Seats and trick cards are placed on an oval by their --x/--y (-1..1, set
+ * inline from the seat's angle; see tableOrder in pages/Game.tsx). The felt is inset --rim from
+ * the box; seat centres sit on its edge (pushed --seat-out beyond it) and trick cards at
+ * --trick-rx / --trick-ry of its radius, in front of their player. */
+:root {
+  --rail: #6b4529;
+  --rail-dark: #4a2f1b;
 }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rail: #4a3020;
+    --rail-dark: #2e1d12;
+  }
+}
+.round-table {
+  grid-area: table;
+  --rim: 42px;
+  --seat-out: 0px;
+  --trick-rx: 0.5;
+  --trick-ry: 0.5;
+  position: relative;
+  /* Its own stacking context: the seat and trick-card z-indexes stay inside the table, so the
+     round summary and other dialogs always cover it. */
+  isolation: isolate;
+  width: 100%;
+  max-width: 560px;
+  /* At least 380px: below that the top and bottom trick cards reach the trump in the middle. */
+  height: clamp(380px, 56vh, 480px);
+  height: clamp(380px, 56svh, 480px);
+  margin: 0 auto;
+  color: var(--felt-text);
+}
+.felt {
+  position: absolute;
+  inset: var(--rim);
+  border-radius: 50%;
+  /* Light and shade as translucent layers over the felt colour (no color-mix(): older Safari
+     drops the whole declaration and the felt goes transparent). */
+  background-color: var(--felt);
+  background-image: radial-gradient(ellipse at 50% 40%, rgb(255 255 255 / 0.2) 0%, rgb(255 255 255 / 0) 55%, rgb(0 0 0 / 0.25) 100%);
+  border: 10px solid var(--rail);
+  box-shadow:
+    inset 0 0 0 2px rgb(0 0 0 / 0.25),
+    inset 0 6px 24px rgb(0 0 0 / 0.35),
+    0 0 0 2px var(--rail-dark),
+    0 10px 28px rgb(0 0 0 / 0.3);
+}
+.seats {
+  position: absolute;
+  inset: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A seat: a compact chip sitting on the rail. */
 .seat {
+  position: absolute;
+  left: calc(50% + (50% - var(--rim) + var(--seat-out)) * var(--x));
+  top: calc(50% + (50% - var(--rim) + var(--seat-out)) * var(--y));
+  transform: translate(-50%, -50%);
+  /* Above the trick cards (z-index 1..n, set inline). */
+  z-index: 11;
+  width: 80px;
   background: var(--surface);
+  color: var(--text);
   border: 2px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px;
+  border-radius: 12px;
+  padding: 4px 4px 5px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   text-align: center;
-  min-width: 0;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.25);
+  transition: opacity 250ms, border-color 250ms;
+}
+.seat.you {
+  border-color: var(--accent);
 }
 .seat.turn {
   border-color: var(--turn);
+}
+.seat.turn .avatar {
   box-shadow: 0 0 0 2px var(--turn);
+}
+/* A ring in the turn colour that swells and fades around the avatar. */
+.seat.turn .seat-avatar::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 3px solid var(--turn);
+  pointer-events: none;
+  animation: turn-pulse 1.4s ease-in-out infinite;
+}
+@keyframes turn-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.35;
+  }
+}
+.seat-avatar {
+  position: relative;
+  display: inline-flex;
+  border-radius: 50%;
+}
+.seat-avatar .avatar {
+  border-radius: 50%;
+}
+.dealer-chip {
+  position: absolute;
+  right: -7px;
+  bottom: -3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f4f2ec;
+  color: #1d1c1a;
+  border: 2px solid #1d1c1a;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+}
+/* Cards left in an opponent's hand, as a small card back. */
+.card-count {
+  position: absolute;
+  left: -9px;
+  bottom: -3px;
+  min-width: 16px;
+  height: 21px;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(45deg, #3b4fd8 0 3px, #2c3ba6 3px 6px);
+  border: 1.5px solid #f4f2ec;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 .seat-name {
   font-weight: 600;
+  font-size: 0.8rem;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .seat-bid {
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.seat-meta {
-  font-size: 0.8rem;
+.seat-bid.pending {
+  color: var(--muted);
+}
+.seat .badge.away {
+  font-size: 0.65rem;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 
-.table {
-  grid-area: table;
-  background: var(--felt);
-  color: var(--felt-text);
-  border-radius: 16px;
-  padding: 16px;
-  min-height: 140px;
+/* Seven or more players on a phone (up to the 10-player maximum): smaller seats so neighbours
+ * don't overlap. The avatar's size is set inline by <Avatar>, hence !important. */
+.round-table.crowded .seat {
+  width: 66px;
+  padding: 3px 3px 4px;
+}
+.round-table.crowded .seat .avatar {
+  width: 32px !important;
+  height: 32px !important;
+}
+.round-table.crowded .seat-name {
+  font-size: 0.75rem;
+}
+.round-table.crowded .seat-bid {
+  font-size: 0.7rem;
+}
+/* A taller table and smaller trick cards keep a full table clear on short phones (iPhone SE). */
+.round-table.crowded {
+  height: clamp(420px, 60vh, 500px);
+  height: clamp(420px, 60svh, 500px);
+}
+.round-table.crowded .playing-card.small {
+  width: 34px;
+  height: 48px;
+  font-size: 0.75rem;
+}
+
+/* Trump, in the middle of the felt. */
+.trump {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
+  gap: 4px;
+  max-width: 92px;
   text-align: center;
 }
-.trump {
+.trump-text {
   display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  font-size: 0.75rem;
+}
+.trump-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.6rem;
+  opacity: 0.75;
+}
+.trump-text strong.red {
+  color: #ffb3b3;
+}
+
+/* The trick: each card in front of the player who played it. */
+.trick {
+  position: absolute;
+  inset: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+.trick-card {
+  position: absolute;
+  left: calc(50% + (50% - var(--rim)) * var(--x) * var(--trick-rx));
+  top: calc(50% + (50% - var(--rim)) * var(--y) * var(--trick-ry));
+  transform: translate(-50%, -50%);
+  animation: card-land 220ms ease-out;
+}
+.trick-card .playing-card {
+  box-shadow: 0 3px 8px rgb(0 0 0 / 0.35);
+}
+/* A card from a player who has left: no seat to show whose it is, so a name under it. */
+.trick-card.gone {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
-  text-align: left;
 }
-.trump .muted {
-  color: inherit;
-  opacity: 0.8;
+.trick-card.gone .playing-card {
+  opacity: 0.75;
 }
+.trick-name {
+  font-size: 0.65rem;
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgb(0 0 0 / 0.45);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.trick-card.won .playing-card {
+  box-shadow:
+    0 0 0 3px var(--turn),
+    0 3px 8px rgb(0 0 0 / 0.35);
+}
+@keyframes card-land {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+}
+
+/* The key to the seat markers, under the table. */
+.table-key {
+  grid-area: key;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 16px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.table-key > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.table-key .dealer-chip,
+.table-key .card-count {
+  position: static;
+}
+.table-key .badge.away {
+  font-size: 0.65rem;
+  padding: 0 4px;
+}
+
+/* Whose move it is, under the table. Your own move is a gold pill. */
 .status {
+  grid-area: status;
+  justify-self: center;
   margin: 0;
   font-size: 1.05rem;
+  text-align: center;
+}
+.status.mine {
+  background: var(--turn);
+  color: #1d1c1a;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 8px 18px;
 }
 
 .me {
@@ -637,6 +900,9 @@ button.avatar-tile:disabled {
 .action-panel .muted,
 .action-panel .error {
   margin: 8px 0 0;
+}
+.action-panel .play-hint:first-child {
+  margin-top: 0;
 }
 .choice-grid {
   display: grid;
@@ -722,32 +988,6 @@ button.avatar-tile:disabled {
     --win: #81c784;
     --lose: #ff8a80;
   }
-}
-.trick {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-}
-.trick-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  max-width: 72px;
-}
-.trick-card.won .playing-card {
-  box-shadow: 0 0 0 3px var(--turn);
-}
-.trick-name {
-  font-size: 0.8rem;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .card-btn {
   padding: 0;
@@ -924,26 +1164,95 @@ button.avatar-tile:disabled {
   }
 }
 
+/* Tablets and up: a wider, landscape table with roomier seats and bigger cards. The seats sit
+ * just off the felt and trump lies sideways, so a short (laptop) table still fits a seat, a
+ * trick card, trump, a trick card and a seat top to bottom. */
+@media (min-width: 640px) {
+  .round-table,
+  .round-table.crowded {
+    --rim: 60px;
+    --seat-out: 12px;
+    --trick-rx: 0.56;
+    max-width: 900px;
+    height: clamp(430px, 58vh, 560px);
+    height: clamp(430px, 58svh, 560px);
+  }
+  .seat,
+  .round-table.crowded .seat {
+    width: 104px;
+    padding: 6px 6px 7px;
+  }
+  .round-table.crowded .seat .avatar {
+    width: 40px !important;
+    height: 40px !important;
+  }
+  .round-table.crowded .seat-name {
+    font-size: 0.9rem;
+  }
+  .seat-name {
+    font-size: 0.9rem;
+  }
+  .seat-bid,
+  .round-table.crowded .seat-bid {
+    font-size: 0.8rem;
+  }
+  .trump {
+    flex-direction: row;
+    gap: 8px;
+    max-width: 180px;
+    text-align: left;
+  }
+  .trump-text {
+    font-size: 0.85rem;
+  }
+  .round-table .playing-card.small,
+  .round-table.crowded .playing-card.small {
+    width: 50px;
+    height: 70px;
+    font-size: 1rem;
+  }
+}
 @media (min-width: 900px) {
-  .game {
-    grid-template-columns: 220px 1fr;
-    grid-template-areas:
-      'bar bar'
-      'opponents table'
-      'me me'
-      'scores scores';
-  }
-  .opponents {
-    grid-template-columns: 1fr;
-    align-content: start;
-  }
-  .table {
-    min-height: 320px;
-    border-radius: 999px / 60%;
-  }
   .playing-card {
     width: 64px;
     height: 92px;
+  }
+}
+/* Wide screens: the scoreboard beside the table, in view while you play. */
+@media (min-width: 1100px) {
+  .game {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-areas:
+      'head head'
+      'table scores'
+      'key scores'
+      'status scores'
+      'me scores';
+    grid-template-rows: auto auto auto auto 1fr;
+  }
+  .game.watching {
+    grid-template-areas:
+      'head head'
+      'table scores'
+      'key scores'
+      'status scores';
+    grid-template-rows: auto auto auto 1fr;
+  }
+  .scoreboard {
+    align-self: start;
+    position: sticky;
+    top: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .seat.turn .seat-avatar::after {
+    animation: none;
+  }
+  .trick-card {
+    animation: none;
+  }
+  .seat {
+    transition: none;
   }
 }
 
@@ -964,7 +1273,7 @@ button.avatar-tile:disabled {
 }
 .seat.away {
   border-style: dashed;
-  opacity: 0.75;
+  opacity: 0.6;
 }
 .badge.away {
   border-color: var(--danger);

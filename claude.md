@@ -162,7 +162,7 @@ Key schema notes:
 - `SocketContext` — single Socket.io client instance (created on login, torn down on logout)
 - **Routing:** React Router v7 (import from `react-router`; `react-router-dom` is not used). Routes: `/` (lobby), `/room/:id`, `/game/:id`, `/profile`, `/admin`
 - **Mobile-first:** `min-width` media queries; touch targets ≥ 44×44px; no hover-only affordances; 375px viewport minimum
-- **Game board layout:** Vertical single-column on mobile (hand at bottom, trick in middle, opponents at top); table-surround on desktop
+- **Game board layout:** Round table on every screen size: players seated around an oval felt (you at the bottom, the rest clockwise in seat order), trump in the middle, each played card in front of its player; hand and actions below the table. Portrait oval on mobile; landscape on wider screens, with the scoreboard beside the table from 1100px
 - **Avatars:** Four config keys (`head`, `skin`, `face`, `hair`; see the Avatar System Specification). Three bundled SVG layer files (`head`, `face`, `hair`) are stacked via `position: absolute` in a circle; `skin` is the head layer's fill colour, not a file. No server-side image processing.
 
 ## Security
