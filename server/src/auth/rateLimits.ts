@@ -1,6 +1,7 @@
 import rateLimit, { type Options } from 'express-rate-limit';
 import { requestTraceId } from '../http/trace';
 import { logger } from '../logger';
+import { rateLimitHitsTotal } from '../metrics/registry';
 
 /**
  * Per-IP limits on auth endpoints, from §6 of docs/architecture/security.md.
@@ -20,7 +21,8 @@ function authLimiter(
     standardHeaders: 'draft-7',
     legacyHeaders: true, // X-RateLimit-Remaining, per the OpenAPI error catalogue notes
     handler: (req, res, _next, options) => {
-      logger.warn({ endpoint: name, ip: req.ip, traceId: requestTraceId(req) }, 'auth rate limit hit');
+      rateLimitHitsTotal.inc({ endpoint: name });
+      logger.warn({ event: 'auth.rate_limited', endpoint: name, ip: req.ip, traceId: requestTraceId(req) }, 'auth rate limit hit');
       res.status(options.statusCode).json({ code: 'RATE_LIMITED', message });
     },
   });
@@ -59,7 +61,8 @@ export const bugReportLimiter = rateLimit({
   legacyHeaders: true,
   keyGenerator: (req) => `user:${req.user?.id ?? ''}`,
   handler: (req, res, _next, options) => {
-    logger.warn({ endpoint: 'bug-reports', ip: req.ip, userId: req.user?.id, traceId: requestTraceId(req) }, 'rate limit hit');
+    rateLimitHitsTotal.inc({ endpoint: 'bug-reports' });
+    logger.warn({ event: 'rate_limited', endpoint: 'bug-reports', ip: req.ip, userId: req.user?.id, traceId: requestTraceId(req) }, 'rate limit hit');
     res.status(options.statusCode).json({ code: 'RATE_LIMITED', message: 'Too many bug reports. Please try again later.' });
   },
 });

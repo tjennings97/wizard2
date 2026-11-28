@@ -17,6 +17,7 @@ import {
   type Trick,
 } from '../engine';
 import { logger } from '../logger';
+import { gamesCompletedTotal, gamesStartedTotal, wsReconnectionsTotal } from '../metrics/registry';
 import type { RoomConfig } from '../rooms/rules';
 import {
   bidRequestPayload,
@@ -266,6 +267,7 @@ export class GameService {
   async launch(game: Game, started: RoundStarted, ctx: ActionContext = SERVER_CONTEXT): Promise<void> {
     const live = new LiveGame(game);
     this.byRoom.set(game.roomId, live);
+    gamesStartedTotal.inc();
     this.armTimeLimit(live);
     await this.run(live, ctx, async () => {
       const context = {
@@ -289,6 +291,13 @@ export class GameService {
 
   gameIdFor(roomId: string): string | null {
     return this.byRoom.get(roomId)?.game.gameId ?? null;
+  }
+
+  /** Games registered and not yet ended (the games_active gauge). */
+  activeCount(): number {
+    let n = 0;
+    for (const live of this.byRoom.values()) if (!live.ended) n++;
+    return n;
   }
 
   /**
@@ -445,6 +454,7 @@ export class GameService {
     const ctx: ActionContext = { userId, traceId: null };
     await this.run(live, ctx, async () => {
       const held = this.clearSeatHold(live, userId);
+      if (held) wsReconnectionsTotal.inc({ outcome: 'success' });
       const player = live.game.activePlayers.find((p) => p.id === userId);
       // Also a player whose hold ran out but who was not dropped (the timeout could not be
       // recorded): they are back, so they are connected again.
@@ -770,6 +780,7 @@ export class GameService {
 
     const result = game.endGame();
     this.clearTimers(live);
+    gamesCompletedTotal.inc({ status: 'complete' });
     const closesAt = new Date(Date.now() + this.countdownMs);
     const payload = gameOverPayload(game, result, closesAt, this.countdownMs);
     live.ended = { event: 'game_over', payload };
@@ -817,6 +828,7 @@ export class GameService {
     if (game.phase === 'awaiting_continue_decision' && dropReason === 'mutual_end') game.resolveContinueOrEnd(false);
     else if (game.phase !== 'incomplete') game.abandon();
     this.clearTimers(live);
+    gamesCompletedTotal.inc({ status: 'incomplete' });
 
     const closesAt = new Date(Date.now() + this.countdownMs);
     const state = game.toGameState();
@@ -955,7 +967,8 @@ export class GameService {
     const timer = setTimeout(() => {
       if (live.away.get(userId) !== timer || this.byRoom.get(live.game.roomId) !== live) return;
       live.away.delete(userId);
-      logger.info({ ...this.logFields(live, { userId, traceId: null }) }, 'reconnection window expired');
+      wsReconnectionsTotal.inc({ outcome: 'timeout' });
+      logger.warn({ ...this.logFields(live, { userId, traceId: null }), event: 'game.reconnect_timeout' }, 'reconnection window expired');
       this.lifecycle
         .playerTimedOut(live.game.roomId, userId)
         .catch((err) => logger.error({ err, ...this.logFields(live, { userId, traceId: null }) }, 'player timeout handling failed'));

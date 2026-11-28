@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { errorHandler } from './http/errors';
+import { requestMetrics } from './metrics/http';
 import { createApiRouter, type ApiDeps } from './routes';
 
 export function createApp(deps: ApiDeps) {
@@ -14,6 +15,8 @@ export function createApp(deps: ApiDeps) {
   app.set('trust proxy', config.trustProxyHops);
 
   // Production allows only the production origin; development allows the Vite dev server.
+  // First, so it times the whole request and sees every response, errors included.
+  app.use(requestMetrics());
   app.use(cors({ origin: config.corsOrigin, credentials: true }));
   app.use(cookieParser(config.sessionSecret));
   app.use(express.json());

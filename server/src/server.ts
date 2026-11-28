@@ -2,6 +2,8 @@ import http from 'http';
 import { createApp } from './app';
 import { GameService, type GameServiceOptions } from './games/service';
 import { RoomService, type RoomServiceOptions } from './rooms/service';
+import { setGaugeSource } from './metrics/registry';
+import { countLobbyRooms } from './rooms/queries';
 import { attachSocket, type SocketOptions } from './socket';
 
 /**
@@ -34,5 +36,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     pingTimeoutMs: options.pingTimeoutMs,
   });
   app = createApp({ rooms, presence: realtime, games });
+  // Gauges read on each scrape (src/metrics/registry.ts).
+  setGaugeSource('wsConnections', () => realtime.connectionCount());
+  setGaugeSource('playersConnected', () => realtime.connectedUserCount());
+  setGaugeSource('gamesActive', () => games.activeCount());
+  setGaugeSource('roomsActive', () => countLobbyRooms());
   return { httpServer, io, realtime, rooms, games, app, detachSocket: detach };
 }

@@ -1,6 +1,7 @@
 import knex, { Knex } from 'knex';
 import path from 'path';
 import { config } from '../config';
+import { instrumentKnex } from '../metrics/db';
 
 export const knexConfig: Knex.Config = {
   client: 'pg',
@@ -13,6 +14,7 @@ export const knexConfig: Knex.Config = {
 };
 
 export const db = knex(knexConfig);
+instrumentKnex(db);
 
 /** Verifies the database is reachable. Throws if not. */
 export async function checkDbConnection(): Promise<void> {

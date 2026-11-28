@@ -11,7 +11,7 @@ All observability components are grounded in the architecture decisions in the S
 **Observability stack summary:**
 
 - **Structured logging:** pino emitting JSON to stdout, captured by Railway and forwarded to Grafana Cloud Loki
-- **Metrics:** prom-client exposing a `/metrics` endpoint, scraped by Grafana Cloud every 30 seconds
+- **Metrics:** prom-client exposing a `/api/v1/metrics` endpoint, scraped by Grafana Cloud every 30 seconds
 - **Dashboards:** Grafana Cloud, a production dashboard plus k6 performance trends
 - **Alerting:** Grafana Cloud alerting rules, notifications delivered via email
 - **Performance test metrics:** k6 pushing results to Grafana Cloud via Prometheus remote write during CI runs
@@ -27,7 +27,7 @@ The diagram below shows how the observability components connect at runtime.
 │                                                         │
 │  Express app                                            │
 │  ├── pino → stdout → Railway log capture                │
-│  └── prom-client → GET /metrics (bearer token required) │
+│  └── prom-client → GET /api/v1/metrics (bearer token)   │
 └─────────────────────────────────────────────────────────┘
          │ log stream (forwarded)       │ scraped every 30s
          ▼                              ▼
@@ -52,7 +52,7 @@ The diagram below shows how the observability components connect at runtime.
 
 - The Express app is the only component that emits observability data. The game engine and persistence layers are instrumented at the socket and API layers above them — the engine itself has no logging or metrics calls.
 - Only production sends metrics and logs to Grafana Cloud. Every metric series and log stream still carries an `env` label (`production`), so another environment could be added later without changing queries.
-- The `/metrics` endpoint is protected by a bearer token stored as a Railway environment variable (`PROMETHEUS_BEARER_TOKEN`). Grafana Cloud is configured with this token as a scrape header. The endpoint is publicly accessible over HTTPS (Grafana Cloud's scraper reaches it from outside Railway), but is protected from unauthorised access by the bearer token requirement.
+- The `/api/v1/metrics` endpoint is protected by a bearer token stored as a Railway environment variable (`PROMETHEUS_TOKEN`, validated at startup by `config.ts`). Grafana Cloud is configured with this token as a scrape header. The endpoint is publicly accessible over HTTPS (Grafana Cloud's scraper reaches it from outside Railway), but is protected from unauthorised access by the bearer token requirement.
 - The `traceId` for a session is generated at login and stored on the session record. It is attached to `req.user` by session middleware and to `socket.data` on socket connect. All log calls in the API and socket layers include it automatically. It is also written to the `bug_reports` table when a bug report is submitted.
 
 ## Structured Logging
@@ -75,10 +75,24 @@ Every log entry must include the following fields:
 | `userId` | string \| null | Authenticated user ID; null for unauthenticated requests |
 | `roomId` | string \| null | Current room ID if the event is room-scoped; null otherwise |
 | `gameId` | string \| null | Current game ID if the event is game-scoped; null otherwise |
-| `event` | string | A short machine-readable event name (e.g. `game.card_played`, `auth.login_failed`) |
+| `event` | string \| null | A short machine-readable event name (e.g. `http.request`, `auth.login_failed`); null on lines that have not been given one yet |
 | `message` | string | Human-readable description of the event |
 
 Additional fields may be added per event type (e.g. `cardPlayed`, `round`, `errorCode`) and are included in the same flat JSON object.
+
+**Implementation (`server/src/logger.ts`):** the pino `mixin` adds `traceId`, `userId`, `roomId`, `gameId` and `event` as `null` to every line, then the request's `traceId` and `userId` from `logContext` (set by `authenticate()`). Fields passed to a log call win, except ones passed as `undefined`, which keep the default so the field never drops out of the line. The timestamp is written under the key `timestamp`. Socket-layer lines take `userId`, `traceId`, `roomId` and `gameId` from `Realtime.logContext(socket)`.
+
+**Request log line (`server/src/metrics/http.ts`):** every finished `/api/*` and `/health` response writes one line, `event: "http.request"`, message `request completed`, with `method`, `route` (the route pattern, as in the metrics), `path` (without the query string), `statusCode`, `durationMs`, `traceId` (`requestTraceId(req)`), `userId`, and `roomId` for `/rooms/:roomId` routes. It never includes the body, the query string or any header. `/health` and `/api/v1/metrics` are logged at `debug`, so the uptime check and the scraper do not flood the production logs.
+
+**Security events:**
+
+| `event` | Level | When | Extra fields |
+| --- | --- | --- | --- |
+| `auth.login_failed` | `warn` | Wrong password or unknown username on `POST /auth/login` | `reason` (`unknown_user` \| `bad_password`), `ip`, `userId` when known. The username is never logged (it is sometimes a mistyped password). |
+| `auth.rate_limited` | `warn` | An auth rate limiter refused a request | `endpoint`, `ip` |
+| `rate_limited` | `warn` | The bug-report limiter refused a request | `endpoint`, `ip`, `userId` |
+| `auth.reset_attempt` | `warn` (failed) / `info` (success) | `POST /auth/reset-password` reached the passphrase check | `outcome` (`unknown_user` \| `bad_passphrase` \| `success`), `ip`, `userId` when known |
+| `auth.invite_rejected` | `warn` | An invite code could not be redeemed | `found` (whether a row matched), `ip`. Never the code. |
 
 ### Log levels
 
@@ -161,12 +175,12 @@ Production runs at `info` level. The log level is set via the `LOG_LEVEL` enviro
 
 ## Metrics Registry
 
-All metrics are registered using `prom-client` and exposed on `GET /metrics`. The endpoint requires a `Bearer <PROMETHEUS_BEARER_TOKEN>` header. Requests without a valid token receive a 401. Grafana Cloud is configured to pass this token as a scrape header.
+All metrics are registered using `prom-client` in `server/src/metrics/registry.ts` (a dedicated registry, not prom-client's global one) and exposed on `GET /api/v1/metrics`. The endpoint requires an `Authorization: Bearer <PROMETHEUS_TOKEN>` header, compared in constant time. Requests without a valid token receive `401 UNAUTHORIZED` with `WWW-Authenticate: Bearer`; a session cookie is not accepted instead. Grafana Cloud is configured to pass this token as a scrape header.
 
 Every metric series includes two global labels applied via prom-client's default labels mechanism — they do not need to be specified per metric:
 
 - `env` — set from the `NODE_ENV` environment variable (`production` in the deployed app)
-- `version` — set from the application version string (e.g. the value of `npm_package_version`, or `RAILWAY_GIT_COMMIT_SHA` truncated to 7 characters). This label allows dashboard queries to be scoped to a specific deployed version and makes it straightforward to correlate a metric change with a particular release.
+- `version` — `RAILWAY_GIT_COMMIT_SHA` truncated to 7 characters when set (production), otherwise `npm_package_version` or the version in `server/package.json`. This label allows dashboard queries to be scoped to a specific deployed version and makes it straightforward to correlate a metric change with a particular release.
 
 ### Infrastructure metrics
 
@@ -174,7 +188,7 @@ The following metrics are collected automatically by prom-client's default colle
 
 | Metric name | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code`, `env` | HTTP request duration in seconds, bucketed. Covers all `/api/v1/` routes. |
+| `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code`, `env` | HTTP request duration in seconds, bucketed. Covers all `/api/v1/` routes and `/health`. A request that matched no route is labelled `route="unmatched"`. |
 | `http_requests_total` | Counter | `method`, `route`, `status_code`, `env` | Total HTTP request count. Used to compute error rate and throughput. |
 | `ws_connections_active` | Gauge | `env` | Current number of active Socket.io connections. |
 | `ws_reconnections_total` | Counter | `outcome`, `env` | Total WebSocket reconnection attempts. `outcome` label values: `success`, `timeout`. |
@@ -183,12 +197,12 @@ The following metrics are collected automatically by prom-client's default colle
 
 | Metric name | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `rooms_active` | Gauge | `env` | Current number of rooms in Open or In Progress state. |
-| `games_active` | Gauge | `env` | Current number of games in the In Progress state. |
+| `rooms_active` | Gauge | `env` | Current number of rooms in Open or In Progress state (read from `rooms.state`). |
+| `games_active` | Gauge | `env` | Current number of games in the In Progress state in this process (live and not yet ended). |
 | `games_started_total` | Counter | `env` | Total games started since process start. |
 | `games_completed_total` | Counter | `status`, `env` | Total games ended. `status` label values: `complete`, `incomplete`. |
-| `players_connected` | Gauge | `env` | Current number of authenticated players with an active socket connection. |
-| `bug_reports_total` | Counter | `severity`, `env` | Total bug reports submitted. `severity` label values: `low`, `medium`, `high`. |
+| `players_connected` | Gauge | `env` | Current number of authenticated users with at least one active socket connection (a user with two tabs counts once). |
+| `bug_reports_total` | Counter | `severity`, `env` | Total bug reports submitted. `severity` label values: `low`, `medium`, `high`, or `none` when the reporter chose no severity. |
 
 ### Database metrics
 
@@ -201,28 +215,59 @@ The following metrics are collected automatically by prom-client's default colle
 
 All database metrics are emitted by the Express application, not by Postgres itself. The instrumentation wrapper around Knex measures client-side latency — the time the app spends waiting for a query response — which includes both Postgres execution time and the network round-trip between the app and database services within Railway. At this scale and deployment topology these will be close, but the figures should be read as "time the app was blocked waiting for the DB" rather than internal Postgres query execution time. The `operation` and `table` labels are set in the wrapper; because no raw SQL exists outside the persistence layer, all database calls pass through it, keeping instrumentation centralised.
 
-**Note on cardinality:** the `table` label is bounded to the fixed schema table set (`users`, `sessions`, `rooms`, `room_members`, `games`, `rounds`, `round_players`, `game_results`, `game_events`, `invites`, `bug_reports`) and `operation` has four values. Combined with the two global labels, total series count remains well within Grafana Cloud's free tier limit of 10,000 series.
+**Note on cardinality:** the `table` label is bounded to the fixed schema table set (`users`, `sessions`, `rooms`, `room_members`, `games`, `rounds`, `round_players`, `game_results`, `game_events`, `invites`, `bug_reports`), plus `other` for anything else (raw statements such as `select 1`, `knex_migrations`), and `operation` has four values. Statements outside the four operations (transaction control such as `BEGIN`/`COMMIT`, DDL) are not recorded.
+
+### Security metrics
+
+These cover the "security events" gap in the Security Considerations document. Each also has a log line (see [Structured Logging](#structured-logging)).
+
+| Metric name | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `auth_login_failures_total` | Counter | `reason`, `env` | Failed logins. `reason`: `unknown_user`, `bad_password`. |
+| `rate_limit_hits_total` | Counter | `endpoint`, `env` | Requests refused by a rate limiter. `endpoint`: `login`, `register`, `reset-password`, `users-me-current-password`, `bug-reports`. |
+| `auth_password_reset_attempts_total` | Counter | `outcome`, `env` | `POST /auth/reset-password` attempts that passed body validation. `outcome`: `unknown_user`, `bad_passphrase`, `success`. | Combined with the two global labels, total series count remains well within Grafana Cloud's free tier limit of 10,000 series.
 
 ### Metric update points
 
 Metrics must be updated at the following points in the application:
 
-- `http_request_duration_seconds` and `http_requests_total`: updated by Express middleware on every response, using the route pattern (e.g. `/api/v1/rooms/:id`), not the raw URL, to avoid high-cardinality label values.
-- `ws_connections_active`: incremented on socket connect, decremented on socket disconnect.
-- `ws_reconnections_total`: incremented in the reconnection handler — `outcome=success` when the 30-second timer is cleared by a reconnecting socket, `outcome=timeout` when the timer expires.
-- `rooms_active`: incremented when a room is created, decremented when a room transitions to Closed.
-- `games_active`: incremented when a game starts, decremented when a game ends (complete or incomplete).
-- `games_started_total`: incremented when a game starts.
-- `games_completed_total`: incremented when a game ends, with the appropriate `status` label.
-- `players_connected`: incremented on authenticated socket connect, decremented on socket disconnect.
+- `http_request_duration_seconds` and `http_requests_total`: updated by Express middleware (`requestMetrics` in `server/src/metrics/http.ts`, mounted first in `app.ts`) on every response, using the route pattern (e.g. `/api/v1/rooms/:roomId`), not the raw URL, to avoid high-cardinality label values. Each API router is mounted with `markRouteBase`, which records its mount path, because Express resets `req.baseUrl` when an error falls out of a router to the app-level error handler.
+- **Gauges are read on scrape.** `ws_connections_active`, `players_connected`, `games_active`, `rooms_active` and `db_pool_size` are not counted up and down; each reads its current value from the layer that owns the state when Prometheus scrapes (sources registered with `setGaugeSource`, in `server.ts` and `metrics/db.ts`). The values match "incremented on connect / decremented on disconnect", but cannot drift from a missed decrement or from rooms left open by a previous process. A source that fails (say the database is down) keeps the gauge's last value and logs `metrics.collect_failed`; the scrape still succeeds.
+- `ws_connections_active`: the Socket.io server's connected sockets.
+- `ws_reconnections_total`: incremented in the game service — `outcome=success` when a reconnecting socket clears a held seat (`playerReconnected`), `outcome=timeout` when the 30-second hold expires.
+- `rooms_active`: rooms whose `state` is `open` or `in_progress` (one count query per scrape).
+- `games_active`: games registered in the game service and not yet ended.
+- `games_started_total`: incremented when a started game is registered (`GameService.launch`).
+- `games_completed_total`: incremented when a game ends: `status=complete` after the final round, `status=incomplete` when it ends early (drop, mutual end, time limit). Games abandoned by the startup cleanup are not counted: they started in a previous process (they are logged as `game abandoned at startup`).
+- `players_connected`: users with a non-empty `user:<id>` socket channel (sockets join it once authenticated).
 - `bug_reports_total`: incremented in the `POST /api/v1/bug-reports` route handler after a successful write.
-- `db_query_duration_seconds` and `db_queries_total`: updated by a thin instrumentation wrapper around all Knex query calls in the persistence layer. The wrapper records operation type, table name, and outcome (`success` or `error`) on every query completion, before the result is returned to the caller.
-- `db_pool_size`: sampled on a 10-second interval using `knex.client.pool.numUsed()` and `knex.client.pool.numFree()`. Per-query updates are avoided to reduce noise.
-- `db_payload_bytes`: updated in the instrumentation wrapper for `insert` and `update` calls on `game_events` and `games` tables only. Byte size is estimated using `Buffer.byteLength(JSON.stringify(data))` before the query executes.
+- Security metrics: in the login and reset-password handlers (`server/src/routes/auth.ts`) and the rate-limiter handlers (`server/src/auth/rateLimits.ts`).
+- `db_query_duration_seconds` and `db_queries_total`: updated by a thin instrumentation wrapper around all Knex query calls in the persistence layer (`instrumentKnex` in `server/src/metrics/db.ts`, applied to `db` in `server/src/db/knex.ts`). It listens to Knex's `query`, `query-response` and `query-error` events on the root instance, which also receives queries run inside transactions; `table` is the first schema table the SQL names. The wrapper records operation type, table name, and outcome (`success` or `error`) on every query completion, before the result is returned to the caller.
+- `db_pool_size`: `knex.client.pool.numUsed() + numFree()`, read on scrape (every 30 seconds). Per-query updates are avoided to reduce noise.
+- `db_payload_bytes`: updated in the instrumentation wrapper for `insert` and `update` calls on `game_events` and `games` tables only. Byte size is estimated using `Buffer.byteLength(JSON.stringify(bindings))` (the query's bound values) before the query executes.
 
 ### Health endpoint
 
 `GET /health` (no authentication required) returns `{ status: "ok" }` with HTTP 200 when the application is healthy. It returns HTTP 500 if a liveness check fails. This endpoint is used by Railway for health checks and is also polled by the Grafana Cloud synthetic monitoring uptime check (see [Alerting](#alerting)).
+
+## Grafana Cloud Setup (manual steps)
+
+Nothing in the repo configures Grafana Cloud; the owner does these steps by hand, once, in the Grafana Cloud and Railway UIs. Each step links to the section below that has the details.
+
+1. **Create the stack.** Sign up at grafana.com (free tier) and create a stack. Note its Prometheus and Loki details under **Cloud Portal → your stack**.
+2. **Set the token in Railway.** Generate a long random value (for example `openssl rand -hex 32`) and set it as `PROMETHEUS_TOKEN` on the `wizard-app` service. Redeploy. Check it from a terminal: `curl -i https://<production-domain>/api/v1/metrics` returns `401`, and with `-H "Authorization: Bearer <token>"` returns Prometheus text.
+3. **Add the scrape job.** In Grafana Cloud, **Connections → Add new connection → Metrics Endpoint** (the hosted scrape integration). Set:
+   - **Scrape job URL:** `https://<production-domain>/api/v1/metrics`
+   - **Authentication:** Bearer, with the token from step 2
+   - **Scrape interval:** 30 seconds
+   Test the connection, save, then confirm in **Explore → Prometheus** that `http_requests_total{env="production"}` returns series.
+4. **Forward the logs.** Follow [Log forwarding setup](#log-forwarding-setup) (Railway log drain to Loki with `app="wizard"` and `env="production"` stream labels), then confirm in **Explore → Loki** that `{app="wizard"} | json` shows lines with `traceId`, `event` and `message`.
+5. **Build the dashboards.** Create the three dashboards in [Dashboards](#dashboards) with the `env` and `version` template variables and the listed panel queries.
+6. **Add the uptime check.** **Testing & synthetics → Synthetic Monitoring → Add check → HTTP** on `https://<production-domain>/health`, every 1 minute (see [Sev 1 — Service unavailable](#sev-1--service-unavailable-health-check-failure)).
+7. **Create the contact point and alert rules.** Add the `wizard-oncall` email contact point, a notification policy routing to it, and each rule in the [Alert summary table](#alert-summary-table), including the two security alerts.
+8. **k6 (optional, when `ci-perf.yml` exists).** Create the remote-write access policy token and the three GitHub secrets in [k6 Performance Test Metrics](#k6-performance-test-metrics), and import dashboard 19665.
+
+To rotate the scrape token: set a new `PROMETHEUS_TOKEN` in Railway, redeploy, then update the token in the scrape job straight away (scrapes fail with 401 in between).
 
 ## Dashboards
 
@@ -392,6 +437,30 @@ sum(rate({env="production", app="wizard"} | json | level="error" [10m])) > 0.1
 - **Threshold:** More than 0.1 error-level log lines per second (approximately 6 per minute) sustained over 10 minutes
 - **Rationale:** This alert catches application-layer errors (unhandled exceptions, failed DB writes) that may not surface immediately as 5xx HTTP responses — for example, errors in socket event handlers or background tasks.
 
+#### Sev 2 — Login failure spike
+
+- **Condition:** more than 30 failed logins across all users in 10 minutes. The per-IP login limiter allows 10 per 15 minutes, so this many means several IPs or a credential-stuffing attempt.
+- **PromQL:**
+
+```promql
+sum(increase(auth_login_failures_total{env="production"}[10m])) > 30
+```
+
+- **Investigate:** in Loki, `{env="production", app="wizard"} | json | event = "auth.login_failed"`, grouped by `ip` and `reason`. Many `unknown_user` failures from few IPs is enumeration or stuffing; many `bad_password` failures on one `userId` is a targeted guess.
+- **Rationale:** a small invite-only player base should see only a handful of mistyped passwords per day.
+
+#### Sev 2 — Rate-limit hits
+
+- **Condition:** more than 5 requests refused by any rate limiter in 10 minutes.
+- **PromQL:**
+
+```promql
+sum(increase(rate_limit_hits_total{env="production"}[10m])) > 5
+```
+
+- **Investigate:** `sum by (endpoint) (increase(rate_limit_hits_total{env="production"}[1h]))`, then Loki `| json | event =~ "auth.rate_limited|rate_limited"` for the IPs. Repeated `reset-password` hits deserve a look at `auth_password_reset_attempts_total{outcome="bad_passphrase"}`.
+- **Rationale:** a real player rarely hits a limiter; several hits in a short window is automated traffic.
+
 ### Alert summary table
 
 | Alert | Severity | Trigger condition | Window |
@@ -401,6 +470,8 @@ sum(rate({env="production", app="wizard"} | json | level="error" [10m])) > 0.1
 | WebSocket timeout spike | Sev 1 | Reconnection timeout rate > 20% | 10 minutes |
 | API latency degradation | Sev 2 | p95 latency > 300ms on any route | 10 minutes |
 | Application error volume | Sev 2 | Error log rate > 0.1/s | 10 minutes |
+| Login failure spike | Sev 2 | > 30 failed logins | 10 minutes |
+| Rate-limit hits | Sev 2 | > 5 rate-limited requests | 10 minutes |
 
 ### Alert suppression during deploys
 
@@ -604,8 +675,8 @@ curl https://<production-domain>/health
 # Expected: {"status":"ok"} with HTTP 200
 
 # Metrics endpoint (requires bearer token)
-curl -H "Authorization: Bearer <PROMETHEUS_BEARER_TOKEN>" \
-  https://<production-domain>/metrics
+curl -H "Authorization: Bearer <PROMETHEUS_TOKEN>" \
+  https://<production-domain>/api/v1/metrics
 # Expected: Prometheus text format output
 ```
 

@@ -203,7 +203,7 @@ Observability requirements are defined in the PRD. This section describes how th
 
 **Structured logging.** All server-side logs are emitted as structured JSON using `pino`. Logs are written to stdout and captured by Railway's log aggregation. Each entry includes: timestamp, level, trace/correlation ID, user ID (if authenticated), room ID and game ID (if applicable), and message.
 
-**Metrics.** The Express app exposes a `GET /metrics` endpoint via `prom-client`. The endpoint requires a bearer token (stored as an environment variable). Grafana Cloud (free tier) scrapes this endpoint over HTTPS.
+**Metrics.** The Express app exposes a `GET /api/v1/metrics` endpoint via `prom-client`. The endpoint requires a bearer token (`PROMETHEUS_TOKEN`). Grafana Cloud (free tier) scrapes this endpoint over HTTPS.
 
 **Dashboards.** Grafana Cloud hosts the production dashboards and a dashboard of k6 performance test trends across runs.
 
