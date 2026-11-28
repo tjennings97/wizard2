@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
 import { useSubmit } from '../hooks/useSubmit';
+import { AuthScreen } from '../components/AuthScreen';
 
 /**
  * Shown for any URL while signed out. `notice` says why the user is here (signed in elsewhere,
@@ -15,8 +16,8 @@ export function LoginPage() {
   const { busy, error, onSubmit } = useSubmit(() => login(username, password));
 
   return (
-    <main className="page narrow">
-      <h1>Wizard</h1>
+    <AuthScreen>
+      <h1>Log in</h1>
       {notice && (
         <p className="notice" role="status">
           {notice}
@@ -55,6 +56,6 @@ export function LoginPage() {
         <Link to="/reset-password">Forgot your password?</Link>
         <Link to="/register">Have an invite code? Create an account</Link>
       </nav>
-    </main>
+    </AuthScreen>
   );
 }

@@ -5,6 +5,7 @@ import { AvatarPicker } from '../components/AvatarPicker';
 import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
 import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
+import { AuthScreen } from '../components/AuthScreen';
 
 const USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;
 
@@ -47,7 +48,7 @@ export function RegisterPage() {
   );
 
   return (
-    <main className="page narrow">
+    <AuthScreen>
       <h1>Create your account</h1>
       <form onSubmit={onSubmit} className="stack" noValidate>
         <Field
@@ -138,6 +139,6 @@ export function RegisterPage() {
       <nav className="stack links">
         <Link to="/">Already have an account? Log in</Link>
       </nav>
-    </main>
+    </AuthScreen>
   );
 }

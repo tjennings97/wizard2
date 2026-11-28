@@ -62,7 +62,7 @@ function AvatarForm({ current }: { current: AvatarConfig }) {
   const [saved, setSaved] = useState<string | null>(null);
 
   return (
-    <section>
+    <section className="panel">
       <h2>Avatar</h2>
       {editing ? (
         <AvatarEditor
@@ -136,7 +136,7 @@ function DisplayNameForm({ current }: { current: string }) {
   );
 
   return (
-    <section>
+    <section className="panel">
       <h2>Display name</h2>
       <form onSubmit={onSubmit} className="stack" noValidate>
         <Field
@@ -188,7 +188,7 @@ function PasswordForm() {
   );
 
   return (
-    <section>
+    <section className="panel">
       <h2>Password</h2>
       <form onSubmit={onSubmit} className="stack" noValidate>
         <Field
@@ -254,7 +254,7 @@ function PassphraseForm() {
   );
 
   return (
-    <section>
+    <section className="panel">
       <h2>Recovery passphrase</h2>
       <p className="muted">Used to reset your password if you forget it. There is no email reset.</p>
       <form onSubmit={onSubmit} className="stack" noValidate>

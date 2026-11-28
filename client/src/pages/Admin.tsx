@@ -199,7 +199,7 @@ function InvitesSection() {
   };
 
   return (
-    <section>
+    <section className="panel">
       <h2>Invites</h2>
       <form onSubmit={onCreate} className="stack" noValidate>
         <Field
@@ -323,7 +323,7 @@ function UsersSection({ me }: { me: User }) {
   const pages = users ? Math.max(1, Math.ceil(users.total / users.limit)) : 1;
 
   return (
-    <section>
+    <section className="panel">
       <h2>Users</h2>
       {reset && (
         <OneTimeSecret
@@ -451,7 +451,7 @@ function BugReportsSection() {
     });
 
   return (
-    <section>
+    <section className="panel">
       <h2>Bug reports</h2>
       <label>
         Show
