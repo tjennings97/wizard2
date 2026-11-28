@@ -53,6 +53,7 @@ import {
   type ReplayedEvent,
   type RoundRecord,
 } from './queries';
+import { RECONNECT_WINDOW_MS } from '../shared/reconnect';
 
 /**
  * What the game service tells the real-time layer. Implemented by the socket layer
@@ -82,7 +83,7 @@ export interface GameLifecycle {
    */
   gameFinished(roomId: string, closesAt: Date): void;
   /**
-   * A disconnected player's 30-second seat hold ran out. Mark them left (room_members.left_at)
+   * A disconnected player's seat hold (RECONNECT_WINDOW_MS) ran out. Mark them left (room_members.left_at)
    * and broadcast user_left with reason "timeout", which applies the player-drop rules
    * (userLeft below).
    */
@@ -96,9 +97,6 @@ export const COMPLETING_COUNTDOWN_MS = 30 * 1000;
 
 /** Duplicate idempotency keys within this window are acknowledged without reprocessing. */
 export const IDEMPOTENCY_WINDOW_MS = 60 * 1000;
-
-/** How long a disconnected player's seat is held for them to reconnect. */
-export const RECONNECT_WINDOW_MS = 30 * 1000;
 
 /** How long the last two players have to answer continue_or_end_request. No answer counts as end. */
 export const CONTINUE_DECISION_MS = 60 * 1000;
@@ -145,7 +143,7 @@ class LiveGame {
    * ended; re-sent after state_snapshot. Nothing else is applied to an ended game.
    */
   ended: { event: string; payload: unknown } | null = null;
-  /** Seat holds of disconnected players (the 30-second reconnection window), by user id. */
+  /** Seat holds of disconnected players (the RECONNECT_WINDOW_MS reconnection window), by user id. */
   readonly away = new Map<string, NodeJS.Timeout>();
   /**
    * The held seats that follow a real dropped connection, which ws_reconnections_total counts.
@@ -210,7 +208,7 @@ export interface NewGame {
  * See docs/architecture/game-state-machine.md and docs/api/websocket-events.md.
  *
  * Covers start through game_over, and the connection side: a disconnected player's seat is held
- * for 30 seconds, a player who quits or times out is dropped (the round is voided and re-dealt,
+ * for RECONNECT_WINDOW_MS (2 minutes), a player who quits or times out is dropped (the round is voided and re-dealt,
  * or the last two decide whether to continue), and a game is abandoned at the 3-hour limit.
  */
 export class GameService {

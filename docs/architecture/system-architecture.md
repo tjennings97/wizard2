@@ -133,7 +133,7 @@ The game engine is a pure TypeScript layer with no I/O dependencies. All classes
 
 **Reconnection sequence:**
 
-1. Socket disconnect detected → server starts a 30-second `setTimeout` keyed by `userId`
+1. Socket disconnect detected → server starts a 2-minute `setTimeout` keyed by `userId`
 2. `player_disconnected` broadcast to the room; other players see a visual indicator
 3. Client attempts to reconnect (Socket.io built-in retry with the same session token)
 4. On reconnect: session validated, `setTimeout` cleared, `game.toPlayerView(userId)` (own hand only) sent to the reconnecting socket via `state_snapshot`
@@ -193,7 +193,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `user_lef
 
 **Session-socket binding:** On Socket.io connection, the server reads the signed session cookie from the handshake headers and runs the same validation logic as the REST middleware and binds `socket.data.userId`. If validation fails, the connection is rejected. All socket event handlers trust `socket.data.userId` — no per-event re-validation.
 
-**Reconnection window:** When a socket disconnects, the session remains valid in Postgres. The 30-second reconnection timer is server-side state (in-memory `setTimeout`). If the server restarts during the window, the timer is lost along with the game itself: the game is abandoned (see GameState checkpointing).
+**Reconnection window:** When a socket disconnects, the session remains valid in Postgres. The 2-minute reconnection timer is server-side state (in-memory `setTimeout`). If the server restarts during the window, the timer is lost along with the game itself: the game is abandoned (see GameState checkpointing).
 
 **Password and passphrase hashing:** Both are hashed with bcrypt (work factor 12) before storage. The server never stores or logs plaintext credentials. Recovery passphrase reset follows the same flow as password reset — valid passphrase match required before allowing credential change.
 
@@ -240,7 +240,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `user_lef
 4. **Load balancer:** Railway or an external LB configured with sticky sessions (by session cookie) to minimize cross-instance routing during a game.
 5. **PgBouncer:** Connection pooling added between the app instances and Postgres to avoid exhausting connection limits under high load.
 
-**Reconnection timer:** The 30-second in-memory `setTimeout` does not survive server restarts or cross-instance routing. At single-instance scale this is acceptable. Horizontal scaling would require the reconnection timer to be moved to Redis (TTL key) for reliability.
+**Reconnection timer:** The 2-minute in-memory `setTimeout` does not survive server restarts or cross-instance routing. At single-instance scale this is acceptable. Horizontal scaling would require the reconnection timer to be moved to Redis (TTL key) for reliability.
 
 ## Security Architecture
 

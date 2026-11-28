@@ -136,7 +136,7 @@ The server broadcasts most events to all players in the session. Unicast events 
 | Event | Broadcast | Key Payload Fields |
 | --- | --- | --- |
 | `user_joined` | All | `user_id`, `display_name`, `avatar_config: AvatarConfig`, `role: "player"\|"spectator"`, `seat_index: integer\|null` (null for spectators), `player_count`, `spectator_count` — sent for players and spectators |
-| `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress. Then the player is out of the game for good and the drop's consequence follows at once: with 3 or more players left, the voided round is re-dealt at the same round number (`round_started`, `hand_dealt`, ...); with 2, `continue_or_end_request`; with 1, `game_over` (`status: "incomplete"`). `timeout`: a disconnected player did not come back within 30 s |
+| `user_left` | All | `user_id`, `role: "player"\|"spectator"`, `reason: "voluntary"\|"timeout"`, `player_count`, `spectator_count` — player-drop rules apply only when `role` is `player` and a game is in progress. Then the player is out of the game for good and the drop's consequence follows at once: with 3 or more players left, the voided round is re-dealt at the same round number (`round_started`, `hand_dealt`, ...); with 2, `continue_or_end_request`; with 1, `game_over` (`status: "incomplete"`). `timeout`: a disconnected player did not come back within 2 minutes |
 | `game_starting` | All | `game_id: string`, `countdown_seconds: integer`, `player_order: string[]` — the host started the game (`POST /rooms/{roomId}/start`). `countdown_seconds` is `0`: the game starts at once. `player_order` is the seat order (join order); seat 1 deals round 1 |
 | `game_started` | All | `game_id: string`, `room_id: string`, `round_count: integer`, `bid_rule: "open"\|"uneven"`, `players: PlayerSummary[]` — `PlayerSummary` is `{ user_id, display_name, avatar_config, seat_index }` (`seat_index` 0-based, as in `user_joined`; `avatar_config` is the `AvatarConfig` from the OpenAPI spec, as the player's avatar was when the game started). Clients go to the game screen (`/game/{game_id}`) |
 | `game_over` | All | `game_id`, `status: "complete"\|"incomplete"`, `final_scores: ScoreEntry[]` (seat order, players still seated), `winner_ids: string[]` — every player tied for the highest score; tied players are co-winners — `closes_at: ISO-8601`, `countdown_seconds: integer` (`30`). `complete`: sent right after the final `round_complete`. `incomplete`: the game ended early after a player drop (one player left, or the last two did not both choose to continue); the round in progress is not scored and `winner_ids` is empty. The room is now COMPLETING: at `closes_at` it closes (`room_closed`, `reason: "game_finished"`) and everyone returns to the lobby. Members may leave sooner with `POST /rooms/{roomId}/leave`; this is not a quit |
@@ -210,7 +210,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 
 1. **Invalid action:** Server emits `invalid_play_error`, `invalid_bid_error` or `invalid_trump_error` (unicast). State does not change; the client re-enables the relevant UI.
 2. **Fatal session error:** Server emits `session_error` with `fatal: true`. The client disconnects and shows a re-join prompt.
-3. **Reconnect:** Client sends `join_game` with `last_seq_seen` within the 30-second window. Server validates the session, emits `state_snapshot` (the player's own view, so they resume exactly where they left off), replays any events with `seq > last_seq_seen`, and broadcasts `player_reconnected`.
+3. **Reconnect:** Client sends `join_game` with `last_seq_seen` within the 2-minute window. Server validates the session, emits `state_snapshot` (the player's own view, so they resume exactly where they left off), replays any events with `seq > last_seq_seen`, and broadcasts `player_reconnected`.
 
 ## Room & Session Management Events
 
@@ -223,7 +223,7 @@ The table below maps each GSM state to the events that drive entry, the client e
 | Join | Client → Server | `join_game` | Server uses the session bound at connect (`socket.data.userId`); assigns seat |
 | Seat confirmed | Server → Client | `user_joined` (broadcast) | All room members receive the newcomer's info and role |
 | Leave (intentional) | Client → Server | `leave_game` (or `POST /rooms/{roomId}/leave`) | The player has quit. Server broadcasts `user_left` with `reason: "voluntary"`; in a game, player-drop rules apply, the player's sockets return to the lobby, and they cannot rejoin the game as a player (joining as a spectator is allowed). After the game is over (COMPLETING) leaving is not a quit |
-| Disconnect detected | Server → All | `player_disconnected` | The player's last socket in the room closed, or a client that pings sent no `ping` for 30 s (the server disconnects it). Only for a player still seated in a game being played. Seat held; 30-second reconnection window starts. A player with no socket in the room when the game starts is treated the same way |
+| Disconnect detected | Server → All | `player_disconnected` | The player's last socket in the room closed, or a client that pings sent no `ping` for 30 s (the server disconnects it). Only for a player still seated in a game being played. Seat held; 2-minute reconnection window starts. A player with no socket in the room when the game starts is treated the same way |
 | Reconnect (within window) | Client → Server | Socket connect; then `join_game` with `last_seq_seen` | On connect the server sends `state_snapshot` and the pending prompt, then broadcasts `player_reconnected`. `join_game` then gets a second `state_snapshot` with the missed events replayed |
 | Window expires | Server → All | `user_left` | `reason: "timeout"`; treated as a quit (the member is marked left), player-drop rules apply |
 
@@ -241,8 +241,8 @@ Spectator joins and leaves are broadcast to the room like players': `user_joined
 
 | Condition | Timeout | Server Action |
 | --- | --- | --- |
-| No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 30-second reconnection window |
-| Disconnected player does not rejoin | 30 s after `player_disconnected` | `user_left` (timeout), then the player-drop rules |
+| No `ping` from client | 30 s | Treated as a disconnect: `player_disconnected`, then the 2-minute reconnection window |
+| Disconnected player does not rejoin | 2 min after `player_disconnected` | `user_left` (timeout), then the player-drop rules |
 | The last two players do not both answer `continue_or_end_request` | 60 s after it | Treated as end: `game_over` (`status: "incomplete"`) |
 | Game running | 2 h 45 min after `game_started` | `game_time_warning` |
 | Game running | 3 h after `game_started` | `game_abandoned` (`reason: "time_limit"`) |

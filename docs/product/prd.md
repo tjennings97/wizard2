@@ -59,7 +59,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 - Username and password
 - A valid session token is issued on success
 - Only one active session permitted per user; a new login invalidates any existing session
-- Session is tied to Socket.io reconnection: if a socket disconnects, the server holds the session open for 30 seconds to allow reconnection before treating the player as timed out
+- Session is tied to Socket.io reconnection: if a socket disconnects, the server holds the session open for 2 minutes to allow reconnection before treating the player as timed out
 
 **Password reset:**
 
@@ -211,14 +211,14 @@ The lobby is the default landing page for authenticated users. It displays all a
 **Player drop mid-game:**
 
 - Intentional leave (`leave_game`): the player has quit and is removed permanently; current round is voided and re-dealt to remaining players; game continues
-- Disconnect: the player's seat is held for 30s so they can reconnect; if they do not, they are treated as having quit (`user_left`, `reason: "timeout"`)
+- Disconnect: the player's seat is held for 2 minutes so they can reconnect; if they do not, they are treated as having quit (`user_left`, `reason: "timeout"`)
 - Drop to 2 players: remaining players are prompted to continue or end the game
 - If the game ends due to player drop, the session is recorded as incomplete with no winner
 
 **Reconnection:**
 
-- On reconnect within 30s, the player continues where they left off: their view of the live game (`toPlayerView(userId)`: their own hand only) is pushed via `state_snapshot` and missed events are replayed
-- Other players see a disconnection indicator during the 30s window
+- On reconnect within 2 minutes, the player continues where they left off: their view of the live game (`toPlayerView(userId)`: their own hand only) is pushed via `state_snapshot` and missed events are replayed
+- Other players see a disconnection indicator during the 2-minute window
 - Server-side timer is authoritative; client reconnection attempts are validated against session
 - Server restart: in-progress games are abandoned; players receive `game_abandoned` and return to the lobby
 - Game time limit: a game lasts at most 3 hours; players get `game_time_warning` 15 minutes before, then the game is abandoned (`game_abandoned`, `reason: "time_limit"`) and recorded as incomplete with no winner
@@ -293,9 +293,9 @@ The JSONB payload for each event type captures: player hand at time of action, a
 
 **Reconnection logic:**
 
-- Socket disconnect detected server-side → 30-second server timer starts
+- Socket disconnect detected server-side → 2-minute server timer starts
 - Other players in the room receive a `player_disconnected` event and see a visual indicator
-- If the player reconnects within 30s (session validated), their player view of the current game (`toPlayerView(userId)`, own hand only — never the raw `GameState`) is sent via `state_snapshot` to restore their view
+- If the player reconnects within 2 minutes (session validated), their player view of the current game (`toPlayerView(userId)`, own hand only — never the raw `GameState`) is sent via `state_snapshot` to restore their view
 - If the timer expires, the player is treated as having quit: `user_left` (`reason: "timeout"`) broadcast, game proceeds per player-drop rules
 - A player who leaves intentionally (`leave_game`) has quit: `user_left` (`reason: "voluntary"`) broadcast, game proceeds per player-drop rules
 - Page refresh is treated as a disconnect + reconnect; the server timer is the authoritative source, not client state

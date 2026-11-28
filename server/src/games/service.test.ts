@@ -1,5 +1,5 @@
 /**
- * GameService timers with Jest fake timers: the 30-second seat hold, the 60-second continue-or-end
+ * GameService timers with Jest fake timers: the 2-minute seat hold, the 60-second continue-or-end
  * decision and the 3-hour game time limit. The database is mocked (the writes are asserted as
  * calls); the socket side is a recording notifier. Real sockets and Postgres are covered in
  * drops.int.test.ts.
@@ -86,19 +86,19 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-describe('the 30-second seat hold', () => {
-  it('player_disconnected carries the deadline; at 30 s the room service is told the player timed out', async () => {
+describe('the 2-minute seat hold', () => {
+  it('player_disconnected carries the deadline; at 2 min the room service is told the player timed out', async () => {
     const t = setup();
     await t.service.launch(t.game, t.game.startRound());
     t.inRoom.delete('c');
     await t.service.playerDisconnected('r1', 'c');
 
     const [disc] = t.room('player_disconnected');
-    expect(disc.payload).toEqual({ player_id: 'c', reconnect_deadline: '2026-11-26T12:00:30.000Z' });
+    expect(disc.payload).toEqual({ player_id: 'c', reconnect_deadline: '2026-11-26T12:02:00.000Z' });
     expect(t.service.isHoldingSeat('r1', 'c')).toBe(true);
     expect(t.game.getPlayer('c').connected).toBe(false);
 
-    await jest.advanceTimersByTimeAsync(30 * SEC - 1);
+    await jest.advanceTimersByTimeAsync(2 * MIN - 1);
     expect(t.lifecycle.playerTimedOut).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1);
     expect(t.lifecycle.playerTimedOut).toHaveBeenCalledWith('r1', 'c');
@@ -114,14 +114,14 @@ describe('the 30-second seat hold', () => {
     await t.service.launch(t.game, t.game.startRound());
     t.inRoom.delete('c');
     await t.service.playerDisconnected('r1', 'c');
-    await jest.advanceTimersByTimeAsync(20 * SEC);
+    await jest.advanceTimersByTimeAsync(90 * SEC);
 
     t.inRoom.add('c');
     await t.service.playerReconnected('r1', 'c');
     expect(t.room('player_reconnected').map((e) => e.payload)).toEqual([{ player_id: 'c' }]);
     expect(t.game.getPlayer('c').connected).toBe(true);
 
-    await jest.advanceTimersByTimeAsync(60 * SEC);
+    await jest.advanceTimersByTimeAsync(3 * MIN);
     expect(t.lifecycle.playerTimedOut).not.toHaveBeenCalled();
     expect(t.room('user_left')).toHaveLength(0);
   });
@@ -131,7 +131,7 @@ describe('the 30-second seat hold', () => {
     t.inRoom.delete('b');
     await t.service.launch(t.game, t.game.startRound());
     expect(t.room('player_disconnected').map((e) => e.payload.player_id)).toEqual(['b']);
-    await jest.advanceTimersByTimeAsync(30 * SEC);
+    await jest.advanceTimersByTimeAsync(2 * MIN);
     expect(t.lifecycle.playerTimedOut).toHaveBeenCalledWith('r1', 'b');
   });
 
@@ -143,7 +143,7 @@ describe('the 30-second seat hold', () => {
     await t.service.userLeft('r1', 'd', 'voluntary', { user_id: 'd', role: 'player', reason: 'voluntary' });
     // Four became three: round 1 is re-dealt.
     expect(t.room('round_started').map((e) => e.payload.round_number)).toEqual([1, 1]);
-    await jest.advanceTimersByTimeAsync(60 * SEC);
+    await jest.advanceTimersByTimeAsync(3 * MIN);
     expect(t.lifecycle.playerTimedOut).not.toHaveBeenCalled();
   });
 });

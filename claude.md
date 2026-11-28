@@ -123,7 +123,7 @@ Key schema notes:
 
 ## Key Behaviors
 
-**Reconnection:** A dropped connection is not a quit. The server broadcasts `player_disconnected` and holds the player's seat for 30 seconds (`setTimeout` keyed by userId). If the player rejoins within the window (`join_game` with `last_seq_seen`): session validated, `game.toPlayerView(userId)` sent via `state_snapshot` (never the raw `GameState`), missed events replayed, `player_reconnected` broadcast, and they continue exactly where they left off. If the window expires: `user_left` (`reason: "timeout"`) and player-drop rules apply.
+**Reconnection:** A dropped connection is not a quit. The server broadcasts `player_disconnected` and holds the player's seat for 2 minutes (`setTimeout` keyed by userId). If the player rejoins within the window (`join_game` with `last_seq_seen`): session validated, `game.toPlayerView(userId)` sent via `state_snapshot` (never the raw `GameState`), missed events replayed, `player_reconnected` broadcast, and they continue exactly where they left off. If the window expires: `user_left` (`reason: "timeout"`) and player-drop rules apply.
 
 **Quitting:** A player who leaves intentionally (`leave_game`, or `POST /rooms/{roomId}/leave`) has quit: `user_left` (`reason: "voluntary"`), player-drop rules apply, and they cannot rejoin as a player (they may rejoin as a spectator).
 
