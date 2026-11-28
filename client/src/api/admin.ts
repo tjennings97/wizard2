@@ -38,7 +38,8 @@ export interface TemporaryCredentials {
   note: string;
 }
 
-export const listInvites = () => apiFetch<Invite[]>('/admin/invites');
+export const listInvites = (status?: InviteStatus) =>
+  apiFetch<Invite[]>(`/admin/invites${status ? `?status=${status}` : ''}`);
 
 export const createInvite = (label: string) =>
   apiFetch<CreatedInvite>('/admin/invites', { method: 'POST', body: label ? { label } : {} });
@@ -57,6 +58,19 @@ export const resetCredentials = (userId: string) =>
 
 export type BugSeverity = 'low' | 'medium' | 'high';
 
+/** Why an admin dismissed a report. A report with no resolution is open. */
+export type BugResolution = 'resolved' | 'not_a_bug' | 'cannot_reproduce' | 'wont_fix';
+
+export const BUG_RESOLUTION_LABELS: Record<BugResolution, string> = {
+  resolved: 'Resolved',
+  not_a_bug: 'Not a bug',
+  cannot_reproduce: 'Cannot reproduce',
+  wont_fix: "Won't fix",
+};
+
+/** `open`: not yet dismissed. `dismissed`: has a resolution. */
+export type BugStatus = 'open' | 'dismissed';
+
 /** GET /admin/bug-reports rows (the `AdminBugReport` schema). */
 export interface AdminBugReport {
   id: string;
@@ -71,6 +85,10 @@ export interface AdminBugReport {
   traceId: string;
   /** bug_reports.context: url, page, round_number, trick_number, game_state_summary, user_agent, client_timestamp. */
   context: Record<string, unknown>;
+  /** Null while the report is open. */
+  resolution: BugResolution | null;
+  resolvedAt: string | null;
+  resolvedBy: { id: string; username: string | null; displayName: string | null } | null;
 }
 
 export interface BugReportPage {
@@ -80,5 +98,11 @@ export interface BugReportPage {
   limit: number;
 }
 
-export const listBugReports = (page: number, limit: number, severity?: BugSeverity) =>
-  apiFetch<BugReportPage>(`/admin/bug-reports?page=${page}&limit=${limit}${severity ? `&severity=${severity}` : ''}`);
+export const listBugReports = (page: number, limit: number, severity?: BugSeverity, status?: BugStatus) =>
+  apiFetch<BugReportPage>(
+    `/admin/bug-reports?page=${page}&limit=${limit}${severity ? `&severity=${severity}` : ''}${status ? `&status=${status}` : ''}`,
+  );
+
+/** Dismiss a handled report with why, or reopen it with null. */
+export const setBugResolution = (reportId: string, resolution: BugResolution | null) =>
+  apiFetch<AdminBugReport>(`/admin/bug-reports/${encodeURIComponent(reportId)}`, { method: 'PATCH', body: { resolution } });

@@ -17,7 +17,7 @@ import { toPublicUser, type UserRow } from '../auth/users';
 
 /**
  * Admin panel routes (docs/api/openapi-spec.md, Admin Endpoints): invites, user roles,
- * credential resets and reading bug reports. Every route requires an authenticated admin.
+ * credential resets, and reading and dismissing bug reports. Every route requires an authenticated admin.
  * requireAuth reads the role from the database on each request, so a demotion takes effect on
  * the very next request.
  */
@@ -33,6 +33,10 @@ const USERS_PAGE_DEFAULT = 50;
 const USERS_PAGE_MAX = 200;
 
 const BUG_SEVERITIES = ['low', 'medium', 'high'] as const;
+export const BUG_RESOLUTIONS = ['resolved', 'not_a_bug', 'cannot_reproduce', 'wont_fix'] as const;
+type BugResolution = (typeof BUG_RESOLUTIONS)[number];
+/** `open`: no resolution yet. `dismissed`: an admin has set one. */
+const BUG_STATUSES = ['open', 'dismissed'] as const;
 const BUG_REPORTS_PAGE_DEFAULT = 20;
 const BUG_REPORTS_PAGE_MAX = 100;
 
@@ -48,6 +52,11 @@ interface BugReportRow {
   game_id: string | null;
   trace_id: string;
   context: Record<string, unknown>;
+  resolution: BugResolution | null;
+  resolved_at: Date | null;
+  resolved_by: string | null;
+  resolver_username: string | null;
+  resolver_display_name: string | null;
 }
 
 /** The `AdminBugReport` schema: the stored row, with the reporter's names joined in. */
@@ -62,7 +71,37 @@ function toBugReportDto(row: BugReportRow) {
     gameId: row.game_id,
     traceId: row.trace_id,
     context: row.context,
+    resolution: row.resolution,
+    resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
+    resolvedBy: row.resolved_by
+      ? { id: row.resolved_by, username: row.resolver_username, displayName: row.resolver_display_name }
+      : null,
   };
+}
+
+/** Selects a BugReportRow: the report with the reporter's and resolver's names joined in. */
+function selectBugReports(q: Knex.QueryBuilder): Knex.QueryBuilder {
+  return q
+    .leftJoin('users as u', 'u.id', 'b.user_id')
+    .leftJoin('users as r', 'r.id', 'b.resolved_by')
+    .select(
+      'b.id',
+      'b.created_at',
+      'b.severity',
+      'b.description',
+      'b.user_id',
+      'u.username',
+      'u.display_name',
+      'b.room_id',
+      'b.game_id',
+      'b.trace_id',
+      'b.context',
+      'b.resolution',
+      'b.resolved_at',
+      'b.resolved_by',
+      'r.username as resolver_username',
+      'r.display_name as resolver_display_name',
+    );
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -96,6 +135,7 @@ const validationError = (fields: Record<string, string>) =>
   new ApiError(400, 'VALIDATION_ERROR', `Invalid request: ${Object.keys(fields).join(', ')}.`, { fields });
 
 const inviteNotFound = () => new ApiError(404, 'NOT_FOUND', 'Invite not found.');
+const bugReportNotFound = () => new ApiError(404, 'NOT_FOUND', 'Bug report not found.');
 const userNotFound = () => new ApiError(404, 'NOT_FOUND', 'User not found.');
 const notAdmin = () => new ApiError(403, 'FORBIDDEN', 'Admin role required.');
 
@@ -280,7 +320,7 @@ export function createAdminRouter(): Router {
     }),
   );
 
-  // GET /admin/bug-reports?severity=&page=&limit= (newest first). Context holds the reporter's
+  // GET /admin/bug-reports?severity=&status=&page=&limit= (newest first). Context holds the reporter's
   // own player view (their hand), which is why this is admin-only.
   router.get(
     '/bug-reports',
@@ -291,6 +331,10 @@ export function createAdminRouter(): Router {
       if (severity !== undefined && !(BUG_SEVERITIES as readonly unknown[]).includes(severity)) {
         fields.severity = `Must be one of: ${BUG_SEVERITIES.join(', ')}.`;
       }
+      const status = req.query.status;
+      if (status !== undefined && !(BUG_STATUSES as readonly unknown[]).includes(status)) {
+        fields.status = `Must be one of: ${BUG_STATUSES.join(', ')}.`;
+      }
       const page = queryInt(req.query.page, 'page', 1, Number.MAX_SAFE_INTEGER, fields) ?? 1;
       const limit = queryInt(req.query.limit, 'limit', 1, BUG_REPORTS_PAGE_MAX, fields) ?? BUG_REPORTS_PAGE_DEFAULT;
       if (Object.keys(fields).length > 0) throw validationError(fields);
@@ -299,30 +343,50 @@ export function createAdminRouter(): Router {
         (trx) => {
           const q = trx('bug_reports as b');
           if (severity !== undefined) q.where('b.severity', severity as string);
+          if (status === 'open') q.whereNull('b.resolution');
+          if (status === 'dismissed') q.whereNotNull('b.resolution');
           return q;
         },
         (q) =>
-          q
-            .leftJoin('users as u', 'u.id', 'b.user_id')
-            .select(
-              'b.id',
-              'b.created_at',
-              'b.severity',
-              'b.description',
-              'b.user_id',
-              'u.username',
-              'u.display_name',
-              'b.room_id',
-              'b.game_id',
-              'b.trace_id',
-              'b.context',
-            )
+          selectBugReports(q)
             .orderBy('b.created_at', 'desc')
             .orderBy('b.id', 'desc')
             .limit(limit)
             .offset((page - 1) * limit),
       );
       res.status(200).json({ data: rows.map(toBugReportDto), total, page, limit });
+    }),
+  );
+
+  // PATCH /admin/bug-reports/{reportId} { resolution }: dismiss a handled report with why, or
+  // reopen it with `resolution: null`. Dismissing an already dismissed report updates its
+  // resolution and records the new admin and time.
+  router.patch(
+    '/bug-reports/:reportId',
+    ...admin,
+    asyncHandler(async (req, res) => {
+      const { reportId } = req.params;
+      if (!UUID_PATTERN.test(reportId)) throw bugReportNotFound();
+      const body = asObject(req.body);
+      const resolution = body?.resolution;
+      if (!body || !(resolution === null || (BUG_RESOLUTIONS as readonly unknown[]).includes(resolution))) {
+        throw validationError({ resolution: `Must be null or one of: ${BUG_RESOLUTIONS.join(', ')}.` });
+      }
+      const actorId = req.user!.id;
+      const update =
+        resolution === null
+          ? { resolution: null, resolved_at: null, resolved_by: null }
+          : { resolution, resolved_at: db.fn.now(), resolved_by: actorId };
+      // One transaction: the UPDATE locks the row, so the SELECT returns exactly what this
+      // request wrote, not a concurrent admin's change.
+      const row = await db.transaction(async (trx) => {
+        const updated = await trx('bug_reports').where({ id: reportId }).update(update).returning('id');
+        if (updated.length === 0) throw bugReportNotFound();
+        return (await selectBugReports(trx('bug_reports as b')).where('b.id', reportId).first()) as BugReportRow;
+      });
+
+      logger.info({ userId: actorId, bugReportId: reportId, resolution }, resolution ? 'admin dismissed bug report' : 'admin reopened bug report');
+      res.status(200).json(toBugReportDto(row));
     }),
   );
 

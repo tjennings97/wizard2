@@ -1502,6 +1502,7 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
         (see data-model.md, bug_reports.context); its `game_state_summary`
         holds the reporter's own player view, including their hand, which is
         why the route is admin-only. Search the server logs by `traceId`.
+        Without `status`, both open and dismissed reports are listed.
       tags: [Admin]
       security:
         - sessionCookie: []
@@ -1511,6 +1512,12 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
           schema:
             type: string
             enum: [low, medium, high]
+        - name: status
+          in: query
+          description: "`open`: not yet dismissed (resolution is null). `dismissed`: has a resolution."
+          schema:
+            type: string
+            enum: [open, dismissed]
         - name: page
           in: query
           schema:
@@ -1577,6 +1584,29 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                           format: uuid
                         context:
                           type: object
+                        resolution:
+                          type: string
+                          enum: [resolved, not_a_bug, cannot_reproduce, wont_fix]
+                          nullable: true
+                          description: Why an admin dismissed the report. Null while it is open.
+                        resolvedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        resolvedBy:
+                          type: object
+                          nullable: true
+                          description: The admin who dismissed the report. Null while it is open.
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            username:
+                              type: string
+                              nullable: true
+                            displayName:
+                              type: string
+                              nullable: true
                   total:
                     type: integer
                   page:
@@ -1584,13 +1614,75 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                   limit:
                     type: integer
         '400':
-          description: Unknown severity, or page / limit not an integer in range (VALIDATION_ERROR).
+          description: Unknown severity or status, or page / limit not an integer in range (VALIDATION_ERROR).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
           description: Not an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/bug-reports/{reportId}:
+    patch:
+      summary: Dismiss or reopen a bug report
+      description: >
+        Dismisses a handled report with the reason, recording the acting admin and the time, or
+        reopens it with `resolution: null`, which clears all three. Dismissing a report that is
+        already dismissed replaces its resolution, admin and time.
+      tags: [Admin]
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [resolved, not_a_bug, cannot_reproduce, wont_fix]
+                  nullable: true
+      responses:
+        '200':
+          description: >
+            The updated report, in the same shape as a `GET /admin/bug-reports` item.
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "`resolution` missing, or not null or one of the four values (VALIDATION_ERROR)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Not an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Bug report not found.
           content:
             application/json:
               schema:

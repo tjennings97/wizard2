@@ -197,6 +197,8 @@ The admin panel is a protected section of the main application, accessible only 
 
 **Invite table columns:** Label · Status (pending / accepted / expired / revoked) · Created · Expires · Used by. The code is not a column: only its hash is stored, so it can be shown only at creation. A Revoke button (with confirmation) appears on pending invites.
 
+**Invite filter:** The table shows pending invites by default, so an invite drops out of view once it is accepted, expires or is revoked. A Show filter (Pending / Accepted / Expired / Revoked / All) brings the others back; no invite is ever deleted.
+
 **Role management flow:**
 
 1. Admin views user list (paged, with a filter by username or display name)
@@ -215,9 +217,10 @@ The admin panel is a protected section of the main application, accessible only 
 
 **Bug reports:**
 
-1. Admin opens the Bug reports section of the panel: reports newest first, 20 per page, with a severity filter (All / High / Medium / Low)
+1. Admin opens the Bug reports section of the panel: reports newest first, 20 per page, with a Show filter (Open, the default / Dismissed / All) and a severity filter (All / High / Medium / Low)
 2. Each report shows severity, time, description, reporter, page, round and trick (if in a game), and the trace ID with a Copy button
 3. "Full context" opens the URL, room and game ids, browser, the device's send time and, for a report sent mid-game, the reporter's own game view
 4. To see what happened on the server, the admin searches the logs by the trace ID (Observability & Alerting Guide, "Correlating a bug report with server logs")
+5. Once a report is handled, the admin picks a resolution (Resolved / Not a bug / Cannot reproduce / Won't fix) and chooses Dismiss. The report leaves the Open view. In the Dismissed view it shows the resolution, who dismissed it and when, and a Reopen button that returns it to Open
 
 **Security:** All admin routes are protected by role-check middleware. Admin panel is part of the main React app, not a separate service.
