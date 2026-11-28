@@ -49,7 +49,7 @@ These suit colours are for dark surfaces. Card faces are cream, where near-white
 
 - `--color-success: #4caf7d` — exact bid hit, round won
 - `--color-danger: #e05252` — bid miss, invalid play
-- `--color-warning: #d4a030` — disconnect timer, 30s countdown
+- `--color-warning: #d4a030` — disconnect timer (2-minute countdown)
 - `--color-danger-text: #f07a7a` — red text on dark surfaces (errors, field errors). `--color-danger` is 3.9:1 on `--bg-surface`, below AA for small text, so it is kept for borders, rings and large marks
 - `--color-danger-fill: #b83b3b` — the Danger button's fill (white text on `--color-danger` is only 3.8:1)
 - `--color-info: #6aa0e8` — the info toast's accent
@@ -183,6 +183,6 @@ Key design decisions for each of your 10 flows, based on what matters most per s
 
 **Game End (Flow 8)** Celebration moment — winner(s) get visual emphasis (gold crown, name in Cinzel, confetti burst). Full scoreboard below as a round-by-round table. 30-second countdown timer at the bottom: "Returning to lobby in 0:28…" with a Leave Now button for impatient players.
 
-**Player Drop (Flow 9)** Disconnect state: that player's seat dims, a disconnect icon replaces their avatar, and a 30s timer badge counts down on their seat. If the game pauses for their turn, show a "Game paused — waiting for reconnect" banner. The continue-or-end prompt (2-player scenario) is a modal with a 60s countdown — both players must see it and respond.
+**Player Drop (Flow 9)** Disconnect state: that player's seat dims, a disconnect icon replaces their avatar, and a 2-minute timer badge counts down on their seat. If the game pauses for their turn, show a "Game paused — waiting for reconnect" banner. The continue-or-end prompt (2-player scenario) is a modal with a 60s countdown — both players must see it and respond.
 
 **Admin Panel (Flow 10)** Simple and functional — this is not a showcase screen. White-ish surface on dark bg. Two tabs: Invites and Users. Invite table is clean data: code (monospace), label, status badge (pill: pending/accepted/expired/revoked), expiry, revoke button. New invite generation is a side panel or modal. Role upgrade requires a confirmation step — destructive actions always need two clicks.

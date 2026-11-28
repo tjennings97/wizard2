@@ -168,11 +168,11 @@ The final round’s scores trigger the game end sequence.
 
 ## Flow 9 — Player Drop & Edge Cases
 
-Three events can remove a player from an active game: socket disconnect (with a 30-second reconnect window), explicit quit, and timeout. All paths converge at a “players remaining” decision.
+Three events can remove a player from an active game: socket disconnect (with a 2-minute reconnect window), explicit quit, and timeout. All paths converge at a “players remaining” decision.
 
 &#91;embedded content: player drop · disconnect/reconnect, quit, drop to 2 players\]
 
-**Reconnection window:** A disconnected player has 30 seconds to reconnect (validated against their session token). During this window, other players see a disconnect indicator and the game pauses for that player’s turn. A page refresh counts as disconnect + reconnect — the server timer is authoritative.
+**Reconnection window:** A disconnected player has 2 minutes to reconnect (validated against their session token). During this window, other players see a disconnect indicator and the game pauses for that player’s turn. A page refresh counts as disconnect + reconnect — the server timer is authoritative.
 
 **Drop to ≥ 3 players:** Current round voided; re-dealt to remaining players for the same round number. Scores from prior rounds are kept.
 

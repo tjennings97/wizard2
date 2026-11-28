@@ -53,6 +53,7 @@ import {
   type ReplayedEvent,
   type RoundRecord,
 } from './queries';
+import { RECONNECT_WINDOW_MS } from '../shared/reconnect';
 
 /**
  * What the game service tells the real-time layer. Implemented by the socket layer
@@ -96,9 +97,6 @@ export const COMPLETING_COUNTDOWN_MS = 30 * 1000;
 
 /** Duplicate idempotency keys within this window are acknowledged without reprocessing. */
 export const IDEMPOTENCY_WINDOW_MS = 60 * 1000;
-
-/** How long a disconnected player's seat is held for them to reconnect. */
-export const RECONNECT_WINDOW_MS = 30 * 1000;
 
 /** How long the last two players have to answer continue_or_end_request. No answer counts as end. */
 export const CONTINUE_DECISION_MS = 60 * 1000;

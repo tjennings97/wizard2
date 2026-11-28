@@ -133,7 +133,7 @@ Production runs at `info` level. The log level is set via the `LOG_LEVEL` enviro
 **Always log at `info` for socket events:**
 
 - Player joined or left a Socket.io room (include `userId`, `roomId`)
-- Player disconnected — 30-second reconnection timer started (include `userId`, `gameId`)
+- Player disconnected — 2-minute reconnection timer started (include `userId`, `gameId`)
 - Player reconnected successfully within the window (include `userId`, `gameId`, elapsed time)
 - Reconnection timer expired — player treated as quit: logged at `warn` (see the `warn` list above; `event: "game.reconnect_timeout"`, with `userId`, `gameId`)
 - `session_error` (`SESSION_INVALIDATED`) sent to a displaced socket (a new login from another device)
@@ -234,7 +234,7 @@ Metrics must be updated at the following points in the application:
 - `http_request_duration_seconds` and `http_requests_total`: updated by Express middleware (`requestMetrics` in `server/src/metrics/http.ts`, mounted first in `app.ts`) on every response, using the route pattern (e.g. `/api/v1/rooms/:roomId`), not the raw URL, to avoid high-cardinality label values. Each API router is mounted with `markRouteBase`, which records its mount path, because Express resets `req.baseUrl` when an error falls out of a router to the app-level error handler.
 - **Gauges are read on scrape.** `ws_connections_active`, `players_connected`, `games_active`, `rooms_active` and `db_pool_size` are not counted up and down; each reads its current value from the layer that owns the state when Prometheus scrapes (sources registered with `setGaugeSource`, in `server.ts` and `metrics/db.ts`). The values match "incremented on connect / decremented on disconnect", but cannot drift from a missed decrement or from rooms left open by a previous process. A source that fails, or takes longer than 2 seconds (say a query waiting on an exhausted pool), keeps the gauge's last value and logs `metrics.collect_failed`; the scrape still succeeds and answers well inside the scraper's timeout.
 - `ws_connections_active`: the Socket.io server's connected sockets.
-- `ws_reconnections_total`: incremented in the game service — `outcome=success` when a reconnecting socket clears a held seat (`playerReconnected`), `outcome=timeout` when the 30-second hold expires. Only holds that follow a real dropped connection count: a player with no socket in the room when the game starts also gets a seat hold, but their arrival (or not) is not a reconnection.
+- `ws_reconnections_total`: incremented in the game service — `outcome=success` when a reconnecting socket clears a held seat (`playerReconnected`), `outcome=timeout` when the 2-minute hold expires. Only holds that follow a real dropped connection count: a player with no socket in the room when the game starts also gets a seat hold, but their arrival (or not) is not a reconnection.
 - `rooms_active`: rooms whose `state` is `open` or `in_progress` (one count query per scrape).
 - `games_active`: games registered in the game service and not yet ended.
 - `games_started_total`: incremented when a started game is registered (`GameService.launch`).
@@ -634,7 +634,7 @@ This section defines the initial investigation steps for each alert and for comm
 
 **Alert: WebSocket timeout spike**
 
-- A spike in reconnection timeouts means players are failing to reconnect within the 30-second window.
+- A spike in reconnection timeouts means players are failing to reconnect within the 2-minute window.
 - Check whether the timeout spike correlates with a deploy (brief disconnection is expected during restart — see alert suppression in [Alerting](#alerting)).
 - If not deploy-related, check `ws_connections_active` in Grafana for a sudden drop. A drop to near zero suggests the Node.js process was briefly unresponsive or restarted.
 - Check the event loop lag metric (from prom-client's default collectors) for signs of CPU saturation blocking the event loop.

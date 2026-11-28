@@ -7,9 +7,22 @@ import { useAuth } from '../context/AuthContext';
 import { ABANDON_MESSAGES, currentTurnId, isLegal, useGame, type GameView, type RoundResult, type SeatView } from '../context/GameContext';
 import { useRealtime } from '../context/SocketContext';
 import { AVATAR_SIZE, Avatar } from '../components/Avatar';
+import { RECONNECT_WINDOW_MS } from '../../../server/src/shared/reconnect';
 
 /** How long the round summary stays up before the next round shows (docs/design/ui-foundation.md). */
 const ROUND_SUMMARY_MS = 3000;
+
+/** "1:05" for 65 seconds. */
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+
+/** "1 minute 5 seconds" for 65, for screen readers. */
+function spokenDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  if (m === 0) return part(s, 'second');
+  return s === 0 ? part(m, 'minute') : `${part(m, 'minute')} ${part(s, 'second')}`;
+}
 
 /**
  * The game board: everyone seated around an oval table, you at the bottom, trump in the middle and
@@ -36,7 +49,7 @@ export function GamePage() {
     <>
       {!connected && (
         <p className="banner warn" role="status">
-          Connection lost. Reconnecting… Your seat is held for 30 seconds.
+          Connection lost. Reconnecting… Your seat is held for {spokenDuration(RECONNECT_WINDOW_MS / 1000)}.
         </p>
       )}
       <Board game={game} />
@@ -270,16 +283,16 @@ function GameNotice({ text }: { text: string }) {
   );
 }
 
-/** "Reconnecting · 0:23" on a player whose seat is held for them. */
+/** "Reconnecting · 1:23" on a player whose seat is held for them. */
 function Disconnected({ deadline, compact = false }: { deadline: string | null; compact?: boolean }) {
-  const left = useSecondsLeft(deadline, 30_000);
-  const time = deadline ? `0:${String(left).padStart(2, '0')}` : null;
+  const left = useSecondsLeft(deadline, RECONNECT_WINDOW_MS);
+  const time = deadline ? clock(left) : null;
   if (compact) {
     // Short enough for a seat on a full phone table; the full wording is for screen readers.
     return (
       <span className="badge away" title="Reconnecting">
         <span aria-hidden="true">Away{time ? ` ${time}` : ''}</span>
-        <span className="visually-hidden">Reconnecting{time ? `, ${left} seconds left` : ''}</span>
+        <span className="visually-hidden">Reconnecting{time ? `, ${spokenDuration(left)} left` : ''}</span>
       </span>
     );
   }
@@ -827,7 +840,7 @@ function GameOver({ game }: { game: GameView }) {
 
       <div className="game-over-foot">
         <span className="countdown" role="timer">
-          Returning to lobby in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}…
+          Returning to lobby in {clock(left)}…
         </span>
         <button type="button" className="primary" onClick={() => void leave()} disabled={leaving}>
           Leave now

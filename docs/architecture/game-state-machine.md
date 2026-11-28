@@ -104,12 +104,12 @@ This document defines the complete state machines that govern Wizard's room, gam
 | From | Event / Trigger | Guard | To | Actions |
 | --- | --- | --- | --- | --- |
 | — | Player joins room (socket connect) | Valid signed session cookie in handshake | **CONNECTED** | Bind `socket.data.userId`; join Socket.io room; emit `user_joined` |
-| **CONNECTED** | Socket disconnect detected (the player's last socket in the room closed, or a client that pings stopped pinging for 30 s) | Player is still seated in a game being played (not over) | **DISCONNECTED** | Start 30-second server-side `setTimeout` keyed by `userId`; set the player's `connected = false`; emit `player_disconnected` to room; other players see indicator |
+| **CONNECTED** | Socket disconnect detected (the player's last socket in the room closed, or a client that pings stopped pinging for 30 s) | Player is still seated in a game being played (not over) | **DISCONNECTED** | Start 2-minute server-side `setTimeout` keyed by `userId`; set the player's `connected = false`; emit `player_disconnected` to room; other players see indicator |
 | — | Game starts | The player has no socket in the room | **DISCONNECTED** | As above, right after the game's opening events, so a game never waits on someone who never shows up |
 | **CONNECTED** | Player sends `leave_game` (intentional quit) | — | **QUIT** | Set `room_members.left_at`; emit `user_left` (`reason: "voluntary"`) to room; trigger player-drop game logic; player cannot rejoin as a player (may rejoin as a spectator) |
 | **DISCONNECTED** | Player reconnects (socket reconnect) | Session still valid; timer still running; `clearTimeout` | **RECONNECTED** | Send `game.toPlayerView(userId)` (own hand only) via `state_snapshot` to reconnecting socket, then the pending prompt; emit `player_reconnected` to room; indicator cleared. The client's `join_game` with `last_seq_seen` then gets the missed events replayed from `game_events` |
 | **DISCONNECTED** | Player sends `leave_game` while socket is down | Server receives leave event on reconnect before timer clears | **QUIT** | Treat as explicit quit; clear timer; trigger player-drop game logic |
-| **DISCONNECTED** | 30-second timer fires | Player has not reconnected | **TIMED OUT** | Treat as quit; trigger player-drop game logic; emit `user_left` (`reason: "timeout"`) to room; set `room_members.left_at` |
+| **DISCONNECTED** | 2-minute timer fires | Player has not reconnected | **TIMED OUT** | Treat as quit; trigger player-drop game logic; emit `user_left` (`reason: "timeout"`) to room; set `room_members.left_at` |
 | **RECONNECTED** | Continues playing | — | **CONNECTED** | Normal gameplay resumes |
 | **QUIT** | — | — | (terminal) | Player removed permanently; cannot re-enter this game |
 | **TIMED OUT** | — | — | (terminal) | Same as QUIT; player-drop game logic applied |
@@ -143,7 +143,7 @@ A dropped player's `game_results` row (written when the game ends, however it en
 5. `game_events` row written (event\_type: `trump_declared`; payload includes dealer hand)
 6. `trump_revealed` broadcast; bidding phase begins
 
-No timeout on trump declaration. If the dealer disconnects mid-declaration, the 30-second reconnection window applies. On reconnect, the dealer's `state_snapshot` view has `phase: 'trump_declaration'` with the dealer as `currentTurnUserId`, which re-prompts the declaration.
+No timeout on trump declaration. If the dealer disconnects mid-declaration, the 2-minute reconnection window applies. On reconnect, the dealer's `state_snapshot` view has `phase: 'trump_declaration'` with the dealer as `currentTurnUserId`, which re-prompts the declaration.
 
 ## State Persistence and Restore
 
@@ -161,6 +161,6 @@ No timeout on trump declaration. If the dealer disconnects mid-declaration, the 
 | Trump declared | Partial | `game_events` row only |
 | Any other event broadcast to the game's room (`game_starting`, `game_started`, `round_started`, `trump_revealed`, `all_bids_placed`, `user_joined` / `user_left`, `player_disconnected`, `player_reconnected`, `continue_or_end_request`, `game_time_warning`, `game_abandoned`) | Partial | `game_events` row only, numbered by the game's `seq` for reconnect replay |
 
-**Reconnection restore sequence:** On reconnect within 30s: session validated → `game.toPlayerView(userId)` called (snapshot with only the reconnecting player's own hand; other players show a card count) → `state_snapshot` emitted, then the pending prompt → `clearTimeout` → `player_reconnected` broadcast to room. The client then sends `join_game` with `last_seq_seen` and gets a fresh `state_snapshot` followed by the broadcasts it missed (`game_events` rows with `seq > last_seq_seen`, at most 200). Player resumes from current state with no round rewind.
+**Reconnection restore sequence:** On reconnect within 2 minutes: session validated → `game.toPlayerView(userId)` called (snapshot with only the reconnecting player's own hand; other players show a card count) → `state_snapshot` emitted, then the pending prompt → `clearTimeout` → `player_reconnected` broadcast to room. The client then sends `join_game` with `last_seq_seen` and gets a fresh `state_snapshot` followed by the broadcasts it missed (`game_events` rows with `seq > last_seq_seen`, at most 200). Player resumes from current state with no round rewind.
 
 **Server restart mid-game:** The in-memory `Game` object and all timers are lost, and in-progress games are abandoned rather than resumed. Before accepting traffic, startup cleanup marks every `in_progress` game `incomplete` (`drop_reason = 'server_restart'`); clients that reconnect receive `game_abandoned` and return to the lobby. The `games.state` checkpoint is kept as a record but is not used to rebuild the game. See the Backup & Recovery Runbook.
