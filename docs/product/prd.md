@@ -92,7 +92,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 - Each invite record stores: code, optional label, created timestamp, expiry timestamp (7 days from creation), status (pending / accepted / expired / revoked)
 - Admin can revoke a pending invite at any time
 - Expired and unredeemed invites are automatically marked expired; they cannot be redeemed
-- Admin sees all invites in a table with their current status
+- Admin sees invites in a table with their current status; pending invites are shown by default, and accepted, expired and revoked ones can be shown with a filter
 
 **Role management:**
 
@@ -109,6 +109,7 @@ Wizard is a web-based multiplayer implementation of the Wizard card game, playab
 **Bug reports:**
 
 - Admin can read submitted bug reports in the admin panel, newest first, filtered by severity
+- Admin can dismiss a handled bug report with a resolution (resolved, not a bug, cannot reproduce, won't fix), which hides it from the default Open view; a dismissed report can be reopened
 - Each report shows its captured context and trace ID, for finding the matching server logs
 
 ## Lobby

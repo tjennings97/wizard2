@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import {
+  BUG_RESOLUTION_LABELS,
   createInvite,
   listBugReports,
   listInvites,
   listUsers,
   resetCredentials,
   revokeInvite,
+  setBugResolution,
   setUserRole,
   type AdminBugReport,
   type BugReportPage,
+  type BugResolution,
   type BugSeverity,
+  type BugStatus,
   type Invite,
+  type InviteStatus,
   type AdminUser,
   type UserPage,
 } from '../api/admin';
@@ -22,7 +27,7 @@ import { useAction } from '../hooks/useAction';
 
 /**
  * /admin: invites, user roles, credential resets (docs/product/ui-ux-flows.md, Flow 10) and the
- * bug reports users have sent.
+ * bug reports users have sent, which admins dismiss once handled.
  * The server checks the admin role on every request; this page is only linked for admins.
  * Invite codes and temporary credentials are shown once, from the create/reset response.
  */
@@ -135,18 +140,33 @@ function CopyValue({ label, value }: { label: string; value: string }) {
 
 // --- Invites -------------------------------------------------------------------------------
 
+const INVITE_FILTERS: { value: InviteStatus | ''; label: string; empty: string }[] = [
+  { value: 'pending', label: 'Pending', empty: 'No pending invites.' },
+  { value: 'accepted', label: 'Accepted', empty: 'No accepted invites.' },
+  { value: 'expired', label: 'Expired', empty: 'No expired invites.' },
+  { value: 'revoked', label: 'Revoked', empty: 'No revoked invites.' },
+  { value: '', label: 'All', empty: 'No invites yet.' },
+];
+
+/**
+ * Pending invites by default: once an invite is accepted, expires or is revoked it drops out of
+ * the default view. The other statuses stay on record and can be shown with the filter.
+ */
 function InvitesSection() {
-  const [invites, setInvites] = useState<Invite[] | null>(null);
+  const [show, setShow] = useState<InviteStatus | ''>('pending');
+  const { data: invites, setData: setInvites, ...load } = useLatestLoad<Invite[]>(() => listInvites(show || undefined), [show]);
+  // The filter on screen now, for a create that finishes after the admin switched filters.
+  const showRef = useRef(show);
+  showRef.current = show;
+  const changeShow = (next: InviteStatus | '') => {
+    // Drop the old filter's rows so they are never shown (or revoked) under the new filter.
+    setInvites(null);
+    setShow(next);
+  };
   const [label, setLabel] = useState('');
   const [created, setCreated] = useState<{ code: string; label: string | null } | null>(null);
-  const load = useAction();
   const create = useAction();
   const revoke = useAction();
-
-  const refresh = useCallback(() => load.run(async () => setInvites(await listInvites())), [load.run]);
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   const onCreate = (e: FormEvent) => {
     e.preventDefault();
@@ -154,7 +174,8 @@ function InvitesSection() {
       const result = await createInvite(label.trim());
       setCreated({ code: result.code, label: result.invite.label });
       setLabel('');
-      setInvites((list) => [result.invite, ...(list ?? [])]);
+      // A new invite is pending, so it belongs only in the Pending and All views.
+      if (showRef.current === 'pending' || showRef.current === '') setInvites((list) => [result.invite, ...(list ?? [])]);
     });
   };
 
@@ -164,9 +185,15 @@ function InvitesSection() {
     void revoke.run(async () => {
       try {
         await revokeInvite(invite.id);
+        // Update the row now, so it cannot be revoked again before the reload lands.
+        setInvites((list) =>
+          showRef.current === 'pending'
+            ? (list ?? []).filter((i) => i.id !== invite.id)
+            : (list ?? []).map((i) => (i.id === invite.id ? { ...i, status: 'revoked' } : i)),
+        );
       } finally {
         // Also on failure: INVITE_NOT_REVOCABLE means the row is stale (it expired or was used).
-        await refresh();
+        load.retry();
       }
     });
   };
@@ -196,11 +223,21 @@ function InvitesSection() {
         />
       )}
 
+      <label>
+        Show
+        <select value={show} onChange={(e) => changeShow(e.target.value as InviteStatus | '')}>
+          {INVITE_FILTERS.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <ErrorText error={load.error ?? revoke.error} />
       {invites === null ? (
-        <p className="muted">Loading invites…</p>
+        <FirstLoad what="invites" error={load.error} busy={load.busy} retry={load.retry} />
       ) : invites.length === 0 ? (
-        <p className="muted">No invites yet.</p>
+        <p className="muted">{INVITE_FILTERS.find((f) => f.value === show)?.empty}</p>
       ) : (
         <table className="data-table">
           <thead>
@@ -227,7 +264,7 @@ function InvitesSection() {
                 <td data-label="Used by">{invite.redeemedByUsername ?? '—'}</td>
                 <td className="row-actions">
                   {invite.status === 'pending' && (
-                    <button type="button" className="danger" disabled={revoke.busy} onClick={() => onRevoke(invite)}>
+                    <button type="button" className="danger" disabled={revoke.busy || load.busy} onClick={() => onRevoke(invite)}>
                       Revoke
                     </button>
                   )}
@@ -376,25 +413,67 @@ function UsersSection({ me }: { me: User }) {
 
 const BUG_PAGE_SIZE = 20;
 
-/** Bug reports, newest first. Each opens to show the captured context for debugging. */
+/**
+ * Bug reports, newest first; open ones by default. Each opens to show the captured context for
+ * debugging, and can be dismissed once handled (or reopened).
+ */
 function BugReportsSection() {
   const [page, setPage] = useState(1);
   const [severity, setSeverity] = useState<BugSeverity | ''>('');
-  const { data: reports, ...load } = useLatestLoad<BugReportPage>(
-    () => listBugReports(page, BUG_PAGE_SIZE, severity || undefined),
-    [page, severity],
+  const [status, setStatus] = useState<BugStatus | ''>('open');
+  const { data: reports, setData: setReports, ...load } = useLatestLoad<BugReportPage>(
+    () => listBugReports(page, BUG_PAGE_SIZE, severity || undefined, status || undefined),
+    [page, severity, status],
   );
+  const act = useAction();
 
   const pages = reports ? Math.max(1, Math.ceil(reports.total / reports.limit)) : 1;
+  // Dismissing the last report on the last page empties it: step back to the new last page.
+  useEffect(() => {
+    if (reports && page > pages) setPage(pages);
+  }, [reports, page, pages]);
+
+  const resolve = (report: AdminBugReport, resolution: BugResolution | null) =>
+    void act.run(async () => {
+      const updated = await setBugResolution(report.id, resolution);
+      // Update the row now, so its button cannot be pressed again before the reload lands. In the
+      // Open or Dismissed view it leaves the list; the reload then fixes the total and paging.
+      const moved = status !== '' && (updated.resolution ? 'dismissed' : 'open') !== status;
+      setReports((p) =>
+        p
+          ? {
+              ...p,
+              data: moved ? p.data.filter((x) => x.id !== updated.id) : p.data.map((x) => (x.id === updated.id ? updated : x)),
+            }
+          : p,
+      );
+      load.retry();
+    });
 
   return (
     <section>
       <h2>Bug reports</h2>
       <label>
+        Show
+        <select
+          value={status}
+          onChange={(e) => {
+            setReports(null);
+            setStatus(e.target.value as BugStatus | '');
+            setPage(1);
+          }}
+        >
+          <option value="open">Open</option>
+          <option value="dismissed">Dismissed</option>
+          <option value="">All</option>
+        </select>
+      </label>
+      <label>
         Severity
         <select
           value={severity}
           onChange={(e) => {
+            setReports(null);
             setSeverity(e.target.value as BugSeverity | '');
             setPage(1);
           }}
@@ -405,17 +484,17 @@ function BugReportsSection() {
           <option value="low">Low</option>
         </select>
       </label>
-      <ErrorText error={load.error} />
+      <ErrorText error={load.error ?? act.error} />
       {reports === null ? (
         <FirstLoad what="bug reports" error={load.error} busy={load.busy} retry={load.retry} />
       ) : (
         <>
           <p className="muted">
-            {reports.total} report{reports.total === 1 ? '' : 's'}
+            {reports.total} {status ? `${status} ` : ''}report{reports.total === 1 ? '' : 's'}
           </p>
           <ul className="bug-list">
             {reports.data.map((r) => (
-              <BugReportItem key={r.id} report={r} />
+              <BugReportItem key={r.id} report={r} busy={act.busy || load.busy} onResolve={(resolution) => resolve(r, resolution)} />
             ))}
           </ul>
           {pages > 1 && (
@@ -439,7 +518,16 @@ function BugReportsSection() {
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
-function BugReportItem({ report: r }: { report: AdminBugReport }) {
+function BugReportItem({
+  report: r,
+  busy,
+  onResolve,
+}: {
+  report: AdminBugReport;
+  busy: boolean;
+  onResolve(resolution: BugResolution | null): void;
+}) {
+  const [choice, setChoice] = useState<BugResolution>('resolved');
   const ctx = r.context;
   const round = typeof ctx.round_number === 'number' ? ctx.round_number : null;
   const trick = typeof ctx.trick_number === 'number' ? ctx.trick_number : null;
@@ -448,6 +536,7 @@ function BugReportItem({ report: r }: { report: AdminBugReport }) {
     <li className="card bug-item">
       <div className="card-head">
         <span className={`badge sev-${r.severity ?? 'none'}`}>{r.severity ?? 'no severity'}</span>
+        {r.resolution && <span className="badge dismissed">{BUG_RESOLUTION_LABELS[r.resolution]}</span>}
         <span className="muted">{formatDate(r.createdAt)}</span>
       </div>
       <p className="bug-desc">{r.description}</p>
@@ -488,6 +577,33 @@ function BugReportItem({ report: r }: { report: AdminBugReport }) {
           </>
         )}
       </details>
+      {r.resolution ? (
+        <div className="actions">
+          <span className="hint">
+            Dismissed as {BUG_RESOLUTION_LABELS[r.resolution].toLowerCase()}
+            {r.resolvedBy && ` by ${r.resolvedBy.displayName ?? r.resolvedBy.username ?? '?'}`}, {formatDate(r.resolvedAt)}
+          </span>
+          <button type="button" disabled={busy} onClick={() => onResolve(null)}>
+            Reopen
+          </button>
+        </div>
+      ) : (
+        <div className="actions">
+          <label>
+            <span className="visually-hidden">Resolution</span>
+            <select value={choice} onChange={(e) => setChoice(e.target.value as BugResolution)}>
+              {(Object.keys(BUG_RESOLUTION_LABELS) as BugResolution[]).map((key) => (
+                <option key={key} value={key}>
+                  {BUG_RESOLUTION_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" disabled={busy} onClick={() => onResolve(choice)}>
+            Dismiss
+          </button>
+        </div>
+      )}
     </li>
   );
 }

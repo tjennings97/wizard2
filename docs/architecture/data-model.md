@@ -197,6 +197,11 @@ Stores user-submitted bug reports with automatic context capture. The `trace_id`
 | `severity` | `varchar(8)` | Yes | CHECK (`severity` IN ('low','medium','high')) | Optional severity rating provided by user |
 | `context` | `jsonb` | No | NOT NULL, default `'{}'` | Automatically captured context. Schema: `{"url": "...", "page": "...", "round_number": 3, "trick_number": 2, "game_state_summary": {...}, "user_agent": "...", "client_timestamp": "..."}`. `game_state_summary` is the reporter's own `game.toPlayerView(userId)` (their hand only; other players' `hand` is null), built by the server for a player seated in a live game, else null. Round and trick numbers come from that view when present, else from the client. `user_agent` is the request's User-Agent header. |
 | `created_at` | `timestamptz` | No | NOT NULL, default `now()` | Server-side receipt timestamp |
+| `resolution` | `varchar(16)` | Yes | CHECK (`resolution` IN ('resolved','not_a_bug','cannot_reproduce','wont_fix')) | Why an admin dismissed the report (`PATCH /admin/bug-reports/{reportId}`). Null while the report is open. |
+| `resolved_at` | `timestamptz` | Yes | — | When the report was dismissed. Null while open. |
+| `resolved_by` | `uuid` | Yes | FK → `users.id` | Admin who dismissed the report. Null while open. |
+
+CHECK `bug_reports_resolution_set_check`: `resolution`, `resolved_at` and `resolved_by` are all null (open), or `resolution` and `resolved_at` are both set (dismissed). Reopening a report clears all three.
 
 ## Index Strategy
 

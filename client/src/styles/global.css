@@ -1048,3 +1048,11 @@ pre.json {
   overflow-x: auto;
   max-height: 320px;
 }
+.badge.dismissed {
+  color: var(--muted);
+}
+.bug-item .actions {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 8px;
+}
