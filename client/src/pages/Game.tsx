@@ -49,7 +49,9 @@ export function GamePage() {
     <>
       {!connected && (
         <p className="banner warn" role="status">
-          Connection lost. Reconnecting… Your seat is held for {spokenDuration(RECONNECT_WINDOW_MS / 1000)}.
+          {/* Spectators have no seat to hold. */}
+          Connection lost. Reconnecting…
+          {!game.isSpectator && ` Your seat is held for ${spokenDuration(RECONNECT_WINDOW_MS / 1000)}.`}
         </p>
       )}
       <Board game={game} />

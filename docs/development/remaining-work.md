@@ -178,7 +178,7 @@ Timeout Policy).
 
 Build:
 1. Disconnect is not a quit: broadcast player_disconnected and hold the seat
-   for 30 s with a timer keyed by userId.
+   for 2 minutes with a timer keyed by userId.
 2. Reconnect within the window: join_game with last_seq_seen → validate the
    session → state_snapshot built from game.toPlayerView(userId) (never the
    raw GameState) → replay events with seq > last_seq_seen from game_events
@@ -209,7 +209,7 @@ Build:
 Frontend: "reconnecting…" state, disconnected badges on opponents, the
 continue/end prompt, time warning banner, abandoned-game message.
 
-Tests: fake timers for the 30 s window, the 60 s prompt and the 3 h limit;
+Tests: fake timers for the 2-minute window, the 60 s prompt and the 3 h limit;
 socket integration tests for reconnect with replay and for a drop to 2
 players.
 ```
