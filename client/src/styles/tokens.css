@@ -1,0 +1,186 @@
+/* Design tokens: docs/design/ui-foundation.md (colour, type, spacing, radius) and
+ * docs/design/animation-transitions.md (durations, easing). Use these everywhere; never hardcode a
+ * colour or a duration in a component rule.
+ *
+ * Dark-first: the brief's palette is the default. Users whose OS asks for light get a derived
+ * ivory variant (same roles, AA contrast); the felt table stays green in both. */
+:root {
+  /* Background layers */
+  --bg-base: #0f1a14;
+  --bg-surface: #1a2b1e;
+  --bg-elevated: #243324;
+  /* Banners and one-off notices: a warm tint of the surface. */
+  --bg-notice: #2c2a18;
+
+  /* Accent */
+  --accent-gold: #c9a84c;
+  --accent-gold-hover: #e0bf6a;
+  --accent-gold-glow: rgb(201 168 76 / 0.2);
+  /* Text on a gold (primary) button. */
+  --text-on-accent: #0f1a14;
+
+  /* Suit colours on dark surfaces (trump indicator, suit buttons). */
+  --suit-spades: #e8e8e8;
+  --suit-hearts: #e05252;
+  --suit-diamonds: #e05252;
+  --suit-clubs: #e8e8e8;
+  --suit-trump-indicator: #c9a84c;
+
+  /* Card stock. The brief's near-white spades/clubs can't be read on cream, so card faces use
+     their own ink; red is darkened for AA on cream. */
+  --card-face: #f5f0e8;
+  --card-ink: #1d1c1a;
+  --card-red: #c0262d;
+  --card-edge: #d9d0bf;
+  --card-back: #1f4a37;
+  --card-back-stripe: #173a2b;
+  --wizard-gold: #c9a84c;
+  --jester-violet: #9b59b6;
+  /* Wizard and Jester label ink on the cream face (AA on --card-face). */
+  --wizard-ink: #806210;
+  --jester-ink: #7a3e96;
+  /* Light text on a card back (the cards-in-hand count). */
+  --card-back-text: #ffffff;
+
+  /* Text */
+  --text-primary: #f0ead6;
+  --text-secondary: #8a9e8d;
+  --text-disabled: #4a5c4d;
+
+  /* Feedback. --color-danger is the brief's red, for borders, rings and large marks; small red text
+     and the danger button's fill use the stronger variants, which pass AA. */
+  --color-success: #4caf7d;
+  --color-danger: #e05252;
+  --color-danger-text: #f07a7a;
+  --color-danger-fill: #b83b3b;
+  --color-warning: #d4a030;
+  --color-info: #6aa0e8;
+  /* Text on the danger fill. */
+  --text-on-danger: #ffffff;
+
+  /* Borders */
+  --border-subtle: #2e3f30;
+  --border-active: #c9a84c;
+
+  /* Table */
+  --felt: #1d4733;
+  --felt-text: #f0ead6;
+  /* A red suit named in text on the felt (trump label); --card-red is too dark there. */
+  --felt-red: #ff9b9b;
+  --rail: #4a3020;
+  --rail-dark: #2e1d12;
+  --avatar-bg: #2f4a36;
+
+  /* Type */
+  --font-display: 'Cinzel', Georgia, serif;
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --text-logo: 2.5rem;
+  --text-heading: 1.25rem;
+  --text-body: 1rem;
+  --text-label: 0.875rem;
+  --text-badge: 0.75rem;
+
+  /* Spacing: 8px base, multiples only. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  /* Page margin: --space-4 on phones, --space-8 from 640px. */
+  --page-gutter: var(--space-4);
+
+  /* Radius */
+  --radius-card: 8px;
+  --radius-button: 6px;
+  --radius-pill: 999px;
+  --radius-panel: 12px;
+
+  /* Shadows */
+  --shadow-raised: 0 2px 6px rgb(0 0 0 / 0.3);
+  --shadow-lifted: 0 8px 24px rgb(0 0 0 / 0.4);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.5);
+
+  /* Durations */
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-dramatic: 600ms;
+
+  /* Easing */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  color-scheme: dark;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --page-gutter: var(--space-8);
+  }
+}
+
+/* Light variant (OS set to light). Same roles as above; gold darkened so gold text and borders
+   keep 4.5:1 on ivory. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-base: #f3eee2;
+    --bg-surface: #fbf8f0;
+    --bg-elevated: #ebe4d2;
+    --bg-notice: #f6e7bd;
+
+    --accent-gold: #806210;
+    --accent-gold-hover: #6a500b;
+    --accent-gold-glow: rgb(128 98 16 / 0.2);
+    --text-on-accent: #ffffff;
+
+    --suit-spades: #1d1c1a;
+    --suit-hearts: #b3261e;
+    --suit-diamonds: #b3261e;
+    --suit-clubs: #1d1c1a;
+    --suit-trump-indicator: #806210;
+
+    --text-primary: #1d2a20;
+    --text-secondary: #56695a;
+    --text-disabled: #a3ae9f;
+
+    --color-success: #2a7a4b;
+    --color-danger: #b3261e;
+    --color-danger-text: #b3261e;
+    --color-danger-fill: #b3261e;
+    --color-warning: #855c00;
+    --color-info: #2f62b0;
+
+    --border-subtle: #d8cfb9;
+    --border-active: #806210;
+
+    --felt: #24573e;
+    --rail: #6b4529;
+    --rail-dark: #4a2f1b;
+    --avatar-bg: #dfe6da;
+
+    --shadow-raised: 0 2px 6px rgb(0 0 0 / 0.15);
+    --shadow-lifted: 0 8px 24px rgb(0 0 0 / 0.2);
+    --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.25);
+
+    color-scheme: light;
+  }
+}
+
+/* Reduced motion (docs/design/animation-transitions.md): every state change still happens, only
+   the motion goes. Looping animations run once, so a pulse doesn't flicker at 0.01ms. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

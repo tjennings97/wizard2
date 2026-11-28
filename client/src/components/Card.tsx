@@ -15,24 +15,45 @@ export function cardKey(card: CardData, i: number): string {
   return `${card.type}-${card.suit ?? ''}-${card.rank ?? ''}-${i}`;
 }
 
-/** One playing card, drawn with text only (no images). */
+/**
+ * One playing card, drawn in CSS and text only (docs/design/ui-foundation.md, "Card"): cream stock,
+ * the suit in the top-left and bottom-right corners, the rank large in the centre. Wizards have a
+ * gold border and Jesters a violet one, each labelled in Cinzel (the label drops on small cards).
+ */
 export function Card({ card, size = 'normal' }: { card: CardData; size?: 'normal' | 'small' }) {
   const red = card.suit === 'hearts' || card.suit === 'diamonds';
   const cls = ['playing-card', size, card.type, red ? 'red' : ''].filter(Boolean).join(' ');
-  let face: JSX.Element;
-  if (card.type === 'wizard') face = <span className="pc-special">W</span>;
-  else if (card.type === 'jester') face = <span className="pc-special">J</span>;
-  else {
-    face = (
+  let corner: string;
+  let centre: JSX.Element;
+  if (card.type === 'suited') {
+    corner = SUIT_SYMBOLS[card.suit!];
+    centre = <span className="pc-rank">{RANKS[card.rank!] ?? card.rank}</span>;
+  } else {
+    const name = card.type === 'wizard' ? 'Wizard' : 'Jester';
+    corner = name[0];
+    centre = (
       <>
-        <span className="pc-rank">{RANKS[card.rank!] ?? card.rank}</span>
-        <span className="pc-suit">{SUIT_SYMBOLS[card.suit!]}</span>
+        <span className="pc-special">{name[0]}</span>
+        <span className="pc-label">{name}</span>
       </>
     );
   }
   return (
     <span className={cls} role="img" aria-label={cardLabel(card)}>
-      {face}
+      <span className="pc-corner tl" aria-hidden="true">
+        {corner}
+      </span>
+      <span className="pc-centre" aria-hidden="true">
+        {centre}
+      </span>
+      <span className="pc-corner br" aria-hidden="true">
+        {corner}
+      </span>
     </span>
   );
+}
+
+/** The back of a card (dark green CSS pattern, no image). */
+export function CardBack({ size = 'normal' }: { size?: 'normal' | 'small' }) {
+  return <span className={`playing-card back ${size}`} aria-hidden="true" />;
 }

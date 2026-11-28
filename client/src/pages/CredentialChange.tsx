@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Field } from '../components/Field';
 import { useAuth } from '../context/AuthContext';
 import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
+import { AuthScreen } from '../components/AuthScreen';
 
 /**
  * Shown instead of the app while user.requiresCredentialChange is true (an admin reset the
@@ -41,12 +42,13 @@ export function CredentialChangePage() {
   }
 
   return (
-    <main className="page narrow">
-      <h1>Choose new credentials</h1>
-      <p className="notice">
+    <AuthScreen>
+      {/* An amber warning across the top, the form below (docs/design/ui-foundation.md, "Auth"). */}
+      <p className="notice warning-banner" role="note">
         An admin reset your account{user ? ` (${user.username})` : ''}. Choose a new password and recovery passphrase
         to continue.
       </p>
+      <h1>Choose new credentials</h1>
       <form onSubmit={onSubmit} className="stack" noValidate>
         <Field
           label="Temporary password"
@@ -105,9 +107,9 @@ export function CredentialChangePage() {
           {busy ? 'Saving…' : 'Save and continue'}
         </button>
       </form>
-      <button type="button" className="spaced" onClick={onLogout} disabled={loggingOut || busy}>
+      <button type="button" className="ghost block spaced" onClick={onLogout} disabled={loggingOut || busy}>
         {loggingOut ? 'Logging out…' : 'Log out'}
       </button>
-    </main>
+    </AuthScreen>
   );
 }

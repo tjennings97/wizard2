@@ -14,6 +14,10 @@ Wizard is a classic card game with real depth — the UI should feel like a prem
 
 The palette draws from the physical game: deep greens of a card table, warm ivory of card stock, and the four suit colors. Keep it dark-first — this is played in the evening, in short bursts, often on a screen.
 
+All tokens below are defined once in `client/src/styles/tokens.css`; component rules use the variables, never raw values.
+
+**Light variant.** Dark is the default. When the OS asks for a light colour scheme (`prefers-color-scheme: light`), `tokens.css` swaps the same roles for an ivory palette (`--bg-base: #f3eee2`, `--bg-surface: #fbf8f0`, `--bg-elevated: #ebe4d2`, text `#1d2a20` / `#56695a`). Gold darkens to `#806210` (white text on a gold button) so gold text and borders keep 4.5:1 on ivory; feedback colours darken the same way. The felt table stays green in both.
+
 **Background layers (dark-first)**
 
 - `--bg-base: #0f1a14` — near-black green, the felt table
@@ -33,6 +37,8 @@ The palette draws from the physical game: deep greens of a card table, warm ivor
 - `--suit-clubs: #e8e8e8` — near-white
 - `--suit-trump-indicator: #c9a84c` — gold border/glow when suit is trump
 
+These suit colours are for dark surfaces. Card faces are cream, where near-white spades and clubs can't be read, so faces use their own ink: `--card-face: #f5f0e8`, `--card-ink: #1d1c1a` (spades, clubs) and `--card-red: #c0262d` (hearts, diamonds; 5.2:1 on cream).
+
 **Text**
 
 - `--text-primary: #f0ead6` — warm ivory, main text
@@ -44,6 +50,9 @@ The palette draws from the physical game: deep greens of a card table, warm ivor
 - `--color-success: #4caf7d` — exact bid hit, round won
 - `--color-danger: #e05252` — bid miss, invalid play
 - `--color-warning: #d4a030` — disconnect timer, 30s countdown
+- `--color-danger-text: #f07a7a` — red text on dark surfaces (errors, field errors). `--color-danger` is 3.9:1 on `--bg-surface`, below AA for small text, so it is kept for borders, rings and large marks
+- `--color-danger-fill: #b83b3b` — the Danger button's fill (white text on `--color-danger` is only 3.8:1)
+- `--color-info: #6aa0e8` — the info toast's accent
 
 **Border**
 
@@ -160,7 +169,7 @@ Key design decisions for each of your 10 flows, based on what matters most per s
 
 **Auth (Flow 1)** Center-column layout, max-width `400px`. Dark bg with a subtle card-pattern texture (CSS, not an image). Logo in Cinzel top-center. Single visible form at a time — Login, Register, or Reset, toggled by text links not tabs. The forced credential change screen should look like a warning: amber banner at top, same form layout below.
 
-**Lobby (Flow 2)** Two-panel layout: room list (left, \~65%) + presence sidebar (right, \~35%). Room cards show: room name, host avatar, player count (e.g. "3/6"), and a Join button. A user already in a game sees those controls disabled with a tooltip. Empty state: centered illustration + "No rooms open — create one?" CTA. Real-time updates animate in (fade/slide), don't flash the whole list.
+**Lobby (Flow 2)** Two-panel layout: room list (left, \~65%) + presence sidebar (right, \~35%). Room cards show: room name, host avatar, player count (e.g. "3/6"), and a Join button. A user already in a game sees those controls disabled, with the reason as visible text (not a tooltip: phones can't hover); a full or started room says so on its card. Room summaries carry no host name or avatar yet, so cards show the room code instead. Empty state: centered illustration + "No rooms open — create one?" CTA. Real-time updates animate in (fade/slide), don't flash the whole list.
 
 **Room / Pre-Game (Flow 3)** Player list is the hero — show avatars large, in join order. Host sees controls in a panel on the right (round count selector + bid rule toggle + Start Game button). Non-host sees the same panel grayed with "Waiting for host…". Chat sits below the player list. The 10-minute room timeout should show a countdown badge once under 2 minutes remain.
 

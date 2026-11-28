@@ -16,6 +16,8 @@ export const AVATAR_SIZE = {
   /** Lobby presence list and game seats: the player chip (docs/design/ui-foundation.md). */
   chip: 40,
   scoreboard: 32,
+  /** The profile link in the lobby header. */
+  header: 28,
 } as const;
 
 type LayerKey = Exclude<AvatarKey, 'skin'>;

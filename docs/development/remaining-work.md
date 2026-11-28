@@ -430,6 +430,8 @@ pytest: HSTS header present in production mode; non-JSON POST rejected.
 
 **Depends on:** 3, 4, 7. Can be split into several sessions (lobby/room, game board, transitions).
 
+**Progress:** Session 1 (foundation + lobby/room) done: tokens in `client/src/styles/tokens.css` (dark default, light variant), Cinzel/Inter, Button/Input/Card/Badge/Toast components, reduced-motion rule, auth screens, lobby and room layouts; the game board, profile and admin restyled through the tokens only. Still to do: the game board to spec (two-tap select/play, bid picker, trump overlay, round-end and game-over overlays, seat states) and the event animations (card travel, trick sweep, count-up, trump flip, confetti, `game_starting` countdown), and the admin panel's Invites/Users tabs. Not buildable without server work, so out of this task: room chat, the 10-minute room countdown badge (`room_snapshot` has no creation time), host avatar on lobby room cards (room summaries have no host name/avatar).
+
 ```
 Follow the preamble in docs/development/remaining-work.md.
 

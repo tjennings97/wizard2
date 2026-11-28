@@ -195,12 +195,13 @@ On `bid_placed` for the current player (unicast confirmed):
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 ```
 
-State changes must still happen (cards must still move to the table) — only the motion is removed. Test all flows with reduced motion enabled.
+`animation-iteration-count: 1` stops looping animations (turn pulse, spinner) from flickering at 0.01ms per cycle; the rule lives in `client/src/styles/tokens.css`. State changes must still happen (cards must still move to the table) — only the motion is removed. Test all flows with reduced motion enabled.
 
 **Card travel implementation.** The cleanest pattern for moving a card from hand to table is the FLIP technique (First, Last, Invert, Play):
 

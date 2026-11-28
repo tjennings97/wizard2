@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { resetPassword } from '../api/auth';
 import { Field } from '../components/Field';
 import { errorsOf, secretError, useSubmit } from '../hooks/useSubmit';
+import { AuthScreen } from '../components/AuthScreen';
 
 /**
  * POST /auth/reset-password: username + recovery passphrase, no email step. A reset signs out
@@ -31,7 +32,7 @@ export function ResetPasswordPage() {
 
   if (done) {
     return (
-      <main className="page narrow">
+      <AuthScreen>
         <h1>Password reset</h1>
         <p className="notice" role="status">
           Your password has been changed and any other devices have been signed out.
@@ -39,12 +40,12 @@ export function ResetPasswordPage() {
         <Link to="/" className="button primary">
           Log in
         </Link>
-      </main>
+      </AuthScreen>
     );
   }
 
   return (
-    <main className="page narrow">
+    <AuthScreen>
       <h1>Reset your password</h1>
       <p className="muted">Enter your username and the recovery passphrase you chose when you signed up.</p>
       <form onSubmit={onSubmit} className="stack" noValidate>
@@ -99,6 +100,6 @@ export function ResetPasswordPage() {
       <nav className="stack links">
         <Link to="/">Back to log in</Link>
       </nav>
-    </main>
+    </AuthScreen>
   );
 }
