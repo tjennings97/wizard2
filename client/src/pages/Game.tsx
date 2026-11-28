@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Link, useParams } from 'react-router';
 import { leaveRoom } from '../api/rooms';
 import { SUITS, type Card as CardData, type PlayEntry, type Suit } from '../api/types';
@@ -12,9 +12,10 @@ import { AVATAR_SIZE, Avatar } from '../components/Avatar';
 const ROUND_SUMMARY_MS = 3000;
 
 /**
- * The game board. Mobile first, one column: opponents on top, the table (trump, the trick) in the
- * middle, the player's own hand and actions at the bottom, then the scoreboard. The round summary
- * is an overlay; the game-over screen replaces the board.
+ * The game board: everyone seated around an oval table, you at the bottom, trump in the middle and
+ * each played card in front of its player. Your actions and hand sit under the table, then the
+ * scoreboard (beside the table on wide screens). The round summary is an overlay; the game-over
+ * screen replaces the board.
  */
 export function GamePage() {
   const { id } = useParams<{ id: string }>();
@@ -88,15 +89,85 @@ function LeaveGame({ game }: { game: GameView }) {
 const nameOf = (game: GameView, id: string | null, me: string) =>
   id === me ? 'You' : ((id && game.names[id]) ?? 'Someone');
 
+/** A point on the table's oval: `--x`/`--y` in -1..1, read by the seat and trick-card CSS. */
+type TablePos = CSSProperties & { '--x': number; '--y': number };
+
+/**
+ * Where each player sits. You sit at the bottom; the rest follow in seat order, clockwise, so the
+ * next player (the one on your left) is on the left of the screen. Spectators see seat 1 at the
+ * bottom. Returns the seats in that order with their position on the oval.
+ *
+ * Seats are spaced evenly by distance around the rim, not by angle: on a tall phone oval, equal
+ * angles bunch the seats at the top and bottom, where the curve is tight. `aspect` is the felt's
+ * height / width (1 until it has been measured).
+ */
+function tableOrder(game: GameView, me: string, aspect: number): { seat: SeatView; pos: TablePos }[] {
+  const n = game.seats.length;
+  const mine = game.isSpectator ? -1 : game.seats.findIndex((s) => s.userId === me);
+  const start = mine < 0 ? 0 : mine;
+  const angles = evenAngles(n, aspect);
+  return Array.from({ length: n }, (_, i) => {
+    const seat = game.seats[(start + i) % n];
+    const pos = { '--x': round3(Math.cos(angles[i])), '--y': round3(Math.sin(angles[i])) } as TablePos;
+    return { seat, pos };
+  });
+}
+const round3 = (v: number) => Math.round(v * 1000) / 1000;
+
+/**
+ * `n` parameter angles t on the ellipse (cos t, aspect·sin t), equally spaced by arc length,
+ * starting at the bottom (t = 90°; screen y points down) and running bottom → left → top → right.
+ */
+function evenAngles(n: number, aspect: number): number[] {
+  const steps = 720;
+  const dt = (2 * Math.PI) / steps;
+  const at = (k: number) => Math.PI / 2 + k * dt;
+  // Cumulative arc length at each sample.
+  const cum = [0];
+  for (let k = 1; k <= steps; k++) {
+    const t = at(k - 0.5);
+    cum.push(cum[k - 1] + Math.hypot(Math.sin(t), aspect * Math.cos(t)) * dt);
+  }
+  const total = cum[steps];
+  const out: number[] = [];
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const target = (i * total) / n;
+    while (cum[k + 1] < target) k++;
+    const frac = cum[k + 1] === cum[k] ? 0 : (target - cum[k]) / (cum[k + 1] - cum[k]);
+    out.push(at(k + frac));
+  }
+  return out;
+}
+
+/** The felt's height / width, kept current as the table resizes. */
+function useAspect(): [(el: HTMLDivElement | null) => void, number] {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [aspect, setAspect] = useState(1);
+  useEffect(() => {
+    if (!el) return;
+    const measure = () => {
+      if (el.clientWidth > 0) setAspect(el.clientHeight / el.clientWidth);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  return [setEl, aspect];
+}
+
 function Board({ game }: { game: GameView }) {
   const { user } = useAuth();
   const me = user?.id ?? '';
   const turnId = currentTurnId(game);
-  // Opponents in seat order, starting with the seat after mine, so the table reads clockwise.
-  const myIndex = game.seats.findIndex((s) => s.userId === me);
-  const others = game.isSpectator ? game.seats : [...game.seats.slice(myIndex + 1), ...game.seats.slice(0, myIndex)];
-  const mySeat = game.isSpectator ? null : game.seats[myIndex];
+  const [feltRef, aspect] = useAspect();
+  const order = tableOrder(game, me, aspect);
+  const positions = new Map(order.map(({ seat, pos }) => [seat.userId, pos]));
+  const mySeat = game.isSpectator ? null : (game.seats.find((s) => s.userId === me) ?? null);
   const bidTotal = game.seats.reduce((sum, s) => sum + (s.bid ?? 0), 0);
+  const status = statusLine(game, me, turnId);
+  const myMove = !!(game.trumpRequest || game.bidRequest || game.playRequest);
 
   return (
     <main className="game">
@@ -111,30 +182,39 @@ function Board({ game }: { game: GameView }) {
         {game.isSpectator && <span className="badge">Spectating</span>}
         <LeaveGame game={game} />
       </header>
-      {game.timeWarning && <TimeWarning endsAt={game.timeWarning.endsAt} />}
-      {game.notice && <GameNotice text={game.notice} />}
+      {(game.timeWarning || game.notice) && (
+        <div className="game-notices">
+          {game.timeWarning && <TimeWarning endsAt={game.timeWarning.endsAt} />}
+          {game.notice && <GameNotice text={game.notice} />}
+        </div>
+      )}
 
-      <section className="opponents" aria-label={game.isSpectator ? 'Players' : 'Opponents'}>
-        {others.map((s) => (
-          <Seat key={s.userId} seat={s} isDealer={s.userId === game.dealerId} isTurn={s.userId === turnId} />
-        ))}
-      </section>
-
-      <section className="table" aria-label="Table">
+      <section className={order.length >= 7 ? 'round-table crowded' : 'round-table'} aria-label="Table">
+        <div className="felt" aria-hidden="true" ref={feltRef} />
         <Trump game={game} />
-        <TrickArea game={game} me={me} />
-        <p className="status" role="status">
-          {statusLine(game, me, turnId)}
-        </p>
+        <TrickArea game={game} me={me} positions={positions} />
+        <ol className="seats" aria-label="Players, clockwise">
+          {order.map(({ seat, pos }) => (
+            <Seat
+              key={seat.userId}
+              seat={seat}
+              pos={pos}
+              isMe={seat.userId === me}
+              isDealer={seat.userId === game.dealerId}
+              isTurn={seat.userId === turnId}
+            />
+          ))}
+        </ol>
       </section>
+
+      <p className={myMove ? 'status mine' : 'status'} role="status">
+        {status}
+      </p>
 
       {mySeat && (
         <section className="me" aria-label="Your hand">
           <div className="me-head">
-            <span className="grow">
-              <strong>{mySeat.displayName}</strong> <span className="muted">(you)</span>
-              {game.dealerId === me && <span className="badge"> Dealer</span>}
-            </span>
+            <span className="grow muted">Your hand</span>
             <span>{bidProgress(mySeat)}</span>
           </div>
           <Actions game={game} />
@@ -180,64 +260,115 @@ function GameNotice({ text }: { text: string }) {
 }
 
 /** "Reconnecting · 0:23" on a player whose seat is held for them. */
-function Disconnected({ deadline }: { deadline: string | null }) {
+function Disconnected({ deadline, compact = false }: { deadline: string | null; compact?: boolean }) {
   const left = useSecondsLeft(deadline, 30_000);
-  return (
-    <span className="badge away">
-      Reconnecting{deadline ? ` · 0:${String(left).padStart(2, '0')}` : '…'}
-    </span>
-  );
-}
-
-function Seat({ seat, isDealer, isTurn }: { seat: SeatView; isDealer: boolean; isTurn: boolean }) {
-  const cls = ['seat', isTurn && 'turn', !seat.connected && 'away'].filter(Boolean).join(' ');
-  return (
-    <div className={cls} aria-current={isTurn ? 'true' : undefined}>
-      <Avatar config={seat.avatarConfig} size={AVATAR_SIZE.chip} />
-      <span className="seat-name">{seat.displayName}</span>
-      <span className="seat-bid">{seat.bid === null ? '–' : `Bid ${seat.bid} · Won ${seat.tricksWon}`}</span>
-      <span className="muted seat-meta">
-        {seat.handCount} card{seat.handCount === 1 ? '' : 's'}
-        {isDealer && ' · Dealer'}
+  const time = deadline ? `0:${String(left).padStart(2, '0')}` : null;
+  if (compact) {
+    // Short enough for a seat on a full phone table; the full wording is for screen readers.
+    return (
+      <span className="badge away" title="Reconnecting">
+        <span aria-hidden="true">Away{time ? ` ${time}` : ''}</span>
+        <span className="visually-hidden">Reconnecting{time ? `, ${left} seconds left` : ''}</span>
       </span>
-      {!seat.connected && <Disconnected deadline={seat.reconnectDeadline} />}
-    </div>
+    );
+  }
+  return <span className="badge away">Reconnecting{time ? ` · ${time}` : '…'}</span>;
+}
+
+/** One player's place at the table: avatar, name, bid and tricks, cards left, dealer button. */
+function Seat({ seat, pos, isMe, isDealer, isTurn }: { seat: SeatView; pos: TablePos; isMe: boolean; isDealer: boolean; isTurn: boolean }) {
+  const cls = ['seat', isMe && 'you', isTurn && 'turn', !seat.connected && 'away'].filter(Boolean).join(' ');
+  const cards = `${seat.handCount} card${seat.handCount === 1 ? '' : 's'}`;
+  return (
+    <li className={cls} style={pos} aria-current={isTurn ? 'true' : undefined}>
+      <span className="seat-avatar">
+        <Avatar config={seat.avatarConfig} size={AVATAR_SIZE.chip} />
+        {isDealer && (
+          <span className="dealer-chip" title="Dealer">
+            D<span className="visually-hidden">ealer</span>
+          </span>
+        )}
+        {seat.handCount > 0 && !isMe && (
+          <span className="card-count" title={cards}>
+            <span aria-hidden="true">{seat.handCount}</span>
+            <span className="visually-hidden">{cards}</span>
+          </span>
+        )}
+      </span>
+      <span className="seat-name">{isMe ? 'You' : seat.displayName}</span>
+      <span className={seat.bid === null ? 'seat-bid pending' : 'seat-bid'}>
+        {seat.bid === null ? (
+          <>
+            Bid <span aria-hidden="true">?</span>
+            <span className="visually-hidden">not placed yet</span>
+          </>
+        ) : (
+          <>
+            Won {seat.tricksWon}/{seat.bid}
+          </>
+        )}
+      </span>
+      {!seat.connected && <Disconnected deadline={seat.reconnectDeadline} compact />}
+    </li>
   );
 }
 
+/** The trump card, in the middle of the table. */
 function Trump({ game }: { game: GameView }) {
   if (game.roundNumber === 0) return null;
   const card = game.trumpCard;
-  let text: string;
-  if (game.stage === 'choosing_trump') text = 'Wizard turned up: the dealer chooses trump';
-  else if (game.trumpSuit) text = `Trump: ${SUIT_SYMBOLS[game.trumpSuit]} ${SUIT_NAMES[game.trumpSuit]}`;
-  else if (!card) text = 'No trump: every card was dealt';
-  else text = 'No trump';
+  let label: string;
+  let detail: string | null = null;
+  if (game.stage === 'choosing_trump') {
+    label = 'Wizard!';
+    detail = 'Dealer picks trump';
+  } else if (game.trumpSuit) {
+    label = `${SUIT_SYMBOLS[game.trumpSuit]} ${SUIT_NAMES[game.trumpSuit]}`;
+    if (game.trumpSource === 'declaration') detail = 'declared';
+  } else {
+    label = 'No trump';
+    if (!card) detail = 'all cards dealt';
+  }
+  const red = game.trumpSuit === 'hearts' || game.trumpSuit === 'diamonds';
   return (
-    <div className="trump">
+    <div className="trump" aria-label={`Trump: ${label}${detail ? `, ${detail}` : ''}`} role="group">
       {card ? <Card card={card} size="small" /> : <span className="playing-card small empty" aria-hidden="true" />}
-      <span>
-        <strong>{text}</strong>
-        {game.trumpSource === 'declaration' && <span className="muted"> (declared by the dealer)</span>}
+      <span className="trump-text" aria-hidden="true">
+        <span className="trump-kicker">Trump</span>
+        <strong className={red ? 'red' : undefined}>{label}</strong>
+        {detail && <span className="trump-detail">{detail}</span>}
       </span>
     </div>
   );
 }
 
-/** The trick being played or, until the next card, the one just won (winner highlighted). */
-function TrickArea({ game, me }: { game: GameView; me: string }) {
+/**
+ * The trick being played or, until the next card, the one just won (winner highlighted). Each card
+ * lies on the felt in front of the player who played it; later cards stack on top.
+ */
+function TrickArea({ game, me, positions }: { game: GameView; me: string; positions: Map<string, TablePos> }) {
   const live = game.trick && game.trick.cards.length > 0 ? game.trick : null;
   const shown: PlayEntry[] | null = live ? live.cards : (game.lastTrick?.cards ?? null);
   if (!shown) return null;
   const winner = live ? null : game.lastTrick!.winnerId;
   return (
     <ol className="trick" aria-label={live ? `Trick ${live.trickNumber}` : 'Last trick'}>
-      {shown.map((e, i) => (
-        <li key={cardKey(e.card, i)} className={e.player_id === winner ? 'trick-card won' : 'trick-card'}>
-          <Card card={e.card} size="small" />
-          <span className="trick-name">{nameOf(game, e.player_id, me)}</span>
-        </li>
-      ))}
+      {shown.map((e, i) => {
+        // A card from a player no longer seated has no place; lay it at the centre.
+        const pos = positions.get(e.player_id) ?? ({ '--x': 0, '--y': 0 } as TablePos);
+        const won = e.player_id === winner;
+        return (
+          <li key={cardKey(e.card, i)} className={won ? 'trick-card won' : 'trick-card'} style={{ ...pos, zIndex: i + 1 }}>
+            <Card card={e.card} size="small" />
+            <span className="visually-hidden">
+              {' '}
+              played by {nameOf(game, e.player_id, me)}
+              {i === 0 ? ', led' : ''}
+              {won ? ', won the trick' : ''}
+            </span>
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -310,10 +441,11 @@ function Actions({ game }: { game: GameView }) {
   if (game.playRequest) {
     const all = (game.hand ?? []).length;
     const legal = game.playRequest.legalCards.length;
+    // The status line already says it's your turn; only explain why some cards are dimmed.
+    if (legal === all && !error) return null;
     return (
       <div className="action-panel">
-        <p className="action-title">Your turn: tap a card to play it.</p>
-        {legal < all && <p className="muted">You must follow the suit led, so only the highlighted cards can be played.</p>}
+        {legal < all && <p className="muted play-hint">You must follow the suit led, so only the highlighted cards can be played.</p>}
         {error}
       </div>
     );
