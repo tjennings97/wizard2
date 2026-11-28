@@ -247,6 +247,31 @@ describe('game, room, socket and bug report metrics', () => {
     expect(await value('ws_reconnections_total', { outcome: 'timeout' })).toBe(timeout + 1);
   });
 
+  it('does not count a player who was absent when the game started as a reconnection', async () => {
+    const players = await Promise.all([createUser('P1'), createUser('P2'), createUser('P3')]);
+    const created = await api().post('/api/v1/rooms').set('Cookie', players[0].cookie).send({}).expect(201);
+    const roomId: string = created.body.id;
+    for (const p of players.slice(1)) {
+      await api().post(`/api/v1/rooms/${roomId}/join`).set('Cookie', p.cookie).send({ role: 'player' }).expect(200);
+    }
+    const [host] = await Promise.all(players.slice(0, 2).map(online)); // P3 has no socket yet
+    const success = await value('ws_reconnections_total', { outcome: 'success' });
+    const timeout = await value('ws_reconnections_total', { outcome: 'timeout' });
+
+    await api().post(`/api/v1/rooms/${roomId}/start`).set('Cookie', players[0].cookie).expect(200);
+    await host.waitFor('player_disconnected'); // P3's seat is held
+    const late = connect(server.url, players[2].cookie);
+    clients.push(late);
+    await host.waitFor('player_reconnected');
+    expect(await value('ws_reconnections_total', { outcome: 'success' })).toBe(success);
+
+    // A real drop afterwards is counted.
+    late.close();
+    await host.waitFor('player_disconnected', () => true, { from: host.length });
+    await host.waitFor('user_left');
+    expect(await value('ws_reconnections_total', { outcome: 'timeout' })).toBe(timeout + 1);
+  });
+
   it('counts bug reports by severity', async () => {
     const user = await createUser('Reporter');
     const high = await value('bug_reports_total', { severity: 'high' });

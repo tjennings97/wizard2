@@ -28,11 +28,16 @@ export const markRouteBase: RequestHandler = (req, _res, next) => {
   next();
 };
 
+/** Status label for a request whose connection closed before the response was sent. */
+export const ABORTED_STATUS = 'aborted';
+
 /** The route pattern, e.g. /api/v1/rooms/:roomId, never the raw URL. */
 export function routeLabel(req: Request): string {
   const routePath = req.route?.path;
   if (typeof routePath !== 'string') return UNMATCHED_ROUTE;
-  return `${req.routeBase ?? req.baseUrl}${routePath}`;
+  const base = req.routeBase ?? req.baseUrl;
+  // A router's own '/' route is the mount path itself: /api/v1/rooms, not /api/v1/rooms/.
+  return routePath === '/' && base ? base : `${base}${routePath}`;
 }
 
 /** Only the API and the liveness check are measured; the static client bundle is not. */
@@ -47,6 +52,10 @@ const QUIET_ROUTES = new Set(['/health', '/api/v1/health', '/api/v1/metrics']);
  * On every finished /api and /health response: http_requests_total and
  * http_request_duration_seconds (method, route pattern, status), and one log line with the
  * CLAUDE.md fields. Never logs the body, the query string or any header.
+ *
+ * A request whose connection closes before the response is fully sent (the client gave up, often
+ * on a slow request) is recorded once too, with status_code "aborted", so the slowest requests
+ * still count towards latency and the error-rate denominator.
  */
 export function requestMetrics(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -55,10 +64,13 @@ export function requestMetrics(): RequestHandler {
       return;
     }
     const start = process.hrtime.bigint();
-    res.once('finish', () => {
+    let recorded = false;
+    const record = (aborted: boolean) => {
+      if (recorded) return;
+      recorded = true;
       const seconds = Number(process.hrtime.bigint() - start) / 1e9;
       const route = routeLabel(req);
-      const labels = { method: req.method, route, status_code: String(res.statusCode) };
+      const labels = { method: req.method, route, status_code: aborted ? ABORTED_STATUS : String(res.statusCode) };
       httpRequestsTotal.inc(labels);
       httpRequestDuration.observe(labels, seconds);
 
@@ -72,12 +84,17 @@ export function requestMetrics(): RequestHandler {
         route,
         // originalUrl without the query string: ids only, never secrets.
         path: req.originalUrl.split('?')[0],
-        statusCode: res.statusCode,
+        statusCode: aborted ? null : res.statusCode,
+        aborted,
         durationMs: Math.round(seconds * 1000),
       };
-      if (QUIET_ROUTES.has(route)) logger.debug(fields, 'request completed');
+      if (aborted) logger.warn(fields, 'request aborted by the client');
+      else if (QUIET_ROUTES.has(route)) logger.debug(fields, 'request completed');
       else logger.info(fields, 'request completed');
-    });
+    };
+    res.once('finish', () => record(false));
+    // 'close' follows 'finish' on a normal response; on its own it means the client went away.
+    res.once('close', () => record(!res.writableFinished));
     next();
   };
 }

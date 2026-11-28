@@ -4,7 +4,7 @@ import { db } from '../db/knex';
 import { logger } from '../logger';
 import { authLoginFailuresTotal, passwordResetAttemptsTotal } from '../metrics/registry';
 import { ApiError } from '../http/errors';
-import { requestTraceId } from '../http/trace';
+import { requestTraceId, useIssuedTraceId } from '../http/trace';
 import { burnVerifyTime, hashSecret, normalizeInviteCode, sha256, verifySecret } from '../auth/credentials';
 import { authenticate } from '../auth/middleware';
 import { loginLimiter, registerLimiter, resetPasswordLimiter } from '../auth/rateLimits';
@@ -128,6 +128,7 @@ authRouter.post(
       return { user: userRow, session: await rotateSession(trx, userRow.id) };
     });
 
+    useIssuedTraceId(req, session.traceId);
     logger.info({ userId: user.id, traceId: session.traceId }, 'user registered');
     setSessionCookie(res, session);
     res.status(201).json(toPublicUser(user));
@@ -163,6 +164,7 @@ authRouter.post(
       return { user: locked, session: await rotateSession(trx, locked.id) };
     });
 
+    useIssuedTraceId(req, session.traceId);
     logger.info({ event: 'auth.login', userId: user.id, traceId: session.traceId }, 'user logged in');
     setSessionCookie(res, session);
     // The User body always carries requiresCredentialChange; when true the client must route

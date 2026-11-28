@@ -40,6 +40,23 @@ export type GaugeSource = () => number | Promise<number>;
 export type GaugeName = 'wsConnections' | 'playersConnected' | 'gamesActive' | 'roomsActive' | 'dbPoolSize';
 const sources: Partial<Record<GaugeName, GaugeSource>> = {};
 
+/**
+ * A source that takes longer than this (say a query waiting on an exhausted pool) is abandoned for
+ * this scrape and the gauge keeps its last value, so /metrics answers well inside the scraper's
+ * timeout during the incidents the metrics exist to diagnose.
+ */
+export const GAUGE_SOURCE_TIMEOUT_MS = 2000;
+
+/** Resolves with the source's value, or rejects after `ms`. */
+export function readWithin(source: GaugeSource, ms: number): Promise<number> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`gauge source took longer than ${ms} ms`)), ms);
+    timer.unref();
+  });
+  return Promise.race([Promise.resolve().then(source), timeout]).finally(() => clearTimeout(timer));
+}
+
 export function setGaugeSource(name: GaugeName, source: GaugeSource): void {
   sources[name] = source;
 }
@@ -53,9 +70,9 @@ function sourcedGauge(name: string, help: string, source: GaugeName) {
       const read = sources[source];
       if (!read) return;
       try {
-        this.set(await read());
+        this.set(await readWithin(read, GAUGE_SOURCE_TIMEOUT_MS));
       } catch (err) {
-        // Keep the last value: a failed read (say the database is down) must not fail the scrape.
+        // Keep the last value: a failed or slow read (say the database is down) must not fail the scrape.
         logger.warn({ err, event: 'metrics.collect_failed', metric: name }, 'metric source failed');
       }
     },

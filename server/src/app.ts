@@ -14,9 +14,9 @@ export function createApp(deps: ApiDeps) {
   // Needed for per-IP rate limiting behind Railway's proxy; 0 (local) ignores X-Forwarded-For.
   app.set('trust proxy', config.trustProxyHops);
 
-  // Production allows only the production origin; development allows the Vite dev server.
   // First, so it times the whole request and sees every response, errors included.
   app.use(requestMetrics());
+  // Production allows only the production origin; development allows the Vite dev server.
   app.use(cors({ origin: config.corsOrigin, credentials: true }));
   app.use(cookieParser(config.sessionSecret));
   app.use(express.json());

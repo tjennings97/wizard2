@@ -23,6 +23,9 @@ function app() {
     next();
   });
   rooms.get('/:roomId', (_req, res) => res.json({ ok: true }));
+  rooms.post('/', (_req, res) => res.status(201).json({ ok: true }));
+  // Never answers: the client gives up first.
+  rooms.get('/:roomId/hang', () => undefined);
   rooms.post(
     '/:roomId/fail',
     asyncHandler(async () => {
@@ -44,6 +47,7 @@ async function count(labels: Record<string, string>): Promise<number> {
 }
 
 const info = logger.info as jest.Mock;
+const warn = logger.warn as jest.Mock;
 const debug = logger.debug as jest.Mock;
 
 beforeEach(() => jest.clearAllMocks());
@@ -64,6 +68,7 @@ describe('requestMetrics', () => {
       route: '/api/v1/rooms/:roomId',
       path: '/api/v1/rooms/abc',
       statusCode: 200,
+      aborted: false,
       durationMs: expect.any(Number),
     });
     expect(JSON.stringify(info.mock.calls)).not.toContain('secret');
@@ -92,5 +97,30 @@ describe('requestMetrics', () => {
     await request(app()).get('/api/v1/metrics').expect(200);
     expect(info).not.toHaveBeenCalled();
     expect(debug.mock.calls.map(([f]) => f.route)).toEqual(['/health', '/api/v1/metrics']);
+  });
+
+  it("labels a router's own '/' route with the mount path, without a trailing slash", async () => {
+    const before = await count({ method: 'POST', route: '/api/v1/rooms', status_code: '201' });
+    await request(app()).post('/api/v1/rooms').send({}).expect(201);
+    expect(await count({ method: 'POST', route: '/api/v1/rooms', status_code: '201' })).toBe(before + 1);
+    expect(await count({ route: '/api/v1/rooms/' })).toBe(0);
+  });
+
+  it('records a request the client abandoned once, as aborted', async () => {
+    const labels = { method: 'GET', route: '/api/v1/rooms/:roomId/hang', status_code: 'aborted' };
+    const before = await count(labels);
+    const server = app().listen(0);
+    try {
+      await expect(request(server).get('/api/v1/rooms/r1/hang').timeout(100)).rejects.toThrow();
+      // The server sees the socket close shortly after the client drops it.
+      for (let i = 0; i < 50 && (await count(labels)) === before; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(await count(labels)).toBe(before + 1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toEqual(expect.objectContaining({ aborted: true, statusCode: null, roomId: 'r1' }));
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
   });
 });

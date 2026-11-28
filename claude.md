@@ -235,4 +235,5 @@ The documents below, in this repo, are the source of truth for the project's spe
 | Deployment & Infrastructure Plan | docs/operations/deployment-infrastructure.md |
 | Security Considerations | docs/architecture/security.md |
 | Observability & Alerting Guide | docs/operations/observability-alerting.md |
+| Grafana Cloud Onboarding (manual setup, panel and alert queries) | docs/operations/grafana-cloud-onboarding.md |
 | Backup & Recovery Runbook | docs/operations/backup-recovery.md |

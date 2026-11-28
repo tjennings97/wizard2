@@ -82,7 +82,7 @@ Additional fields may be added per event type (e.g. `cardPlayed`, `round`, `erro
 
 **Implementation (`server/src/logger.ts`):** the pino `mixin` adds `traceId`, `userId`, `roomId`, `gameId` and `event` as `null` to every line, then the request's `traceId` and `userId` from `logContext` (set by `authenticate()`). Fields passed to a log call win, except ones passed as `undefined`, which keep the default so the field never drops out of the line. The timestamp is written under the key `timestamp`. Socket-layer lines take `userId`, `traceId`, `roomId` and `gameId` from `Realtime.logContext(socket)`.
 
-**Request log line (`server/src/metrics/http.ts`):** every finished `/api/*` and `/health` response writes one line, `event: "http.request"`, message `request completed`, with `method`, `route` (the route pattern, as in the metrics), `path` (without the query string), `statusCode`, `durationMs`, `traceId` (`requestTraceId(req)`), `userId`, and `roomId` for `/rooms/:roomId` routes. It never includes the body, the query string or any header. `/health` and `/api/v1/metrics` are logged at `debug`, so the uptime check and the scraper do not flood the production logs.
+**Request log line (`server/src/metrics/http.ts`):** every finished `/api/*` and `/health` response writes one line, `event: "http.request"`, message `request completed`, with `method`, `route` (the route pattern, as in the metrics), `path` (without the query string), `statusCode`, `aborted`, `durationMs`, `traceId` (`requestTraceId(req)`), `userId`, and `roomId` for `/rooms/:roomId` routes. On login, registration and a credential change, the line carries the newly issued session's `traceId` (`useIssuedTraceId`), matching the handler's own log line. A request whose client disconnected before the response was sent is logged once at `warn` as `request aborted by the client`, with `aborted: true` and `statusCode: null`. It never includes the body, the query string or any header. `/health` and `/api/v1/metrics` are logged at `debug`, so the uptime check and the scraper do not flood the production logs.
 
 **Security events:**
 
@@ -135,7 +135,7 @@ Production runs at `info` level. The log level is set via the `LOG_LEVEL` enviro
 - Player joined or left a Socket.io room (include `userId`, `roomId`)
 - Player disconnected — 30-second reconnection timer started (include `userId`, `gameId`)
 - Player reconnected successfully within the window (include `userId`, `gameId`, elapsed time)
-- Reconnection timer expired — player treated as quit (include `userId`, `gameId`)
+- Reconnection timer expired — player treated as quit: logged at `warn` (see the `warn` list above; `event: "game.reconnect_timeout"`, with `userId`, `gameId`)
 - `session_error` (`SESSION_INVALIDATED`) sent to a displaced socket (a new login from another device)
 
 **Always log at `info` for database operations:**
@@ -188,7 +188,7 @@ The following metrics are collected automatically by prom-client's default colle
 
 | Metric name | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code`, `env` | HTTP request duration in seconds, bucketed. Covers all `/api/v1/` routes and `/health`. A request that matched no route is labelled `route="unmatched"`. |
+| `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code`, `env` | HTTP request duration in seconds, bucketed. Covers all `/api/v1/` routes and `/health`. A request that matched no route is labelled `route="unmatched"`. A router's own `/` route is labelled with the mount path (`/api/v1/rooms`, not `/api/v1/rooms/`). A request whose client disconnected before the response was sent is recorded once with `status_code="aborted"`. |
 | `http_requests_total` | Counter | `method`, `route`, `status_code`, `env` | Total HTTP request count. Used to compute error rate and throughput. |
 | `ws_connections_active` | Gauge | `env` | Current number of active Socket.io connections. |
 | `ws_reconnections_total` | Counter | `outcome`, `env` | Total WebSocket reconnection attempts. `outcome` label values: `success`, `timeout`. |
@@ -232,9 +232,9 @@ These cover the "security events" gap in the Security Considerations document. E
 Metrics must be updated at the following points in the application:
 
 - `http_request_duration_seconds` and `http_requests_total`: updated by Express middleware (`requestMetrics` in `server/src/metrics/http.ts`, mounted first in `app.ts`) on every response, using the route pattern (e.g. `/api/v1/rooms/:roomId`), not the raw URL, to avoid high-cardinality label values. Each API router is mounted with `markRouteBase`, which records its mount path, because Express resets `req.baseUrl` when an error falls out of a router to the app-level error handler.
-- **Gauges are read on scrape.** `ws_connections_active`, `players_connected`, `games_active`, `rooms_active` and `db_pool_size` are not counted up and down; each reads its current value from the layer that owns the state when Prometheus scrapes (sources registered with `setGaugeSource`, in `server.ts` and `metrics/db.ts`). The values match "incremented on connect / decremented on disconnect", but cannot drift from a missed decrement or from rooms left open by a previous process. A source that fails (say the database is down) keeps the gauge's last value and logs `metrics.collect_failed`; the scrape still succeeds.
+- **Gauges are read on scrape.** `ws_connections_active`, `players_connected`, `games_active`, `rooms_active` and `db_pool_size` are not counted up and down; each reads its current value from the layer that owns the state when Prometheus scrapes (sources registered with `setGaugeSource`, in `server.ts` and `metrics/db.ts`). The values match "incremented on connect / decremented on disconnect", but cannot drift from a missed decrement or from rooms left open by a previous process. A source that fails, or takes longer than 2 seconds (say a query waiting on an exhausted pool), keeps the gauge's last value and logs `metrics.collect_failed`; the scrape still succeeds and answers well inside the scraper's timeout.
 - `ws_connections_active`: the Socket.io server's connected sockets.
-- `ws_reconnections_total`: incremented in the game service — `outcome=success` when a reconnecting socket clears a held seat (`playerReconnected`), `outcome=timeout` when the 30-second hold expires.
+- `ws_reconnections_total`: incremented in the game service — `outcome=success` when a reconnecting socket clears a held seat (`playerReconnected`), `outcome=timeout` when the 30-second hold expires. Only holds that follow a real dropped connection count: a player with no socket in the room when the game starts also gets a seat hold, but their arrival (or not) is not a reconnection.
 - `rooms_active`: rooms whose `state` is `open` or `in_progress` (one count query per scrape).
 - `games_active`: games registered in the game service and not yet ended.
 - `games_started_total`: incremented when a started game is registered (`GameService.launch`).
@@ -252,7 +252,7 @@ Metrics must be updated at the following points in the application:
 
 ## Grafana Cloud Setup (manual steps)
 
-Nothing in the repo configures Grafana Cloud; the owner does these steps by hand, once, in the Grafana Cloud and Railway UIs. Each step links to the section below that has the details.
+Nothing in the repo configures Grafana Cloud; the owner does these steps by hand, once, in the Grafana Cloud and Railway UIs. Each step links to the section below that has the details. For a click-by-click walkthrough with every dashboard panel and alert rule ready to paste, see the Grafana Cloud Onboarding guide (`docs/operations/grafana-cloud-onboarding.md`).
 
 1. **Create the stack.** Sign up at grafana.com (free tier) and create a stack. Note its Prometheus and Loki details under **Cloud Portal → your stack**.
 2. **Set the token in Railway.** Generate a long random value (for example `openssl rand -hex 32`) and set it as `PROMETHEUS_TOKEN` on the `wizard-app` service. Redeploy. Check it from a terminal: `curl -i https://<production-domain>/api/v1/metrics` returns `401`, and with `-H "Authorization: Bearer <token>"` returns Prometheus text.
