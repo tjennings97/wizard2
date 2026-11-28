@@ -332,7 +332,8 @@ function TableKey({ anyAway }: { anyAway: boolean }) {
         <span className="dealer-chip">D</span> Dealer
       </span>
       <span>
-        <span className="card-count">5</span> Cards in hand
+        {/* A blank card back: a sample number here reads as someone's real count. */}
+        <span className="card-count" /> Cards left in hand
       </span>
       {anyAway && (
         <span>
