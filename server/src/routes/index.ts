@@ -7,6 +7,8 @@ import { authRouter } from './auth';
 import { createBugReportsRouter } from './bugReports';
 import { healthRouter } from './health';
 import { createLobbyRouter } from './lobby';
+import { metricsRouter } from './metrics';
+import { markRouteBase } from '../metrics/http';
 import { createRoomsRouter } from './rooms';
 import { usersRouter } from './users';
 
@@ -19,12 +21,15 @@ export interface ApiDeps {
 
 export function createApiRouter(deps: ApiDeps): Router {
   const apiRouter = Router();
+  // markRouteBase records each router's mount path for the route label of the HTTP metrics.
+  apiRouter.use(markRouteBase);
   apiRouter.use(healthRouter);
-  apiRouter.use('/auth', authRouter);
-  apiRouter.use('/users', usersRouter);
-  apiRouter.use('/lobby', createLobbyRouter(deps.presence));
-  apiRouter.use('/rooms', createRoomsRouter(deps.rooms));
-  apiRouter.use('/admin', createAdminRouter());
-  apiRouter.use('/bug-reports', createBugReportsRouter(deps.games));
+  apiRouter.use(metricsRouter);
+  apiRouter.use('/auth', markRouteBase, authRouter);
+  apiRouter.use('/users', markRouteBase, usersRouter);
+  apiRouter.use('/lobby', markRouteBase, createLobbyRouter(deps.presence));
+  apiRouter.use('/rooms', markRouteBase, createRoomsRouter(deps.rooms));
+  apiRouter.use('/admin', markRouteBase, createAdminRouter());
+  apiRouter.use('/bug-reports', markRouteBase, createBugReportsRouter(deps.games));
   return apiRouter;
 }

@@ -8,6 +8,7 @@ import { authenticate } from '../auth/middleware';
 import { currentPasswordLimiter } from '../auth/rateLimits';
 import { userEvents } from '../auth/userEvents';
 import { rotateSession, setSessionCookie } from '../auth/sessions';
+import { useIssuedTraceId } from '../http/trace';
 import { toPublicUser, type UserRow } from '../auth/users';
 import { BodyValidator } from '../auth/validation';
 
@@ -126,6 +127,7 @@ usersRouter.patch(
     });
 
     if (session) {
+      useIssuedTraceId(req, session.traceId);
       setSessionCookie(res, session);
       logger.info(
         {

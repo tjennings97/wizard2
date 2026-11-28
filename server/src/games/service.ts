@@ -17,6 +17,7 @@ import {
   type Trick,
 } from '../engine';
 import { logger } from '../logger';
+import { gamesCompletedTotal, gamesStartedTotal, wsReconnectionsTotal } from '../metrics/registry';
 import type { RoomConfig } from '../rooms/rules';
 import {
   bidRequestPayload,
@@ -146,6 +147,11 @@ class LiveGame {
   ended: { event: string; payload: unknown } | null = null;
   /** Seat holds of disconnected players (the 30-second reconnection window), by user id. */
   readonly away = new Map<string, NodeJS.Timeout>();
+  /**
+   * The held seats that follow a real dropped connection, which ws_reconnections_total counts.
+   * Not the holds for players who had no socket in the room when the game started.
+   */
+  readonly reconnecting = new Set<string>();
   /** Players who quit or timed out, for their game_results row. */
   readonly departed = new Map<string, { dropReason: DropReason; roundsPlayed: number }>();
   /** Answers to continue_or_end_request so far, by user id. */
@@ -266,6 +272,7 @@ export class GameService {
   async launch(game: Game, started: RoundStarted, ctx: ActionContext = SERVER_CONTEXT): Promise<void> {
     const live = new LiveGame(game);
     this.byRoom.set(game.roomId, live);
+    gamesStartedTotal.inc();
     this.armTimeLimit(live);
     await this.run(live, ctx, async () => {
       const context = {
@@ -278,7 +285,7 @@ export class GameService {
       ];
       const absent = game.activePlayers
         .filter((p) => !this.notifier.isInRoom(game.roomId, p.id))
-        .map((p) => this.holdSeat(live, p.id));
+        .map((p) => this.holdSeat(live, p.id, { afterDisconnect: false }));
       await this.publish(live, ctx, [...announce, ...this.openRound(live, started), ...absent]);
     });
   }
@@ -289,6 +296,13 @@ export class GameService {
 
   gameIdFor(roomId: string): string | null {
     return this.byRoom.get(roomId)?.game.gameId ?? null;
+  }
+
+  /** Games registered and not yet ended (the games_active gauge). */
+  activeCount(): number {
+    let n = 0;
+    for (const live of this.byRoom.values()) if (!live.ended) n++;
+    return n;
   }
 
   /**
@@ -431,7 +445,7 @@ export class GameService {
       if (live.ended || live.away.has(userId) || !live.game.activePlayers.some((p) => p.id === userId)) return;
       // A socket that came back while this waited in the queue.
       if (this.notifier.isInRoom(roomId, userId)) return;
-      await this.publish(live, ctx, [this.holdSeat(live, userId)]);
+      await this.publish(live, ctx, [this.holdSeat(live, userId, { afterDisconnect: true })]);
     });
   }
 
@@ -444,7 +458,9 @@ export class GameService {
     if (!live) return;
     const ctx: ActionContext = { userId, traceId: null };
     await this.run(live, ctx, async () => {
+      const reconnecting = live.reconnecting.has(userId);
       const held = this.clearSeatHold(live, userId);
+      if (held && reconnecting) wsReconnectionsTotal.inc({ outcome: 'success' });
       const player = live.game.activePlayers.find((p) => p.id === userId);
       // Also a player whose hold ran out but who was not dropped (the timeout could not be
       // recorded): they are back, so they are connected again.
@@ -770,6 +786,7 @@ export class GameService {
 
     const result = game.endGame();
     this.clearTimers(live);
+    gamesCompletedTotal.inc({ status: 'complete' });
     const closesAt = new Date(Date.now() + this.countdownMs);
     const payload = gameOverPayload(game, result, closesAt, this.countdownMs);
     live.ended = { event: 'game_over', payload };
@@ -817,6 +834,7 @@ export class GameService {
     if (game.phase === 'awaiting_continue_decision' && dropReason === 'mutual_end') game.resolveContinueOrEnd(false);
     else if (game.phase !== 'incomplete') game.abandon();
     this.clearTimers(live);
+    gamesCompletedTotal.inc({ status: 'incomplete' });
 
     const closesAt = new Date(Date.now() + this.countdownMs);
     const state = game.toGameState();
@@ -947,15 +965,18 @@ export class GameService {
 
   /**
    * Holds a disconnected player's seat: marks them disconnected and starts the reconnection
-   * window. Returns the player_disconnected broadcast for the caller to publish.
+   * window. Returns the player_disconnected broadcast for the caller to publish. `afterDisconnect`
+   * is false for a player who was absent when the game started: their hold is not a reconnection.
    */
-  private holdSeat(live: LiveGame, userId: string): Outbound {
+  private holdSeat(live: LiveGame, userId: string, { afterDisconnect }: { afterDisconnect: boolean }): Outbound {
     this.clearSeatHold(live, userId);
+    if (afterDisconnect) live.reconnecting.add(userId);
     const deadline = new Date(Date.now() + this.reconnectWindowMs);
     const timer = setTimeout(() => {
       if (live.away.get(userId) !== timer || this.byRoom.get(live.game.roomId) !== live) return;
       live.away.delete(userId);
-      logger.info({ ...this.logFields(live, { userId, traceId: null }) }, 'reconnection window expired');
+      if (live.reconnecting.delete(userId)) wsReconnectionsTotal.inc({ outcome: 'timeout' });
+      logger.warn({ ...this.logFields(live, { userId, traceId: null }), event: 'game.reconnect_timeout' }, 'reconnection window expired');
       this.lifecycle
         .playerTimedOut(live.game.roomId, userId)
         .catch((err) => logger.error({ err, ...this.logFields(live, { userId, traceId: null }) }, 'player timeout handling failed'));
@@ -973,6 +994,7 @@ export class GameService {
 
   /** Clears the user's seat hold. Returns whether there was one. */
   private clearSeatHold(live: LiveGame, userId: string): boolean {
+    live.reconnecting.delete(userId);
     const timer = live.away.get(userId);
     if (!timer) return false;
     clearTimeout(timer);

@@ -49,6 +49,11 @@ function roomIdParam(raw: string): string {
 export function createRoomsRouter(rooms: RoomService): Router {
   const router = Router();
   const isConnected = (userId: string) => rooms.isConnected(userId);
+  // The request log line carries the room (a well-formed id only; anything else is a 404).
+  router.param('roomId', (req, _res, next, raw: string) => {
+    if (isRoomId(raw)) req.logRoomId = raw.toLowerCase();
+    next();
+  });
 
   // POST /rooms
   router.post(

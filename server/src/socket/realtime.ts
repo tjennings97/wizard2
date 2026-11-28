@@ -118,6 +118,18 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
     return [...byId.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
+  /** Sockets connected to the server, authenticated or not yet (the ws_connections_active gauge). */
+  connectionCount(): number {
+    return this.io.sockets.sockets.size;
+  }
+
+  /** Users with at least one authenticated socket (the players_connected gauge). */
+  connectedUserCount(): number {
+    let n = 0;
+    for (const [name, members] of this.io.sockets.adapter.rooms) if (members.size > 0 && name.startsWith(userChannel(''))) n++;
+    return n;
+  }
+
   isInLobby(userId: string): boolean {
     return this.socketsIn(LOBBY).some((s) => s.data.userId === userId);
   }
@@ -327,7 +339,14 @@ export class Realtime implements RoomNotifier, PresenceSource, GameNotifier {
   }
 
   logContext(socket: AppSocket) {
-    return { socketId: socket.id, userId: socket.data.userId, traceId: socket.data.traceId, roomId: socket.data.roomId };
+    const roomId = socket.data.roomId ?? null;
+    return {
+      socketId: socket.id,
+      userId: socket.data.userId ?? null,
+      traceId: socket.data.traceId ?? null,
+      roomId,
+      gameId: roomId ? this.games.gameIdFor(roomId) : null,
+    };
   }
 
   logError(socket: AppSocket, err: unknown, message: string): void {

@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { asyncHandler } from '../http/asyncHandler';
 import { db } from '../db/knex';
 import { logger } from '../logger';
+import { authLoginFailuresTotal, passwordResetAttemptsTotal } from '../metrics/registry';
 import { ApiError } from '../http/errors';
-import { requestTraceId } from '../http/trace';
+import { requestTraceId, useIssuedTraceId } from '../http/trace';
 import { burnVerifyTime, hashSecret, normalizeInviteCode, sha256, verifySecret } from '../auth/credentials';
 import { authenticate } from '../auth/middleware';
 import { loginLimiter, registerLimiter, resetPasswordLimiter } from '../auth/rateLimits';
@@ -77,7 +78,14 @@ authRouter.post(
 
     // Cheap pre-check so a bad code does not cost two bcrypt hashes. Re-checked under lock below.
     const preInvite: InviteRow | undefined = await db('invites').whereIn('code_hash', codeHashes).first();
-    if (!isRedeemable(preInvite)) throw inviteInvalid();
+    if (!isRedeemable(preInvite)) {
+      // Never the code itself: only whether a row matched.
+      logger.warn(
+        { event: 'auth.invite_rejected', ip: req.ip, traceId: requestTraceId(req), found: !!preInvite },
+        'invite code redemption failed',
+      );
+      throw inviteInvalid();
+    }
 
     // Hash outside the transaction so the invite row lock is not held across ~0.5s of bcrypt.
     const [passwordHash, recoveryHash] = await Promise.all([
@@ -120,6 +128,7 @@ authRouter.post(
       return { user: userRow, session: await rotateSession(trx, userRow.id) };
     });
 
+    useIssuedTraceId(req, session.traceId);
     logger.info({ userId: user.id, traceId: session.traceId }, 'user registered');
     setSessionCookie(res, session);
     res.status(201).json(toPublicUser(user));
@@ -136,12 +145,18 @@ authRouter.post(
     const password = v.presentString('password');
     v.done();
 
+    // Failures are counted and logged without the username, which is sometimes a mistyped password.
+    const loginFailed = (reason: 'unknown_user' | 'bad_password', userId: string | null) => {
+      authLoginFailuresTotal.inc({ reason });
+      logger.warn({ event: 'auth.login_failed', ip: req.ip, userId, traceId: requestTraceId(req), reason }, 'login failed');
+      return invalidCredentials();
+    };
     const found: UserRow | undefined = await db('users').where({ username }).first();
     if (!found) {
       await burnVerifyTime(password);
-      throw invalidCredentials();
+      throw loginFailed('unknown_user', null);
     }
-    if (!(await verifySecret(password, found.password_hash))) throw invalidCredentials();
+    if (!(await verifySecret(password, found.password_hash))) throw loginFailed('bad_password', found.id);
 
     const { user, session } = await db.transaction(async (trx) => {
       // Lock the user row: serialises concurrent logins so exactly one session stays active.
@@ -149,7 +164,8 @@ authRouter.post(
       return { user: locked, session: await rotateSession(trx, locked.id) };
     });
 
-    logger.info({ userId: user.id, traceId: session.traceId }, 'user logged in');
+    useIssuedTraceId(req, session.traceId);
+    logger.info({ event: 'auth.login', userId: user.id, traceId: session.traceId }, 'user logged in');
     setSessionCookie(res, session);
     // The User body always carries requiresCredentialChange; when true the client must route
     // to the forced change-password flow before anything else.
@@ -187,12 +203,14 @@ authRouter.post(
     const user: UserRow | undefined = await db('users').where({ username }).first();
     if (!user) {
       await burnVerifyTime(recoveryPassphrase);
-      logger.info({ ip: req.ip, traceId: requestTraceId(req), outcome: 'unknown_user' }, 'password reset attempt');
+      passwordResetAttemptsTotal.inc({ outcome: 'unknown_user' });
+      logger.warn({ event: 'auth.reset_attempt', ip: req.ip, traceId: requestTraceId(req), outcome: 'unknown_user' }, 'password reset attempt');
       throw invalidRecovery();
     }
     if (!(await verifySecret(recoveryPassphrase, user.recovery_hash))) {
+      passwordResetAttemptsTotal.inc({ outcome: 'bad_passphrase' });
       logger.warn(
-        { ip: req.ip, userId: user.id, traceId: requestTraceId(req), outcome: 'bad_passphrase' },
+        { event: 'auth.reset_attempt', ip: req.ip, userId: user.id, traceId: requestTraceId(req), outcome: 'bad_passphrase' },
         'password reset attempt',
       );
       throw invalidRecovery();
@@ -205,8 +223,9 @@ authRouter.post(
       await invalidateUserSessions(trx, user.id, 'password_reset');
     });
 
+    passwordResetAttemptsTotal.inc({ outcome: 'success' });
     logger.info(
-      { ip: req.ip, userId: user.id, traceId: requestTraceId(req), outcome: 'success' },
+      { event: 'auth.reset_attempt', ip: req.ip, userId: user.id, traceId: requestTraceId(req), outcome: 'success' },
       'password reset attempt',
     );
     clearSessionCookie(res);

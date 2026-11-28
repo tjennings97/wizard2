@@ -7,6 +7,7 @@ import { asyncHandler } from '../http/asyncHandler';
 import { ApiError } from '../http/errors';
 import { requestTraceId } from '../http/trace';
 import { logger } from '../logger';
+import { bugReportsTotal } from '../metrics/registry';
 import { activeMembershipFor, isRoomId } from '../rooms/queries';
 
 // Limits from the POST /bug-reports request schema in docs/api/openapi-spec.md, plus caps on the
@@ -215,11 +216,10 @@ export function createBugReportsRouter(games: GameService): Router {
         .returning(['id', 'created_at']);
 
       logger.info(
-        { traceId, userId, roomId, gameId, reportId: row.id, severity: report.severity, page: report.page },
+        { event: 'bug_report.submitted', traceId, userId, roomId, gameId, reportId: row.id, severity: report.severity, page: report.page },
         'bug report submitted',
       );
-      // TODO(metrics, remaining-work prompt 10): increment bug_reports_total{severity} once the
-      // prom-client registry exists.
+      bugReportsTotal.inc({ severity: report.severity ?? 'none' });
 
       res.status(201).json({ reportId: row.id, message: 'Your report has been submitted. Thank you.' });
     }),

@@ -26,6 +26,10 @@ components:
       in: cookie
       name: wizard_session
       description: HTTP-only session cookie issued on login.
+    metricsBearer:
+      type: http
+      scheme: bearer
+      description: The PROMETHEUS_TOKEN environment variable. Used only by GET /metrics.
 
   schemas:
 
@@ -1963,6 +1967,37 @@ Responses that carry a one-time secret (`POST /admin/invites`, `POST /admin/user
                     type: string
                     enum: [ok]
                     example: ok
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: |
+        The Prometheus text exposition of every metric in the Metrics Registry
+        (docs/operations/observability-alerting.md), for Grafana Cloud's scraper. Authenticated
+        with `Authorization: Bearer <PROMETHEUS_TOKEN>`, not a session cookie. Not rate limited.
+      operationId: getMetrics
+      tags: [Health]
+      security:
+        - metricsBearer: []
+      responses:
+        '200':
+          description: Current metric values.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP games_active Games in progress in this process.
+                  # TYPE games_active gauge
+                  games_active{env="production",version="c8e61fc"} 2
+        '401':
+          description: Missing or wrong bearer token (UNAUTHORIZED). The response carries `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalServerError'
 ```

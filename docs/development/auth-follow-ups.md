@@ -169,6 +169,8 @@ Work left over from the authentication PR (session middleware, `POST /auth/regis
 
 ## 9. Observability
 
+**Status: done.** Request logging in `server/src/metrics/http.ts` (`requestMetrics`, mounted first in `server/src/app.ts`); the log fields on every line in `server/src/logger.ts`; security events as metrics and `warn` lines in `server/src/routes/auth.ts` and `server/src/auth/rateLimits.ts`, with alert rules in `docs/operations/observability-alerting.md`. Tests: `server/src/metrics/*.test.ts`, `server/src/metrics/metrics.int.test.ts`, `server/src/logger.test.ts`, `tests/api/test_metrics.py`.
+
 - **Request logging:** `CLAUDE.md` says every log entry carries `timestamp`, `level`, `traceId`, `userId`, `roomId`, `gameId`, `message`. There is no request-logging middleware yet. Add one that uses `requestTraceId(req)` from `server/src/http/trace.ts` (the session's `trace_id` when authenticated, otherwise one random UUID per request). The auth routes, rate limiter and error handler already use it. Never log request bodies; the logger already redacts `req.body` and the credential fields.
 - **Security events:** add metrics or log-based alerts for login failures, rate-limit hits (already logged as `auth rate limit hit`) and reset attempts, per `docs/operations/observability-alerting.md` and the "No security-specific logging" gap in `security.md`.
 

@@ -339,7 +339,7 @@ async function checkSession(realtime: Realtime, socket: AppSocket, recheckMs: nu
     return false;
   }
   if (code) {
-    logger.info({ ...realtime.logContext(socket), code, event }, 'socket rejected on game action');
+    logger.info({ ...realtime.logContext(socket), event: 'socket.session_rejected', code, socketEvent: event }, 'socket rejected on game action');
     realtime.rejectSocket(socket, code, SESSION_ERROR_MESSAGES[code]);
     return false;
   }
@@ -396,7 +396,7 @@ async function handleGameAction(
   if (!socket.connected) return;
   const roomId = socket.data.roomId;
   if (!roomId || !games.isLive(roomId)) {
-    logger.debug({ ...realtime.logContext(socket), event }, 'game action outside a live game');
+    logger.debug({ ...realtime.logContext(socket), event: 'game.action_outside_game', socketEvent: event }, 'game action outside a live game');
     await answerOutsideGame(realtime, socket, event);
     return;
   }

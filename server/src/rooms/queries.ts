@@ -142,6 +142,12 @@ export async function getRoomView(roomId: string, conn: Conn = db): Promise<Room
   return roomViewFrom(row, await activeMembers(conn, row.id, row.host_user_id));
 }
 
+/** How many rooms are open or in_progress (the rooms_active gauge). */
+export async function countLobbyRooms(conn: Conn = db): Promise<number> {
+  const row = await conn('rooms').whereIn('state', LOBBY_ROOM_STATES as RoomState[]).count<{ count: string }[]>('* as count').first();
+  return Number(row?.count ?? 0);
+}
+
 /** Rooms shown in the lobby (open or in_progress), oldest first. */
 export async function listLobbyRooms(conn: Conn = db): Promise<RoomSummary[]> {
   const rows: (RoomRow & { player_count: string; spectator_count: string })[] = await conn('rooms as r')

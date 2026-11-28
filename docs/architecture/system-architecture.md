@@ -27,7 +27,7 @@ All game logic is isolated in the game engine. The socket layer calls engine met
 | Password hashing | bcrypt | Industry standard; intentionally slow |
 | Logging | pino | Structured JSON; high throughput; minimal overhead |
 | Metrics | prom-client | Prometheus-compatible; standard in Node.js |
-| Observability | Grafana Cloud (free tier) | Hosted dashboards; scrapes `/metrics`; no self-hosted infra |
+| Observability | Grafana Cloud (free tier) | Hosted dashboards; scrapes `/api/v1/metrics`; no self-hosted infra |
 | Hosting | Railway | App + Postgres collocated; WebSocket support; auto-deploy from GitHub |
 | API style | REST, `/api/v1/` prefix | Simple; versioned from day one |
 | API spec | OpenAPI 3.0 | Spec-first; contract for tests and AI task context |
@@ -39,7 +39,7 @@ All game logic is isolated in the game engine. The socket layer calls engine met
 
 &#91;embedded content: deployment topology · Railway private network + external services\]
 
-All production services run within Railway's private network. The Express app serves the React build and handles both REST and WebSocket traffic on a single port behind TLS with a custom domain. Postgres is reachable only from within the Railway project — its port is not exposed to the public internet. Grafana Cloud scrapes the `/metrics` endpoint from outside Railway over HTTPS using a bearer token. GitHub triggers automatic deploys on push to main.
+All production services run within Railway's private network. The Express app serves the React build and handles both REST and WebSocket traffic on a single port behind TLS with a custom domain. Postgres is reachable only from within the Railway project — its port is not exposed to the public internet. Grafana Cloud scrapes the `/api/v1/metrics` endpoint from outside Railway over HTTPS using a bearer token. GitHub triggers automatic deploys on push to main.
 
 **Environment tiers:** `development` (local, `.env` file), `production` (Railway, env vars set in dashboard). There is no staging tier: Railway's deploy history and rollback UI cover recovery from a bad deploy, and pre-release E2E and performance tests run in CI.
 
@@ -207,7 +207,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `user_lef
 
 **Trace ID propagation:** The `traceId` is attached to `req.user` by the session middleware and to `socket.data` on socket connect. All log calls in the API and socket layers include it. When a bug report is submitted, the server looks up the current `traceId` from the session and stores it in the `bug_reports` record. This is the correlation key between a user's bug report and the server logs.
 
-**Prometheus metrics (`prom-client`):** The Express app registers a `/metrics` endpoint that Grafana Cloud scrapes. The endpoint requires a bearer token (set via environment variable) to prevent public access.
+**Prometheus metrics (`prom-client`):** The Express app registers a `/api/v1/metrics` endpoint that Grafana Cloud scrapes. The endpoint requires a bearer token (set via environment variable) to prevent public access.
 
 **Metric registry:**
 
@@ -224,7 +224,7 @@ A player who leaves intentionally (`leave_game`) has quit immediately: `user_lef
 | `bug_reports_total` | Counter | severity |
 | `players_connected` | Gauge | — |
 
-**Grafana Cloud:** Scrapes `/metrics` on a 30-second interval. Dashboards: infrastructure health (HTTP latency, error rate, WS connections) and game activity (active games, rooms, reconnection success rate). Alerting configured for error rate spikes and service downtime.
+**Grafana Cloud:** Scrapes `/api/v1/metrics` on a 30-second interval. Dashboards: infrastructure health (HTTP latency, error rate, WS connections) and game activity (active games, rooms, reconnection success rate). Alerting configured for error rate spikes and service downtime.
 
 ## Scalability Design
 
